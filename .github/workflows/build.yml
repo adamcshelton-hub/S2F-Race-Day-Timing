@@ -1,0 +1,152 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - name: Test
+        run: dotnet test --configuration Release --nologo
+
+  pack:
+    needs: test
+    if: github.event_name == 'release' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        rid: [win-x64, win-arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Resolve version
+        id: ver
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "release") {
+            $v = "${{ github.event.release.tag_name }}".TrimStart("v")
+          } else {
+            $v = (Select-Xml -Path src/S2F.RaceDayCheckout/S2F.RaceDayCheckout.csproj -XPath "//Version").Node.InnerText
+            $v = "$v-ci.${{ github.run_number }}"
+          }
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Pack version: $v"
+
+      - name: Publish ${{ matrix.rid }}
+        run: >
+          dotnet publish src/S2F.RaceDayCheckout/S2F.RaceDayCheckout.csproj
+          -c Release -r ${{ matrix.rid }} --self-contained true
+          /p:PublishSingleFile=true
+          /p:Version=${{ steps.ver.outputs.version }}
+          /p:InformationalVersion=${{ steps.ver.outputs.version }}
+          -o publish/${{ matrix.rid }}
+
+      - name: Sign binaries (optional Authenticode)
+        env:
+          WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERT_PFX_BASE64)) {
+            Write-Host "No WINDOWS_CERT_PFX_BASE64 secret — skipping code signing (SmartScreen may warn until a cert is added)."
+            exit 0
+          }
+          $pfx = Join-Path $env:RUNNER_TEMP "codesign.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERT_PFX_BASE64))
+          $signtool = "${env:ProgramFiles(x86)}\Windows Kits\10\bin\10.0.22621.0\x64\signtool.exe"
+          if (-not (Test-Path $signtool)) {
+            $signtool = (Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe | Where-Object { $_.FullName -match '\\x64\\' } | Select-Object -First 1).FullName
+          }
+          if (-not $signtool) { throw "signtool.exe not found" }
+          $files = Get-ChildItem -Path "publish/${{ matrix.rid }}" -Recurse -Include *.exe,*.dll
+          foreach ($f in $files) {
+            & $signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /f $pfx /p $env:WINDOWS_CERT_PASSWORD $f.FullName
+            if ($LASTEXITCODE -ne 0) { throw "signtool failed for $($f.Name)" }
+          }
+          Write-Host "Signed $($files.Count) binaries."
+
+      - name: Install vpk
+        run: dotnet tool install -g vpk --version 1.2.161
+
+      - name: Velopack pack ${{ matrix.rid }}
+        shell: pwsh
+        run: |
+          $channel = "${{ matrix.rid }}"
+          $version = "${{ steps.ver.outputs.version }}"
+          vpk pack `
+            --packId S2F.RaceDayCheckout `
+            --packVersion $version `
+            --packDir "publish/$channel" `
+            --mainExe S2F.RaceDayCheckout.exe `
+            --packTitle "S2F Race Day Timing" `
+            --channel $channel `
+            --outputDir "releases/$channel"
+
+      - name: Upload pack artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: velopack-${{ matrix.rid }}
+          path: releases/${{ matrix.rid }}/
+
+  publish-release:
+    needs: pack
+    if: github.event_name == 'release'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - name: Install vpk
+        run: dotnet tool install -g vpk --version 1.2.161
+
+      - name: Download x64
+        uses: actions/download-artifact@v4
+        with:
+          name: velopack-win-x64
+          path: releases/win-x64
+      - name: Download arm64
+        uses: actions/download-artifact@v4
+        with:
+          name: velopack-win-arm64
+          path: releases/win-arm64
+
+      - name: Upload to GitHub Release (x64)
+        shell: pwsh
+        run: |
+          vpk upload github `
+            --repoUrl https://github.com/${{ github.repository }} `
+            --token ${{ secrets.GITHUB_TOKEN }} `
+            --channel win-x64 `
+            --outputDir releases/win-x64 `
+            --publish `
+            --releaseName "S2F Race Day Timing ${{ github.event.release.tag_name }}" `
+            --tag ${{ github.event.release.tag_name }}
+
+      - name: Upload to GitHub Release (arm64)
+        shell: pwsh
+        run: |
+          vpk upload github `
+            --repoUrl https://github.com/${{ github.repository }} `
+            --token ${{ secrets.GITHUB_TOKEN }} `
+            --channel win-arm64 `
+            --outputDir releases/win-arm64 `
+            --publish `
+            --releaseName "S2F Race Day Timing ${{ github.event.release.tag_name }}" `
+            --tag ${{ github.event.release.tag_name }}

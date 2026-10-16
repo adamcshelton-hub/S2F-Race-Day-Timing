@@ -1,0 +1,6 @@
+<Project>
+  <!-- Allow restoring/building the Windows WPF project from macOS CI/dev machines. -->
+  <PropertyGroup>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+  </PropertyGroup>
+</Project>

@@ -1,0 +1,225 @@
+<Window x:Class="S2F.RaceDayCheckout.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:conv="clr-namespace:S2F.RaceDayCheckout.Converters"
+        Title="S2F Race Day"
+        Height="720" Width="920"
+        MinHeight="560" MinWidth="720"
+        WindowStartupLocation="CenterScreen"
+        UseLayoutRounding="True"
+        SnapsToDevicePixels="True"
+        Loaded="Window_Loaded"
+        Closing="Window_Closing">
+  <Window.Resources>
+    <conv:BoolToVisibilityConverter x:Key="BoolVis"/>
+  </Window.Resources>
+
+  <Grid>
+    <DockPanel>
+      <!-- Header: orange 2 mark + product title -->
+      <Border DockPanel.Dock="Top" Background="{StaticResource HeaderBrush}" Padding="20,14"
+              MouseLeftButtonDown="Logo_MouseLeftButtonDown"
+              ToolTip="Triple-click for admin settings">
+        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+          <Image Source="pack://application:,,,/Assets/logo-mark.png"
+                 Width="40" Height="40" Stretch="Uniform" Margin="0,0,14,0"
+                 SnapsToDevicePixels="True"
+                 RenderOptions.BitmapScalingMode="HighQuality"/>
+          <TextBlock Text="Start 2 Finish Race Day Timing"
+                     Foreground="White" FontSize="20" FontWeight="Bold"
+                     VerticalAlignment="Center"/>
+        </StackPanel>
+      </Border>
+
+      <!-- Body -->
+      <Grid Margin="28,24">
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto"/>
+          <RowDefinition Height="*"/>
+          <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Margin="0,0,0,16">
+          <TextBlock Text="{Binding StepTitle}" FontSize="28" FontWeight="SemiBold"/>
+          <TextBlock Text="{Binding StepSubtitle}" Foreground="{StaticResource MutedBrush}"
+                     FontSize="15" Margin="0,6,0,0"/>
+        </StackPanel>
+
+        <!-- OFFICE -->
+        <ListBox x:Name="OfficeList" Grid.Row="1"
+                 Style="{StaticResource StepListBox}"
+                 ItemsSource="{Binding Offices}"
+                 Visibility="{Binding IsOfficeStep, Converter={StaticResource BoolVis}}"
+                 MouseDoubleClick="Office_DoubleClick">
+          <ListBox.ItemTemplate>
+            <DataTemplate>
+              <TextBlock Text="{Binding}" FontSize="18" FontWeight="SemiBold"/>
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+
+        <!-- SESSION / EVENT -->
+        <ListBox x:Name="SessionList" Grid.Row="1"
+                 Style="{StaticResource StepListBox}"
+                 ItemsSource="{Binding Sessions}"
+                 SelectedItem="{Binding SelectedSession}"
+                 Visibility="{Binding IsSessionStep, Converter={StaticResource BoolVis}}"
+                 MouseDoubleClick="Session_DoubleClick">
+          <ListBox.ItemTemplate>
+            <DataTemplate>
+              <Grid>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="*"/>
+                  <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel>
+                  <TextBlock Text="{Binding DisplayName}" FontSize="17" FontWeight="SemiBold"/>
+                  <TextBlock Text="{Binding PrimaryEventFile}" Foreground="{StaticResource MutedBrush}"
+                             FontSize="12" Margin="0,4,0,0"/>
+                </StackPanel>
+                <TextBlock Grid.Column="1" Text="{Binding DisplayLock}" VerticalAlignment="Center"
+                           Foreground="{StaticResource MutedBrush}" FontSize="12" Margin="16,0,0,0"/>
+              </Grid>
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+
+        <!-- EVENT FILE PICKER -->
+        <DockPanel Grid.Row="1" Visibility="{Binding IsEventFileStep, Converter={StaticResource BoolVis}}">
+          <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap" Margin="0,0,0,14"
+                     Foreground="{StaticResource MutedBrush}" FontSize="15"
+                     Text="More than one Timing &amp; Scoring file was found. Tap the main timing file for this race (not the announcer file)."/>
+          <ListBox x:Name="EventFileList" Style="{StaticResource StepListBox}"
+                   ItemsSource="{Binding EventFiles}"
+                   SelectedItem="{Binding SelectedEventFile}"
+                   MouseDoubleClick="EventFile_DoubleClick">
+            <ListBox.ItemTemplate>
+              <DataTemplate>
+                <TextBlock Text="{Binding}" FontSize="16"/>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </DockPanel>
+
+        <!-- ACTIVE — event name is already in the page title; card is actions only -->
+        <Border Grid.Row="1" Background="{StaticResource CardBrush}" CornerRadius="10"
+                BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Padding="28"
+                Visibility="{Binding IsActiveStep, Converter={StaticResource BoolVis}}">
+          <StackPanel>
+            <UniformGrid Columns="2" Margin="0,0,0,12">
+              <Button Content="Open RunScore" Style="{StaticResource PrimaryButton}"
+                      Margin="0,0,8,8" Click="LaunchRunScore_Click"/>
+              <Button Content="Open Timing &amp; Scoring" Style="{StaticResource PrimaryButton}"
+                      Margin="8,0,0,8" Click="LaunchTs_Click"/>
+            </UniformGrid>
+
+            <Button Content="Browse race files" Style="{StaticResource SecondaryButton}"
+                    HorizontalAlignment="Left" Margin="0,0,0,28" Click="OpenWorkingFolder_Click"
+                    ToolTip="Opens the local working copy of this race if you need to find a file."/>
+
+            <Border Background="#F3FBF6" BorderBrush="{StaticResource SaveBrush}" BorderThickness="1"
+                    CornerRadius="8" Padding="16" Margin="0,0,0,16">
+              <TextBlock TextWrapping="Wrap" FontSize="14"
+                         Text="When you're done: close RunScore and Timing &amp; Scoring, then tap Finish below."/>
+            </Border>
+
+            <Button Content="Finish" Style="{StaticResource SaveButton}"
+                    HorizontalAlignment="Stretch" FontSize="18" MinHeight="56" Click="Finish_Click"/>
+          </StackPanel>
+        </Border>
+
+        <!-- ADMIN — two columns so Save stays on-screen without scrolling -->
+        <DockPanel Grid.Row="1" LastChildFill="True"
+                   Visibility="{Binding IsAdminStep, Converter={StaticResource BoolVis}}">
+          <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+            <Button Content="Check for updates" Style="{StaticResource SecondaryButton}"
+                    Width="170" Margin="0,0,12,0" Click="CheckUpdates_Click"/>
+            <Button Content="Save settings" Style="{StaticResource PrimaryButton}"
+                    Width="180" Click="SaveAdmin_Click"/>
+          </StackPanel>
+          <Grid>
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" MinWidth="240"/>
+              <ColumnDefinition Width="20"/>
+              <ColumnDefinition Width="*" MinWidth="240"/>
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto"/>
+              <RowDefinition Height="Auto"/>
+              <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <StackPanel Grid.Row="0" Grid.Column="0" Margin="0,0,0,14">
+              <TextBlock Text="Library root" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}"/>
+              <TextBox Text="{Binding LibraryRoot}" Padding="10,8"/>
+            </StackPanel>
+            <StackPanel Grid.Row="0" Grid.Column="2" Margin="0,0,0,14">
+              <TextBlock Text="Local race day folder" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}"/>
+              <TextBox Text="{Binding RaceDayRoot}" Padding="10,8"/>
+            </StackPanel>
+
+            <StackPanel Grid.Row="1" Grid.Column="0" Margin="0,0,0,14">
+              <TextBlock Text="Display name on locks" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}"/>
+              <TextBox Text="{Binding DisplayName}" Padding="10,8"/>
+            </StackPanel>
+            <StackPanel Grid.Row="1" Grid.Column="2" Margin="0,0,0,14">
+              <TextBlock Text="Admin PIN" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}"/>
+              <TextBox Text="{Binding AdminPin}" Padding="10,8"/>
+            </StackPanel>
+
+            <StackPanel Grid.Row="2" Grid.Column="0">
+              <TextBlock Text="RunScore exe (optional)" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}"/>
+              <TextBox Text="{Binding RunScoreExePath}" Padding="10,8"/>
+            </StackPanel>
+            <StackPanel Grid.Row="2" Grid.Column="2">
+              <TextBlock Text="Timing &amp; Scoring exe (optional)" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}"/>
+              <TextBox Text="{Binding TimingAndScoringExePath}" Padding="10,8"/>
+            </StackPanel>
+          </Grid>
+        </DockPanel>
+
+        <!-- Bottom actions -->
+        <DockPanel Grid.Row="2" Margin="0,18,0,0" LastChildFill="False">
+          <Button DockPanel.Dock="Left" Content="Back" Style="{StaticResource SecondaryButton}"
+                  Width="120" Click="Back_Click"
+                  Visibility="{Binding ShowBack, Converter={StaticResource BoolVis}}"/>
+
+          <Button DockPanel.Dock="Right" Content="Continue" Style="{StaticResource PrimaryButton}"
+                  Width="160" Click="OfficeContinue_Click"
+                  Visibility="{Binding IsOfficeStep, Converter={StaticResource BoolVis}}"/>
+          <Button DockPanel.Dock="Right" Content="Continue" Style="{StaticResource PrimaryButton}"
+                  Width="160" Click="SessionContinue_Click"
+                  Visibility="{Binding IsSessionStep, Converter={StaticResource BoolVis}}"/>
+          <Button DockPanel.Dock="Right" Content="Load event" Style="{StaticResource PrimaryButton}"
+                  Width="160" Click="EventFileContinue_Click"
+                  Visibility="{Binding IsEventFileStep, Converter={StaticResource BoolVis}}"/>
+        </DockPanel>
+      </Grid>
+    </DockPanel>
+
+    <!-- Full-window busy / result overlay (no second Windows MessageBox) -->
+    <Grid Visibility="{Binding Busy, Converter={StaticResource BoolVis}}" Panel.ZIndex="100">
+      <Border Background="#E6000000"/>
+      <Border Background="{StaticResource CardBrush}" CornerRadius="12"
+              HorizontalAlignment="Center" VerticalAlignment="Center"
+              Padding="40,36" MinWidth="420" MaxWidth="520"
+              BorderBrush="{StaticResource AccentBrush}" BorderThickness="3">
+        <StackPanel>
+          <TextBlock Text="{Binding BusyTitle}" FontSize="26" FontWeight="Bold"
+                     TextAlignment="Center" TextWrapping="Wrap" Margin="0,0,0,14"/>
+          <TextBlock Text="{Binding ProgressText}" FontSize="16"
+                     Foreground="{StaticResource MutedBrush}"
+                     TextAlignment="Center" TextWrapping="Wrap" LineHeight="24"/>
+          <TextBlock Text="Keep this window open." FontSize="14" FontWeight="SemiBold"
+                     Foreground="{StaticResource AccentBrush}"
+                     TextAlignment="Center" Margin="0,22,0,0"
+                     Visibility="{Binding BusyKeepOpenVisible, Converter={StaticResource BoolVis}}"/>
+          <Button Content="OK" Style="{StaticResource PrimaryButton}"
+                  HorizontalAlignment="Stretch" Margin="0,28,0,0" MinHeight="52"
+                  Visibility="{Binding BusyNeedsAcknowledge, Converter={StaticResource BoolVis}}"
+                  Click="BusyOk_Click"/>
+        </StackPanel>
+      </Border>
+    </Grid>
+  </Grid>
+</Window>
