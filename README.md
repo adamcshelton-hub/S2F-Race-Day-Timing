@@ -59,7 +59,7 @@ Uses [Azure Artifact Signing](https://learn.microsoft.com/en-us/azure/artifact-s
 | `AZURE_TRUSTED_SIGNING_ACCOUNT` | Artifact Signing account name |
 | `AZURE_TRUSTED_SIGNING_PROFILE` | Certificate profile name |
 
-Also required once in Azure: federated credentials on that app for this repo (`main` + tags/releases), and role **Artifact Signing Certificate Profile Signer** on the signing account.
+Also required once in Azure: federated credentials on that app for this repo — at least **Environment** `production` (CI pack/release jobs use that environment) — and role **Artifact Signing Certificate Profile Signer** on the signing account. A Branch `main` credential alone is not enough for Release (tag) builds.
 
 If secrets/vars are missing, packs still succeed unsigned (SmartScreen may warn).
 

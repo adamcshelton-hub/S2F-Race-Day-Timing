@@ -26,6 +26,8 @@ jobs:
     needs: test
     if: github.event_name == 'release' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     runs-on: windows-latest
+    # OIDC subject: repo:…:environment:production (covers main + tag/release packs)
+    environment: production
     strategy:
       fail-fast: false
       matrix:
