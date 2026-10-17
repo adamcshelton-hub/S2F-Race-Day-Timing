@@ -108,13 +108,13 @@
         <Setter.Value>
           <Style TargetType="ListBoxItem">
             <Setter Property="Padding" Value="0"/>
-            <Setter Property="Margin" Value="0,0,0,10"/>
+            <Setter Property="Margin" Value="0,0,0,6"/>
             <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
             <Setter Property="Template">
               <Setter.Value>
                 <ControlTemplate TargetType="ListBoxItem">
-                  <Border x:Name="Bd" Background="{StaticResource CardBrush}" CornerRadius="8"
-                          BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Padding="18,16">
+                  <Border x:Name="Bd" Background="{StaticResource CardBrush}" CornerRadius="6"
+                          BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Padding="14,9">
                     <ContentPresenter/>
                   </Border>
                   <ControlTemplate.Triggers>
