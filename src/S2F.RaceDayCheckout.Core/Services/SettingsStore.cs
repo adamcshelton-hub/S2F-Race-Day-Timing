@@ -49,6 +49,7 @@ public sealed class SettingsStore : ISettingsStore
         var dir = System.IO.Path.GetDirectoryName(_path);
         if (!string.IsNullOrEmpty(dir))
             Directory.CreateDirectory(dir);
+        // AdminPin is JsonIgnore — never persisted; always AppSettings.DefaultAdminPin at runtime.
         File.WriteAllText(_path, JsonSerializer.Serialize(settings, JsonOptions));
     }
 }

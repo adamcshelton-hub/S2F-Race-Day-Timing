@@ -82,13 +82,13 @@ public class CheckoutLockServiceTests
     }
 
     [Fact]
-    public void ForceUnlock_RequiresPin()
+    public void ForceUnlock_RequiresFixedCompanyPin()
     {
         var (root, locks) = CreateEnv(new FakeMachine("AAA"));
         Acquire(locks, root, "Sam");
-        var settings = new AppSettings { AdminPin = "9999" };
+        var settings = new AppSettings();
         Assert.False(locks.ForceUnlock(root, "Admin", "forgot", "0000", settings));
-        Assert.True(locks.ForceUnlock(root, "Admin", "forgot", "9999", settings));
+        Assert.True(locks.ForceUnlock(root, "Admin", "forgot", AppSettings.DefaultAdminPin, settings));
         Assert.Equal(LockLifecycleStatus.Released, locks.TryRead(root)!.Status);
     }
 

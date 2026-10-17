@@ -17,40 +17,64 @@ public static class UpdateService
     public static string CurrentChannel =>
         RuntimeInformation.ProcessArchitecture == Architecture.Arm64 ? "win-arm64" : "win-x64";
 
-    public static async Task CheckForUpdatesQuietAsync(bool hasActiveCheckout, Window? owner = null)
+    /// <summary>
+    /// Startup check. Always tells the user when an update is available (even if Finish is required first).
+    /// Failures set <paramref name="setStatus"/> instead of failing silently.
+    /// </summary>
+    public static async Task CheckForUpdatesQuietAsync(
+        bool hasActiveCheckout,
+        Window? owner = null,
+        Action<string>? setStatus = null)
     {
         try
         {
             var mgr = CreateManager();
             if (!mgr.IsInstalled)
-                return; // dev / portable run — no update feed
+            {
+                setStatus?.Invoke($"Dev build {FormatVersion(mgr.CurrentVersion)} — install from Setup for auto-updates.");
+                return;
+            }
 
+            setStatus?.Invoke($"Checking for updates… (v{FormatVersion(mgr.CurrentVersion)})");
             var update = await mgr.CheckForUpdatesAsync();
             if (update is null)
+            {
+                setStatus?.Invoke($"v{FormatVersion(mgr.CurrentVersion)} — up to date");
                 return;
+            }
 
+            var target = FormatVersion(update.TargetFullRelease.Version);
+            setStatus?.Invoke($"Downloading update v{target}…");
             await mgr.DownloadUpdatesAsync(update);
 
             if (hasActiveCheckout)
             {
-                // Don't restart mid-race; apply after Finish on next launch.
+                await Application.Current.Dispatcher.InvokeAsync(() =>
+                    TimerDialog.Alert(
+                        owner,
+                        "Update ready",
+                        $"Version {target} is downloaded.\n\n"
+                        + "Finish this race first, then restart the app to install the update."));
+                setStatus?.Invoke($"v{target} ready — Finish race, then restart to update");
                 return;
             }
 
-            var apply = Application.Current.Dispatcher.Invoke(() =>
+            var apply = await Application.Current.Dispatcher.InvokeAsync(() =>
                 TimerDialog.Confirm(
                     owner,
                     "Update ready",
-                    $"Version {update.TargetFullRelease.Version} is ready.\n\nRestart the app to update? (Safe — you're not checked out.)",
+                    $"Version {target} is ready.\n\nYou're on v{FormatVersion(mgr.CurrentVersion)}. Restart now to update?",
                     yesLabel: "Restart & update",
                     noLabel: "Later"));
 
             if (apply)
                 mgr.ApplyUpdatesAndRestart(update.TargetFullRelease);
+            else
+                setStatus?.Invoke($"v{target} ready — restart from Admin → Check for updates when convenient");
         }
-        catch
+        catch (Exception ex)
         {
-            // Offline / rate limit / unsigned feed — never block race day.
+            setStatus?.Invoke("Couldn't check for updates: " + ShortError(ex));
         }
     }
 
@@ -62,7 +86,8 @@ public static class UpdateService
             if (!mgr.IsInstalled)
             {
                 TimerDialog.Alert(owner, "Updates",
-                    "This copy wasn't installed with Setup.exe, so auto-update isn't available.\n\nInstall from the GitHub Release for your PC (x64 or ARM).");
+                    "This copy wasn't installed with Setup.exe, so auto-update isn't available.\n\n"
+                    + "Install from the GitHub Release for your PC (x64 or ARM).");
                 return;
             }
 
@@ -70,21 +95,23 @@ public static class UpdateService
             if (update is null)
             {
                 TimerDialog.Alert(owner, "Updates",
-                    $"You're on the latest version ({mgr.CurrentVersion}) for {CurrentChannel}.");
+                    $"You're on the latest version (v{FormatVersion(mgr.CurrentVersion)}) for {CurrentChannel}.");
                 return;
             }
 
+            var target = FormatVersion(update.TargetFullRelease.Version);
             await mgr.DownloadUpdatesAsync(update);
 
             if (hasActiveCheckout)
             {
                 TimerDialog.Alert(owner, "Update downloaded",
-                    "Update is ready, but an event is still checked out.\n\nFinish the race first, then restart the app to update.");
+                    $"Version {target} is ready, but an event is still checked out.\n\n"
+                    + "Finish the race first, then restart the app to update.");
                 return;
             }
 
             if (TimerDialog.Confirm(owner, "Update ready",
-                    $"Version {update.TargetFullRelease.Version} is ready.\n\nRestart now to update?",
+                    $"Version {target} is ready.\n\nYou're on v{FormatVersion(mgr.CurrentVersion)}. Restart now to update?",
                     yesLabel: "Restart & update",
                     noLabel: "Later"))
             {
@@ -99,10 +126,30 @@ public static class UpdateService
 
     private static UpdateManager CreateManager()
     {
-        // Public repo: empty token. Private: set S2F_GITHUB_TOKEN env for higher rate limits.
+        // Private GitHub repos require a token for release asset downloads (else 404).
+        // Prefer S2F_GITHUB_TOKEN; optional compile-time isn't used — keep repo public for fleet.
         var token = Environment.GetEnvironmentVariable("S2F_GITHUB_TOKEN") ?? "";
         var source = new GithubSource(RepoUrl, token, prerelease: false);
+        // Match vpk --channel win-x64 / win-arm64 feeds on the Release.
         var options = new UpdateOptions { ExplicitChannel = CurrentChannel };
         return new UpdateManager(source, options);
     }
+
+    private static string FormatVersion(object? version) =>
+        version?.ToString() ?? "?";
+
+    private static string ShortError(Exception ex)
+    {
+        var msg = ex.Message?.Trim() ?? "unknown error";
+        if (msg.Contains("404", StringComparison.OrdinalIgnoreCase))
+        {
+            return "404 from GitHub — if the repo is private, update downloads fail without a token. "
+                   + "Make the repo public, or set S2F_GITHUB_TOKEN. (" + Truncate(msg, 80) + ")";
+        }
+
+        return Truncate(msg, 120);
+    }
+
+    private static string Truncate(string msg, int max) =>
+        msg.Length <= max ? msg : msg[..(max - 1)] + "…";
 }

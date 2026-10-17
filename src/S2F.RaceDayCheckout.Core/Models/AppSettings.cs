@@ -8,7 +8,12 @@ public sealed class AppSettings
     public string LibraryRoot { get; set; } = DefaultLibraryRoot;
     public string RaceDayRoot { get; set; } = DefaultRaceDayRoot;
     public string DisplayName { get; set; } = string.Empty;
-    public string AdminPin { get; set; } = "7698";
+    /// <summary>Fixed company Admin PIN — not editable in the app or settings.json.</summary>
+    public const string DefaultAdminPin = "7690";
+
+    /// <summary>Always <see cref="DefaultAdminPin"/> (7690). Ignored if present in settings.json.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string AdminPin => DefaultAdminPin;
     public const int DefaultStaleLockMinutes = 18;
 
     public int HeartbeatSeconds { get; set; } = 120;

@@ -46,15 +46,48 @@
                      FontSize="15" Margin="0,6,0,0"/>
         </StackPanel>
 
-        <!-- OFFICE -->
+        <!-- OFFICE — two columns so more locations fit without scrolling -->
         <ListBox x:Name="OfficeList" Grid.Row="1"
                  Style="{StaticResource StepListBox}"
                  ItemsSource="{Binding Offices}"
                  Visibility="{Binding IsOfficeStep, Converter={StaticResource BoolVis}}"
-                 MouseDoubleClick="Office_DoubleClick">
+                 MouseDoubleClick="Office_DoubleClick"
+                 ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+          <ListBox.ItemsPanel>
+            <ItemsPanelTemplate>
+              <UniformGrid Columns="2"/>
+            </ItemsPanelTemplate>
+          </ListBox.ItemsPanel>
+          <ListBox.ItemContainerStyle>
+            <Style TargetType="ListBoxItem">
+              <Setter Property="Padding" Value="0"/>
+              <Setter Property="Margin" Value="0,0,10,10"/>
+              <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+              <Setter Property="Template">
+                <Setter.Value>
+                  <ControlTemplate TargetType="ListBoxItem">
+                    <Border x:Name="Bd" Background="{StaticResource CardBrush}" CornerRadius="8"
+                            BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Padding="18,16">
+                      <ContentPresenter/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                      <Trigger Property="IsMouseOver" Value="True">
+                        <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource AccentBrush}"/>
+                      </Trigger>
+                      <Trigger Property="IsSelected" Value="True">
+                        <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource AccentBrush}"/>
+                        <Setter TargetName="Bd" Property="BorderThickness" Value="2"/>
+                        <Setter TargetName="Bd" Property="Background" Value="#FFF4E5"/>
+                      </Trigger>
+                    </ControlTemplate.Triggers>
+                  </ControlTemplate>
+                </Setter.Value>
+              </Setter>
+            </Style>
+          </ListBox.ItemContainerStyle>
           <ListBox.ItemTemplate>
             <DataTemplate>
-              <TextBlock Text="{Binding}" FontSize="18" FontWeight="SemiBold"/>
+              <TextBlock Text="{Binding}" FontSize="18" FontWeight="SemiBold" TextWrapping="Wrap"/>
             </DataTemplate>
           </ListBox.ItemTemplate>
         </ListBox>
@@ -182,9 +215,9 @@
               <TextBox Text="{Binding DisplayName}" Padding="10,8" IsReadOnly="True"
                        Background="#F3F4F6" ToolTip="Taken from the Windows computer name."/>
             </StackPanel>
-            <StackPanel Grid.Row="1" Grid.Column="2" Margin="0,0,0,14">
-              <TextBlock Text="Admin PIN" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}"/>
-              <TextBox Text="{Binding AdminPin}" Padding="10,8"/>
+            <StackPanel Grid.Row="1" Grid.Column="2" Margin="0,0,0,14" VerticalAlignment="Center">
+              <TextBlock Text="Admin PIN is fixed company-wide (not editable)."
+                         Foreground="{StaticResource MutedBrush}" FontSize="13" TextWrapping="Wrap"/>
             </StackPanel>
 
             <StackPanel Grid.Row="2" Grid.Column="0">
@@ -208,21 +241,25 @@
           </Grid>
         </DockPanel>
 
-        <!-- Bottom actions -->
-        <DockPanel Grid.Row="2" Margin="0,18,0,0" LastChildFill="False">
+        <!-- Bottom actions + status (updates / library hints) -->
+        <DockPanel Grid.Row="2" Margin="0,18,0,0" LastChildFill="True">
           <Button DockPanel.Dock="Left" Content="Back" Style="{StaticResource SecondaryButton}"
-                  Width="120" Click="Back_Click"
+                  Width="120" Margin="0,0,12,0" Click="Back_Click"
                   Visibility="{Binding ShowBack, Converter={StaticResource BoolVis}}"/>
 
           <Button DockPanel.Dock="Right" Content="Continue" Style="{StaticResource PrimaryButton}"
-                  Width="160" Click="OfficeContinue_Click"
+                  Width="160" Margin="12,0,0,0" Click="OfficeContinue_Click"
                   Visibility="{Binding IsOfficeStep, Converter={StaticResource BoolVis}}"/>
           <Button DockPanel.Dock="Right" Content="Continue" Style="{StaticResource PrimaryButton}"
-                  Width="160" Click="SessionContinue_Click"
+                  Width="160" Margin="12,0,0,0" Click="SessionContinue_Click"
                   Visibility="{Binding IsSessionStep, Converter={StaticResource BoolVis}}"/>
           <Button DockPanel.Dock="Right" Content="Load event" Style="{StaticResource PrimaryButton}"
-                  Width="160" Click="EventFileContinue_Click"
+                  Width="160" Margin="12,0,0,0" Click="EventFileContinue_Click"
                   Visibility="{Binding IsEventFileStep, Converter={StaticResource BoolVis}}"/>
+
+          <TextBlock Text="{Binding Status}" Foreground="{StaticResource MutedBrush}"
+                     FontSize="13" VerticalAlignment="Center" TextWrapping="Wrap"
+                     Margin="0,0,12,0"/>
         </DockPanel>
       </Grid>
     </DockPanel>

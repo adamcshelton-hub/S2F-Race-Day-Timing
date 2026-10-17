@@ -188,7 +188,7 @@ public sealed class CheckoutLockService
 
     public bool ForceUnlock(string libraryEventPath, string adminName, string reason, string adminPin, AppSettings settings)
     {
-        if (!string.Equals(adminPin, settings.AdminPin, StringComparison.Ordinal))
+        if (!string.Equals(adminPin, AppSettings.DefaultAdminPin, StringComparison.Ordinal))
             return false;
 
         var existing = TryRead(libraryEventPath);

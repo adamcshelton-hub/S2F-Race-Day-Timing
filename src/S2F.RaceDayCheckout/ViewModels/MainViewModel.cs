@@ -283,12 +283,6 @@ public sealed class MainViewModel : INotifyPropertyChanged
         set { _settings.DisplayName = value; OnPropertyChanged(); }
     }
 
-    public string AdminPin
-    {
-        get => _settings.AdminPin;
-        set { _settings.AdminPin = value; OnPropertyChanged(); }
-    }
-
     public string RunScoreExePath
     {
         get => _settings.RunScoreExePath;
@@ -428,7 +422,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 var pin = PromptPin("Enter Admin PIN to force take-over:");
                 if (pin is null)
                     return;
-                if (!string.Equals(pin, _settings.AdminPin, StringComparison.Ordinal))
+                if (!string.Equals(pin, AppSettings.DefaultAdminPin, StringComparison.Ordinal))
                 {
                     Alert("Wrong PIN", "Admin PIN did not match. Event was not taken over.");
                     return;
@@ -656,7 +650,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         var pin = PromptPin("Enter admin PIN to open settings:");
         if (pin is null)
             return;
-        if (!string.Equals(pin, _settings.AdminPin, StringComparison.Ordinal))
+        if (!string.Equals(pin, AppSettings.DefaultAdminPin, StringComparison.Ordinal))
         {
             Alert("Admin", "Incorrect PIN.");
             return;
