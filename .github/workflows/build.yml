@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 jobs:
   test:
@@ -57,29 +58,56 @@ jobs:
           /p:InformationalVersion=${{ steps.ver.outputs.version }}
           -o publish/${{ matrix.rid }}
 
-      - name: Sign binaries (optional Authenticode)
-        env:
-          WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
-          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+      - name: Check Artifact Signing config
+        id: signing
         shell: pwsh
+        env:
+          ENDPOINT: ${{ vars.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+          ACCOUNT: ${{ vars.AZURE_TRUSTED_SIGNING_ACCOUNT }}
+          PROFILE: ${{ vars.AZURE_TRUSTED_SIGNING_PROFILE }}
+          CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERT_PFX_BASE64)) {
-            Write-Host "No WINDOWS_CERT_PFX_BASE64 secret — skipping code signing (SmartScreen may warn until a cert is added)."
-            exit 0
+          $ready = -not [string]::IsNullOrWhiteSpace($env:ENDPOINT) `
+            -and -not [string]::IsNullOrWhiteSpace($env:ACCOUNT) `
+            -and -not [string]::IsNullOrWhiteSpace($env:PROFILE) `
+            -and -not [string]::IsNullOrWhiteSpace($env:CLIENT_ID) `
+            -and -not [string]::IsNullOrWhiteSpace($env:TENANT_ID) `
+            -and -not [string]::IsNullOrWhiteSpace($env:SUBSCRIPTION_ID)
+          if ($ready) {
+            "enabled=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            Write-Host "Azure Artifact Signing configured."
+          } else {
+            "enabled=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            Write-Host "Azure Artifact Signing vars/secrets incomplete — packing unsigned (SmartScreen may warn)."
           }
-          $pfx = Join-Path $env:RUNNER_TEMP "codesign.pfx"
-          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERT_PFX_BASE64))
-          $signtool = "${env:ProgramFiles(x86)}\Windows Kits\10\bin\10.0.22621.0\x64\signtool.exe"
-          if (-not (Test-Path $signtool)) {
-            $signtool = (Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe | Where-Object { $_.FullName -match '\\x64\\' } | Select-Object -First 1).FullName
-          }
-          if (-not $signtool) { throw "signtool.exe not found" }
-          $files = Get-ChildItem -Path "publish/${{ matrix.rid }}" -Recurse -Include *.exe,*.dll
-          foreach ($f in $files) {
-            & $signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /f $pfx /p $env:WINDOWS_CERT_PASSWORD $f.FullName
-            if ($LASTEXITCODE -ne 0) { throw "signtool failed for $($f.Name)" }
-          }
-          Write-Host "Signed $($files.Count) binaries."
+
+      - name: Azure login (OIDC)
+        if: steps.signing.outputs.enabled == 'true'
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Write Artifact Signing metadata
+        if: steps.signing.outputs.enabled == 'true'
+        shell: pwsh
+        env:
+          ENDPOINT: ${{ vars.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+          ACCOUNT: ${{ vars.AZURE_TRUSTED_SIGNING_ACCOUNT }}
+          PROFILE: ${{ vars.AZURE_TRUSTED_SIGNING_PROFILE }}
+        run: |
+          $meta = @{
+            Endpoint = $env:ENDPOINT.TrimEnd('/')
+            CodeSigningAccountName = $env:ACCOUNT
+            CertificateProfileName = $env:PROFILE
+          } | ConvertTo-Json
+          $path = Join-Path $env:GITHUB_WORKSPACE "trusted-signing.json"
+          Set-Content -Path $path -Value $meta -Encoding utf8
+          Write-Host "Wrote $path"
+          Write-Host $meta
 
       - name: Install vpk
         run: dotnet tool install -g vpk --version 1.2.161
@@ -89,14 +117,25 @@ jobs:
         run: |
           $channel = "${{ matrix.rid }}"
           $version = "${{ steps.ver.outputs.version }}"
-          vpk pack `
-            --packId S2F.RaceDayCheckout `
-            --packVersion $version `
-            --packDir "publish/$channel" `
-            --mainExe S2F.RaceDayCheckout.exe `
-            --packTitle "S2F Race Day Timing" `
-            --channel $channel `
-            --outputDir "releases/$channel"
+          $args = @(
+            "pack",
+            "--packId", "S2F.RaceDayCheckout",
+            "--packVersion", $version,
+            "--packDir", "publish/$channel",
+            "--mainExe", "S2F.RaceDayCheckout.exe",
+            "--packTitle", "S2F Race Day Timing",
+            "--channel", $channel,
+            "--outputDir", "releases/$channel"
+          )
+          if ("${{ steps.signing.outputs.enabled }}" -eq "true") {
+            $meta = Join-Path $env:GITHUB_WORKSPACE "trusted-signing.json"
+            $args += @("--azureTrustedSignFile", $meta)
+            Write-Host "Packing with Azure Artifact Signing…"
+          } else {
+            Write-Host "Packing without code signing…"
+          }
+          & vpk @args
+          if ($LASTEXITCODE -ne 0) { throw "vpk pack failed with exit $LASTEXITCODE" }
 
       - name: Upload pack artifact
         uses: actions/upload-artifact@v4

@@ -37,22 +37,31 @@ CI (`build.yml`):
 
 - Tests on every PR/push
 - On `main` push: packs win-x64 + win-arm64 (CI version) as artifacts
-- On **published Release**: packs, optionally **code-signs**, uploads Velopack packages to that Release
+- On **published Release**: packs, **Azure Artifact Signing**, uploads Velopack packages to that Release
 
 ### Code signing (SmartScreen)
 
-Add repo secrets:
+Uses [Azure Artifact Signing](https://learn.microsoft.com/en-us/azure/artifact-signing/) via Velopack `--azureTrustedSignFile` and GitHub OIDC (`azure/login`). No PFX.
 
-| Secret | Contents |
-|--------|----------|
-| `WINDOWS_CERT_PFX_BASE64` | Base64 of your `.pfx` (Authenticode) |
-| `WINDOWS_CERT_PASSWORD` | PFX password |
+**Repo secrets**
 
-```powershell
-[Convert]::ToBase64String([IO.File]::ReadAllBytes(".\codesign.pfx")) | Set-Clipboard
-```
+| Secret | From |
+|--------|------|
+| `AZURE_CLIENT_ID` | Entra App registration → Application (client) ID |
+| `AZURE_TENANT_ID` | Entra App registration → Directory (tenant) ID |
+| `AZURE_SUBSCRIPTION_ID` | Azure subscription ID |
 
-Without these secrets, Setup still builds; Windows may show “Unknown publisher” until a cert is configured.
+**Repo variables**
+
+| Variable | Example |
+|----------|---------|
+| `AZURE_TRUSTED_SIGNING_ENDPOINT` | `https://eus.codesigning.azure.net` (must match account region) |
+| `AZURE_TRUSTED_SIGNING_ACCOUNT` | Artifact Signing account name |
+| `AZURE_TRUSTED_SIGNING_PROFILE` | Certificate profile name |
+
+Also required once in Azure: federated credentials on that app for this repo (`main` + tags/releases), and role **Artifact Signing Certificate Profile Signer** on the signing account.
+
+If secrets/vars are missing, packs still succeed unsigned (SmartScreen may warn).
 
 ## Dev / Parallels
 
