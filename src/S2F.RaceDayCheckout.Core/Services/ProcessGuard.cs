@@ -63,6 +63,46 @@ public sealed class ProcessGuard : IProcessGuard
     public IReadOnlyList<string> GetRunScoreProcessNames() =>
         EnumerateMatching(IsRunScoreProcess);
 
+    /// <summary>
+    /// Poll until blocking timing apps exit. RSServer often lingers several seconds after
+    /// the RunScore window is closed while it flushes files.
+    /// </summary>
+    /// <returns>Empty when clear; otherwise the names still running when <paramref name="timeout"/> elapsed.</returns>
+    public async Task<IReadOnlyList<string>> WaitForBlockingClearedAsync(
+        TimeSpan timeout,
+        IProgress<string>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        IReadOnlyList<string> blocking = GetBlockingProcessNames();
+        if (blocking.Count == 0)
+            return blocking;
+
+        progress?.Report(FormatWaitingMessage(blocking));
+
+        while (DateTime.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await Task.Delay(400, cancellationToken).ConfigureAwait(false);
+
+            blocking = GetBlockingProcessNames();
+            if (blocking.Count == 0)
+                return blocking;
+
+            progress?.Report(FormatWaitingMessage(blocking));
+        }
+
+        return blocking;
+    }
+
+    private static string FormatWaitingMessage(IReadOnlyList<string> blocking)
+    {
+        var names = string.Join(", ", blocking);
+        if (blocking.Any(n => IsRunScoreProcess(n)))
+            return $"Waiting for RunScore to finish closing ({names})…";
+        return $"Waiting for timing apps to close ({names})…";
+    }
+
     public bool IsBlocking(string processName)
     {
         if (string.IsNullOrWhiteSpace(processName))

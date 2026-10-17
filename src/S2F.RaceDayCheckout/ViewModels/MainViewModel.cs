@@ -533,6 +533,25 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
         try
         {
+            // RSServer often keeps running a few seconds after the RunScore window closes.
+            ProgressText = "Checking that RunScore is closed…";
+            var stillRunning = await _processGuard.WaitForBlockingClearedAsync(
+                TimeSpan.FromSeconds(25),
+                new Progress<string>(s => ProgressText = s));
+            if (stillRunning.Count > 0)
+            {
+                var names = string.Join(", ", stillRunning);
+                await ShowBusyResultAsync(
+                    "Still open",
+                    "RunScore is still running in the background"
+                    + (stillRunning.Any(ProcessGuard.IsRunScoreProcess)
+                        ? " (RSServer can take a moment after you close the window)."
+                        : ".")
+                    + $"\n\nStill detected: {names}\n\n"
+                    + "Wait a few seconds and tap Finish again. If it keeps happening, end the process in Task Manager.");
+                return;
+            }
+
             var copyProgress = new Progress<CopyProgress>(p =>
                 ProgressText = p.FilesCopied > 0 ? $"Saving race files… ({p.FilesCopied})" : "Saving race files…");
             var statusProgress = new Progress<string>(s => ProgressText = FriendlyProgress(s));
@@ -547,9 +566,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
             if (!result.Success && result.BlockingProcesses.Count > 0)
             {
+                var names = string.Join(", ", result.BlockingProcesses);
                 await ShowBusyResultAsync(
                     "Still open",
-                    "Close RunScore and Timing & Scoring first, then tap Finish again.");
+                    "RunScore or Timing & Scoring reopened (or is still shutting down).\n\n"
+                    + $"Still detected: {names}\n\n"
+                    + "Close it, wait a moment, then tap Finish again.");
                 return;
             }
 
