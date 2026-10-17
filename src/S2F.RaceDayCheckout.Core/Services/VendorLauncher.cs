@@ -29,7 +29,7 @@ public sealed class VendorLauncher
 
         // Zero timer steps: enforce company SOP prefs (alternate Backup folder, 1-min auto-save, etc.)
         // before RSServer loads the registry into memory.
-        var prefResult = _prefs.ApplySop(active.BackupPath);
+        var prefResult = _prefs.ApplySop(active.BackupPath, settings.RaceDayRoot);
         try
         {
             AutosaveMirrorService.RecoverMisplacedBackupSiblingsAsync(
@@ -95,41 +95,211 @@ public sealed class VendorLauncher
 
     public LaunchResult LaunchTimingAndScoring(ActiveCheckout active, AppSettings settings)
     {
-        var eventPath = Path.Combine(active.ActivePath, active.PrimaryEventFile);
-        if (!File.Exists(eventPath))
-            return new LaunchResult { Success = false, Message = $"Primary .event missing: {eventPath}" };
+        Directory.CreateDirectory(active.ActivePath);
+
+        // Prefer a real .event on disk (may have been Save As'd after a bare launch).
+        var primary = ResolvePrimaryEventFile(active);
+        var eventPath = string.IsNullOrWhiteSpace(primary)
+            ? null
+            : Path.Combine(active.ActivePath, primary);
 
         try
         {
-            if (!string.IsNullOrWhiteSpace(settings.TimingAndScoringExePath)
-                && File.Exists(settings.TimingAndScoringExePath))
+            var exe = ResolveTimingAndScoringExe(settings);
+            if (eventPath is not null && File.Exists(eventPath))
             {
-                Process.Start(new ProcessStartInfo
+                if (exe is not null)
                 {
-                    FileName = settings.TimingAndScoringExePath,
-                    Arguments = $"\"{eventPath}\"",
-                    UseShellExecute = true
-                });
-            }
-            else
-            {
-                Process.Start(new ProcessStartInfo
+                    Process.Start(new ProcessStartInfo
+                    {
+                        FileName = exe,
+                        Arguments = $"\"{eventPath}\"",
+                        WorkingDirectory = active.ActivePath,
+                        UseShellExecute = true
+                    });
+                }
+                else
                 {
-                    FileName = eventPath,
-                    UseShellExecute = true
-                });
+                    Process.Start(new ProcessStartInfo
+                    {
+                        FileName = eventPath,
+                        UseShellExecute = true
+                    });
+                }
+
+                return new LaunchResult
+                {
+                    Success = true,
+                    Message = $"Launched Timing & Scoring with {primary}."
+                };
             }
 
+            // No .event yet (Templates): launch bare T&S so staff can Start a new event → Save As.
+            if (exe is null)
+            {
+                return new LaunchResult
+                {
+                    Success = false,
+                    Message = "Timing & Scoring path is not set.\n\n"
+                              + "Set it in Admin (triple-click the logo), then try Open Timing & Scoring again."
+                };
+            }
+
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = exe,
+                WorkingDirectory = active.ActivePath,
+                UseShellExecute = true
+            });
+
+            // Folder map is shown at checkout (no .event) — don't popup again over T&S splash.
             return new LaunchResult
             {
                 Success = true,
-                Message = $"Launched Timing & Scoring with {active.PrimaryEventFile}."
+                Message = "Launched Timing & Scoring (no .event yet)."
             };
         }
         catch (Exception ex)
         {
             return new LaunchResult { Success = false, Message = "Failed to launch T&S: " + ex.Message };
         }
+    }
+
+    /// <summary>Suggested Save As filename when creating a .event mid-week.</summary>
+    public static string SuggestEventFileName(ActiveCheckout active) =>
+        SuggestEventFileNameFromRaceName(
+            string.IsNullOrWhiteSpace(active.SessionName) ? "Race" : active.SessionName);
+
+    /// <summary>Suggested .event name from race name or session folder (strips year prefix).</summary>
+    public static string SuggestEventFileNameFromRaceName(string raceOrSessionName)
+    {
+        var baseName = string.IsNullOrWhiteSpace(raceOrSessionName) ? "Race" : raceOrSessionName.Trim();
+        // Session folders are often "2026 - Race Name" — strip year prefix for a cleaner .event name.
+        var dash = baseName.IndexOf(" - ", StringComparison.Ordinal);
+        if (dash > 0
+            && dash <= 4
+            && int.TryParse(baseName[..dash], out _))
+            baseName = baseName[(dash + 3)..].Trim();
+
+        foreach (var c in Path.GetInvalidFileNameChars())
+            baseName = baseName.Replace(c, '-');
+        return baseName + ".event";
+    }
+
+    /// <summary>
+    /// Visual folder map for the T&S Save dialog (This PC → drive → … → Active).
+    /// Clipboard paste does not work in T&S Save As — staff must click through.
+    /// </summary>
+    public static string FormatSaveAsFolderGuide(ActiveCheckout active) =>
+        FormatSaveAsFolderGuide(active.ActivePath, SuggestEventFileName(active));
+
+    public static string FormatSaveAsFolderGuide(string activePath, string suggestedEventFileName)
+    {
+        var suggested = string.IsNullOrWhiteSpace(suggestedEventFileName)
+            ? "Race.event"
+            : suggestedEventFileName.Trim();
+        // Split on both separators so guides match Windows Save As even when unit-tested on macOS.
+        var parts = activePath
+            .Trim()
+            .TrimEnd('\\', '/')
+            .Split(new[] { '\\', '/' }, StringSplitOptions.RemoveEmptyEntries)
+            .ToList();
+
+        var lines = new List<string>
+        {
+            "No Timing & Scoring .event yet (common for Templates).",
+            "Checkout anyway — after you build in T&S, Save As here",
+            "(T&S often opens Documents — don't leave it there):",
+            "",
+            "In the Save dialog (left side):",
+            "  click This PC  —  not Documents",
+            "",
+            "Then open folders in this order:"
+        };
+
+        var indent = "  ";
+        lines.Add(indent + "This PC");
+        indent += "  ";
+
+        for (var i = 0; i < parts.Count; i++)
+        {
+            var part = parts[i];
+            var label = part.Length == 2 && part[1] == ':'
+                ? $"Local Disk ({part})"
+                : part;
+            var isTargetFolder = i == parts.Count - 1;
+            lines.Add(indent + label + (isTargetFolder ? "   ← open this folder" : ""));
+            indent += "  ";
+        }
+
+        lines.Add(indent + suggested + "   ← File name");
+        return string.Join("\n", lines);
+    }
+
+    public static string? ResolvePrimaryEventFile(ActiveCheckout active)
+    {
+        if (!string.IsNullOrWhiteSpace(active.PrimaryEventFile)
+            && File.Exists(Path.Combine(active.ActivePath, active.PrimaryEventFile)))
+            return active.PrimaryEventFile;
+
+        return EventFileSelector.ChoosePrimary(EventFileSelector.ListEventFiles(active.ActivePath));
+    }
+
+    private static string? ResolveTimingAndScoringExe(AppSettings settings)
+    {
+        if (!string.IsNullOrWhiteSpace(settings.TimingAndScoringExePath)
+            && File.Exists(settings.TimingAndScoringExePath))
+            return settings.TimingAndScoringExePath;
+
+        var names = new[]
+        {
+            "mylaps_ts_launch.exe",
+            "TimingAndScoring.exe",
+            "TimingAndScoring64.exe",
+            "MyLaps Timing and Scoring.exe"
+        };
+        var roots = new List<string>();
+        var pf = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+        var pf86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+        foreach (var root in new[] { pf, pf86 })
+        {
+            if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(root))
+                continue;
+            roots.Add(root);
+            try
+            {
+                roots.AddRange(Directory.GetDirectories(root, "*MYLAPS*", SearchOption.TopDirectoryOnly));
+                roots.AddRange(Directory.GetDirectories(root, "*MyLaps*", SearchOption.TopDirectoryOnly));
+            }
+            catch
+            {
+                // permission
+            }
+        }
+
+        foreach (var root in roots)
+        {
+            foreach (var name in names)
+            {
+                var candidate = Path.Combine(root, name);
+                if (File.Exists(candidate))
+                    return candidate;
+            }
+
+            try
+            {
+                var hit = Directory.EnumerateFiles(root, "mylaps_ts_launch.exe", SearchOption.AllDirectories)
+                    .FirstOrDefault();
+                if (hit is not null)
+                    return hit;
+            }
+            catch
+            {
+                // permission
+            }
+        }
+
+        return null;
     }
 
     private static string? FindRaceFile(string runScoreDir)

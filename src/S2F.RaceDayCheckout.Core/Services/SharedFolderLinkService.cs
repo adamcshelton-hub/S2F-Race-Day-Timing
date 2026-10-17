@@ -100,6 +100,68 @@ public sealed class SharedFolderLinkService
     }
 
     /// <summary>
+    /// Graph mode: real local DB's folder under Active (app publishes CSVs via Graph).
+    /// Replaces the OneDrive junction used when Desktop sync is the transport.
+    /// </summary>
+    public LinkResult EnsureLocalDbsFolder(string activeSessionPath, string? seedFromLibrarySession = null)
+    {
+        if (string.IsNullOrWhiteSpace(activeSessionPath))
+        {
+            return new LinkResult { Success = false, Message = "Active session path is empty." };
+        }
+
+        var link = Path.Combine(activeSessionPath, DbsFolderName);
+        try
+        {
+            Directory.CreateDirectory(activeSessionPath);
+
+            if (Directory.Exists(link) || File.Exists(link))
+            {
+                if (IsReparsePoint(link))
+                {
+                    Directory.Delete(link);
+                }
+                else
+                {
+                    return new LinkResult
+                    {
+                        Success = true,
+                        Created = false,
+                        Message = "Active DB's is a local folder (Graph publish)."
+                    };
+                }
+            }
+
+            Directory.CreateDirectory(link);
+
+            if (!string.IsNullOrWhiteSpace(seedFromLibrarySession))
+            {
+                var seed = Path.Combine(seedFromLibrarySession, DbsFolderName);
+                if (Directory.Exists(seed) && !IsReparsePoint(seed))
+                {
+                    foreach (var file in Directory.EnumerateFiles(seed, "*", SearchOption.TopDirectoryOnly))
+                    {
+                        var dest = Path.Combine(link, Path.GetFileName(file));
+                        if (!File.Exists(dest))
+                            File.Copy(file, dest);
+                    }
+                }
+            }
+
+            return new LinkResult
+            {
+                Success = true,
+                Created = true,
+                Message = "Active DB's is a local folder; app will publish to OneDrive via Graph."
+            };
+        }
+        catch (Exception ex)
+        {
+            return new LinkResult { Success = false, Message = "Could not create local DB's: " + ex.Message };
+        }
+    }
+
+    /// <summary>
     /// Remove Active DB's link only (never delete OneDrive DB's contents).
     /// Call before wiping the Active tree on Finish.
     /// </summary>

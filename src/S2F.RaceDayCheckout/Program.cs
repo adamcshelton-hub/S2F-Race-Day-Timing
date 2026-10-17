@@ -12,7 +12,11 @@ public static class Program
         // Must run before WPF starts — handles install/update hooks.
         VelopackApp.Build()
             .SetAppUserModelId(TaskbarPinPrompt.AppUserModelId)
-            .OnFirstRun(_ => TaskbarPinPrompt.MarkOfferPending())
+            .OnFirstRun(_ =>
+            {
+                DefenderExclusionPrompt.MarkOfferPending();
+                TaskbarPinPrompt.MarkOfferPending();
+            })
             .Run();
 
         var app = new App();

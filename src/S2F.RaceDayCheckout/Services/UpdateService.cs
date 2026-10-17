@@ -73,7 +73,7 @@ public static class UpdateService
             if (apply)
                 mgr.ApplyUpdatesAndRestart(update.TargetFullRelease);
             else
-                setStatus?.Invoke($"v{target} ready — restart from Admin → Check for updates when convenient");
+                setStatus?.Invoke($"v{target} ready — use Check for updates on the main screen when convenient");
         }
         catch (Exception ex)
         {

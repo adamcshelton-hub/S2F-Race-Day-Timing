@@ -31,16 +31,17 @@ public sealed class SettingsStore : ISettingsStore
     public AppSettings Load()
     {
         if (!File.Exists(_path))
-            return new AppSettings();
+            return ApplyFixedPaths(new AppSettings());
 
         try
         {
             var json = File.ReadAllText(_path);
-            return JsonSerializer.Deserialize<AppSettings>(json, JsonOptions) ?? new AppSettings();
+            var settings = JsonSerializer.Deserialize<AppSettings>(json, JsonOptions) ?? new AppSettings();
+            return ApplyFixedPaths(settings);
         }
         catch
         {
-            return new AppSettings();
+            return ApplyFixedPaths(new AppSettings());
         }
     }
 
@@ -50,6 +51,31 @@ public sealed class SettingsStore : ISettingsStore
         if (!string.IsNullOrEmpty(dir))
             Directory.CreateDirectory(dir);
         // AdminPin is JsonIgnore — never persisted; always AppSettings.DefaultAdminPin at runtime.
+        // Library + RaceDay roots are company-fixed under C:\S2F — never persist overrides.
+        ApplyFixedPaths(settings);
         File.WriteAllText(_path, JsonSerializer.Serialize(settings, JsonOptions));
+    }
+
+    /// <summary>
+    /// Graph-era installs always use <c>C:\S2F\Library</c> and <c>C:\S2F\RaceDay</c>.
+    /// Migrates older settings that pointed at OneDrive Desktop paths.
+    /// </summary>
+    public static AppSettings ApplyFixedPaths(AppSettings settings)
+    {
+        settings.LibraryRoot = AppSettings.DefaultLibraryRoot;
+        settings.RaceDayRoot = AppSettings.DefaultRaceDayRoot;
+        // Mistaken default: Explorer label "Start 2 - Personal" is the OD sync root, not a Graph child.
+        // Offices (Test Office, Memphis, …) live at My files — empty GraphDriveRoot.
+        if (string.Equals(settings.GraphDriveRoot?.Trim(), "Start 2 - Personal", StringComparison.OrdinalIgnoreCase))
+            settings.GraphDriveRoot = string.Empty;
+        return settings;
+    }
+
+    /// <summary>Load + persist path/Graph-root migrations so Admin and next launch stay correct.</summary>
+    public AppSettings LoadAndPersistMigrations()
+    {
+        var settings = Load();
+        Save(settings);
+        return settings;
     }
 }

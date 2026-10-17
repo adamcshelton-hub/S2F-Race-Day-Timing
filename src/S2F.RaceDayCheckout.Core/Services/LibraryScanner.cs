@@ -61,6 +61,97 @@ public sealed class LibraryScanner
             .ToList();
     }
 
+    /// <summary>
+    /// Past Races drill-down: immediate child folders that are not session leaves,
+    /// plus session leaves directly under <paramref name="folderPath"/> (not deep).
+    /// </summary>
+    public IReadOnlyList<EventPackInfo> ListBrowserEntries(
+        string libraryRoot,
+        string officeName,
+        string folderPath)
+    {
+        if (!Directory.Exists(folderPath))
+            return Array.Empty<EventPackInfo>();
+
+        var officeRoot = Path.Combine(libraryRoot, officeName);
+        var results = new List<EventPackInfo>();
+
+        foreach (var sessionPath in FindSessionLeavesShallow(folderPath))
+        {
+            var pack = BuildPack(officeName, officeRoot, sessionPath);
+            pack.Lock = _locks.TryRead(sessionPath);
+            results.Add(pack);
+        }
+
+        var sessionSet = new HashSet<string>(
+            results.Select(r => r.Path),
+            StringComparer.OrdinalIgnoreCase);
+
+        foreach (var child in ListImmediateChildFolders(folderPath))
+        {
+            if (sessionSet.Contains(child))
+                continue;
+            if (_paths.IsSessionLeaf(child))
+                continue;
+
+            var name = Path.GetFileName(child);
+            var relative = Path.GetRelativePath(officeRoot, child);
+            results.Add(new EventPackInfo
+            {
+                Office = officeName,
+                ParentEvent = name,
+                SessionName = name,
+                RelativePath = relative,
+                Path = child,
+                IsNavigationFolder = true
+            });
+        }
+
+        return results
+            .OrderByDescending(e => e.SessionName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    /// <summary>Immediate child directories, skipping RUNSCORE / DB's / Pre-Race / ._ / _autosave.</summary>
+    public static IReadOnlyList<string> ListImmediateChildFolders(string folderPath)
+    {
+        if (!Directory.Exists(folderPath))
+            return Array.Empty<string>();
+
+        return Directory.GetDirectories(folderPath)
+            .Where(d =>
+            {
+                var name = Path.GetFileName(d);
+                return !string.Equals(name, PathService.RunScoreFolderName, StringComparison.OrdinalIgnoreCase)
+                       && !string.Equals(name, "DB's", StringComparison.OrdinalIgnoreCase)
+                       && !string.Equals(name, "Pre-Race", StringComparison.OrdinalIgnoreCase)
+                       && !name.StartsWith("._", StringComparison.Ordinal)
+                       && !string.Equals(name, PathService.AutosaveFolderName, StringComparison.OrdinalIgnoreCase);
+            })
+            .OrderByDescending(d => Path.GetFileName(d), StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    /// <summary>Session leaves whose parent is exactly <paramref name="folderPath"/> (not deeper).</summary>
+    public IEnumerable<string> FindSessionLeavesShallow(string folderPath)
+    {
+        if (!Directory.Exists(folderPath))
+            yield break;
+
+        foreach (var child in Directory.GetDirectories(folderPath))
+        {
+            var name = Path.GetFileName(child);
+            if (string.Equals(name, PathService.RunScoreFolderName, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(name, "DB's", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(name, "Pre-Race", StringComparison.OrdinalIgnoreCase)
+                || name.StartsWith("._", StringComparison.Ordinal))
+                continue;
+
+            if (_paths.IsSessionLeaf(child))
+                yield return child;
+        }
+    }
+
     /// <summary>Backward-compatible alias.</summary>
     public IReadOnlyList<EventPackInfo> ListEvents(string libraryRoot, string? officeFilter = null, string? search = null) =>
         ListSessions(libraryRoot, officeFilter, search);

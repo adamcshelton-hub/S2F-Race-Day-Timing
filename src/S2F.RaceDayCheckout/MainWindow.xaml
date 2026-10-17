@@ -6,6 +6,7 @@
         Icon="pack://application:,,,/Assets/logo-mark.png"
         Height="720" Width="920"
         MinHeight="560" MinWidth="720"
+        WindowState="Maximized"
         WindowStartupLocation="CenterScreen"
         UseLayoutRounding="True"
         SnapsToDevicePixels="True"
@@ -17,19 +18,29 @@
 
   <Grid>
     <DockPanel>
-      <!-- Header: orange 2 mark + product title -->
-      <Border DockPanel.Dock="Top" Background="{StaticResource HeaderBrush}" Padding="20,14"
-              MouseLeftButtonDown="Logo_MouseLeftButtonDown"
-              ToolTip="Triple-click for admin settings">
-        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-          <Image Source="pack://application:,,,/Assets/logo-mark.png"
-                 Width="40" Height="40" Stretch="Uniform" Margin="0,0,14,0"
-                 SnapsToDevicePixels="True"
-                 RenderOptions.BitmapScalingMode="HighQuality"/>
-          <TextBlock Text="Start 2 Finish Race Day Timing"
-                     Foreground="White" FontSize="20" FontWeight="Bold"
-                     VerticalAlignment="Center"/>
-        </StackPanel>
+      <!-- Header: orange 2 mark + product title; New event link only on office step -->
+      <Border DockPanel.Dock="Top" Background="{StaticResource HeaderBrush}" Padding="20,14">
+        <DockPanel LastChildFill="True">
+          <TextBlock DockPanel.Dock="Right" VerticalAlignment="Center" FontSize="14"
+                     Visibility="{Binding ShowNewEventLink, Converter={StaticResource BoolVis}}">
+            <Hyperlink Click="NewEvent_Click" Foreground="{StaticResource AccentBrush}"
+                       TextDecorations="Underline" Cursor="Hand"
+                       ToolTip="Copy a Template or Past Race and set race name, date, and %resultsid%.">
+              Set Up a New Event
+            </Hyperlink>
+          </TextBlock>
+          <StackPanel Orientation="Horizontal" VerticalAlignment="Center"
+                      MouseLeftButtonDown="Logo_MouseLeftButtonDown"
+                      ToolTip="Triple-click logo for admin settings">
+            <Image Source="pack://application:,,,/Assets/logo-mark.png"
+                   Width="40" Height="40" Stretch="Uniform" Margin="0,0,14,0"
+                   SnapsToDevicePixels="True"
+                   RenderOptions.BitmapScalingMode="HighQuality"/>
+            <TextBlock Text="Start 2 Finish Race Day Timing"
+                       Foreground="White" FontSize="20" FontWeight="Bold"
+                       VerticalAlignment="Center"/>
+          </StackPanel>
+        </DockPanel>
       </Border>
 
       <!-- Body -->
@@ -46,44 +57,71 @@
                      FontSize="15" Margin="0,6,0,0"/>
         </StackPanel>
 
-        <!-- OFFICE — same single-column row style as event picker -->
-        <ListBox x:Name="OfficeList" Grid.Row="1"
-                 Style="{StaticResource StepListBox}"
-                 ItemsSource="{Binding Offices}"
-                 Visibility="{Binding IsOfficeStep, Converter={StaticResource BoolVis}}"
-                 MouseDoubleClick="Office_DoubleClick">
-          <ListBox.ItemTemplate>
-            <DataTemplate>
-              <TextBlock Text="{Binding}" FontSize="15" FontWeight="SemiBold" TextWrapping="Wrap"/>
-            </DataTemplate>
-          </ListBox.ItemTemplate>
-        </ListBox>
+        <!-- OFFICE — OneDrive ready check + office list -->
+        <DockPanel Grid.Row="1"
+                   Visibility="{Binding IsOfficeStep, Converter={StaticResource BoolVis}}">
+          <Border DockPanel.Dock="Top" CornerRadius="8" Padding="14,12" Margin="0,0,0,14"
+                  BorderThickness="1"
+                  Background="{Binding GraphReadyBannerBackground}"
+                  BorderBrush="{Binding GraphReadyBannerBorder}">
+            <DockPanel LastChildFill="True">
+              <TextBlock DockPanel.Dock="Left" FontWeight="SemiBold" FontSize="14"
+                         VerticalAlignment="Center" Margin="0,0,12,0"
+                         Text="{Binding GraphReadyLabel}"/>
+              <TextBlock Text="{Binding GraphLandingStatus}" FontSize="14" TextWrapping="Wrap"
+                         VerticalAlignment="Center"/>
+            </DockPanel>
+          </Border>
+          <ListBox x:Name="OfficeList"
+                   Style="{StaticResource StepListBox}"
+                   ItemsSource="{Binding Offices}"
+                   MouseDoubleClick="Office_DoubleClick">
+            <ListBox.ItemTemplate>
+              <DataTemplate>
+                <TextBlock Text="{Binding}" FontSize="15" FontWeight="SemiBold" TextWrapping="Wrap"/>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </DockPanel>
 
         <!-- SESSION / EVENT -->
-        <ListBox x:Name="SessionList" Grid.Row="1"
-                 Style="{StaticResource StepListBox}"
-                 ItemsSource="{Binding Sessions}"
-                 SelectedItem="{Binding SelectedSession}"
-                 Visibility="{Binding IsSessionStep, Converter={StaticResource BoolVis}}"
-                 MouseDoubleClick="Session_DoubleClick">
-          <ListBox.ItemTemplate>
-            <DataTemplate>
-              <Grid>
-                <Grid.ColumnDefinitions>
-                  <ColumnDefinition Width="*"/>
-                  <ColumnDefinition Width="Auto"/>
-                </Grid.ColumnDefinitions>
-                <StackPanel>
-                  <TextBlock Text="{Binding DisplayName}" FontSize="15" FontWeight="SemiBold"/>
-                  <TextBlock Text="{Binding PrimaryEventFile}" Foreground="{StaticResource MutedBrush}"
-                             FontSize="11" Margin="0,1,0,0"/>
-                </StackPanel>
-                <TextBlock Grid.Column="1" Text="{Binding DisplayLock}" VerticalAlignment="Center"
-                           Foreground="{StaticResource MutedBrush}" FontSize="11" Margin="12,0,0,0"/>
-              </Grid>
-            </DataTemplate>
-          </ListBox.ItemTemplate>
-        </ListBox>
+        <Grid Grid.Row="1" Visibility="{Binding IsSessionStep, Converter={StaticResource BoolVis}}">
+          <ListBox x:Name="SessionList"
+                   Style="{StaticResource StepListBox}"
+                   ItemsSource="{Binding Sessions}"
+                   SelectedItem="{Binding SelectedSession}"
+                   Visibility="{Binding HasSessions, Converter={StaticResource BoolVis}}"
+                   MouseDoubleClick="Session_DoubleClick">
+            <ListBox.ItemTemplate>
+              <DataTemplate>
+                <Grid>
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                  </Grid.ColumnDefinitions>
+                  <StackPanel>
+                    <TextBlock Text="{Binding DisplayName}" FontSize="15" FontWeight="SemiBold"/>
+                    <TextBlock Text="{Binding PrimaryEventFile}" Foreground="{StaticResource MutedBrush}"
+                               FontSize="11" Margin="0,1,0,0"/>
+                  </StackPanel>
+                  <TextBlock Grid.Column="1" Text="{Binding DisplayLock}" VerticalAlignment="Center"
+                             Foreground="{StaticResource MutedBrush}" FontSize="11" Margin="12,0,0,0"/>
+                </Grid>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+          <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" MaxWidth="480"
+                      Visibility="{Binding ShowEmptySessions, Converter={StaticResource BoolVis}}">
+            <TextBlock Text="No events loaded for this office"
+                       FontSize="20" FontWeight="SemiBold" TextAlignment="Center" TextWrapping="Wrap"/>
+            <TextBlock Margin="0,10,0,18" FontSize="14" TextAlignment="Center" TextWrapping="Wrap"
+                       Foreground="{StaticResource MutedBrush}"
+                       Text="Nothing listed for this folder yet (empty on OneDrive, or the list timed out). Go Back, or Refresh events."/>
+            <Button Content="Refresh events" Style="{StaticResource PrimaryButton}"
+                    HorizontalAlignment="Center" MinWidth="200" Click="RefreshSessions_Click"
+                    ToolTip="Re-list this office from OneDrive (adds new events, drops ones moved to Past Races)."/>
+          </StackPanel>
+        </Grid>
 
         <!-- EVENT FILE PICKER -->
         <DockPanel Grid.Row="1" Visibility="{Binding IsEventFileStep, Converter={StaticResource BoolVis}}">
@@ -135,77 +173,38 @@
           </StackPanel>
         </Border>
 
-        <!-- ADMIN — two columns so Save stays on-screen without scrolling -->
+        <!-- ADMIN — Graph + SOP only (paths fixed under C:\S2F) -->
         <DockPanel Grid.Row="1" LastChildFill="True"
                    Visibility="{Binding IsAdminStep, Converter={StaticResource BoolVis}}">
           <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
             <Button Content="Edit RunScore SOP…" Style="{StaticResource SecondaryButton}"
                     Width="180" Margin="0,0,12,0" Click="EditRunScoreSop_Click"/>
-            <Button Content="Check for updates" Style="{StaticResource SecondaryButton}"
-                    Width="170" Margin="0,0,12,0" Click="CheckUpdates_Click"/>
-            <Button Content="Save settings" Style="{StaticResource PrimaryButton}"
-                    Width="180" Click="SaveAdmin_Click"/>
+            <Button Content="Save" Style="{StaticResource PrimaryButton}"
+                    Width="140" Click="SaveAdmin_Click"/>
           </StackPanel>
-          <Grid>
-            <Grid.ColumnDefinitions>
-              <ColumnDefinition Width="*" MinWidth="240"/>
-              <ColumnDefinition Width="20"/>
-              <ColumnDefinition Width="*" MinWidth="240"/>
-            </Grid.ColumnDefinitions>
-            <Grid.RowDefinitions>
-              <RowDefinition Height="Auto"/>
-              <RowDefinition Height="Auto"/>
-              <RowDefinition Height="Auto"/>
-            </Grid.RowDefinitions>
+          <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                        Padding="0,0,4,8">
+            <StackPanel>
+              <TextBlock TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" FontSize="13" Margin="0,0,0,16"
+                         Text="Library and race-day folders are fixed at C:\S2F\Library and C:\S2F\RaceDay (Graph cache + Active). New events: use the link on the office screen."/>
 
-            <StackPanel Grid.Row="0" Grid.Column="0" Margin="0,0,0,14">
-              <TextBlock Text="Library root" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}"/>
-              <DockPanel LastChildFill="True">
-                <Button DockPanel.Dock="Right" Content="Browse…" Style="{StaticResource SecondaryButton}"
-                        MinHeight="40" Padding="14,8" Margin="8,0,0,0" Click="BrowseLibrary_Click"/>
-                <TextBox Text="{Binding LibraryRoot, UpdateSourceTrigger=PropertyChanged}" Padding="10,8"
-                         VerticalContentAlignment="Center"/>
-              </DockPanel>
+              <TextBlock Text="OneDrive" Margin="0,0,0,4" FontWeight="SemiBold"/>
+              <TextBlock Text="{Binding GraphAccountStatus}" TextWrapping="Wrap" Margin="0,0,0,8" FontSize="13"/>
+              <TextBlock Text="Cloud subfolder for the library (leave blank if offices are under My files)" Margin="0,0,0,4"
+                         Foreground="{StaticResource MutedBrush}" FontSize="12"/>
+              <TextBox Text="{Binding GraphDriveRoot, UpdateSourceTrigger=PropertyChanged}" Padding="10,8"
+                       Margin="0,0,0,12" ToolTip="Blank = OneDrive My files root (Atlanta, Test Office, …). Only fill in if offices live inside a subfolder."/>
+              <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                <Button Content="Sign in to OneDrive" Style="{StaticResource PrimaryButton}"
+                        MinHeight="40" Width="180" Margin="0,0,12,0" Click="GraphSignIn_Click"/>
+                <Button Content="Sign out" Style="{StaticResource SecondaryButton}"
+                        MinHeight="40" Width="120" Margin="0,0,12,0" Click="GraphSignOut_Click"/>
+                <Button Content="Refresh offices" Style="{StaticResource SecondaryButton}"
+                        MinHeight="40" Width="150" Click="GraphRefresh_Click"
+                        ToolTip="List offices/sessions from OneDrive into C:\S2F\Library"/>
+              </StackPanel>
             </StackPanel>
-            <StackPanel Grid.Row="0" Grid.Column="2" Margin="0,0,0,14">
-              <TextBlock Text="Local race day folder" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}"/>
-              <DockPanel LastChildFill="True">
-                <Button DockPanel.Dock="Right" Content="Browse…" Style="{StaticResource SecondaryButton}"
-                        MinHeight="40" Padding="14,8" Margin="8,0,0,0" Click="BrowseRaceDay_Click"/>
-                <TextBox Text="{Binding RaceDayRoot, UpdateSourceTrigger=PropertyChanged}" Padding="10,8"
-                         VerticalContentAlignment="Center"/>
-              </DockPanel>
-            </StackPanel>
-
-            <StackPanel Grid.Row="1" Grid.Column="0" Margin="0,0,0,14">
-              <TextBlock Text="Display name on locks (this PC)" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}"/>
-              <TextBox Text="{Binding DisplayName}" Padding="10,8" IsReadOnly="True"
-                       Background="#F3F4F6" ToolTip="Taken from the Windows computer name."/>
-            </StackPanel>
-            <StackPanel Grid.Row="1" Grid.Column="2" Margin="0,0,0,14" VerticalAlignment="Center">
-              <TextBlock Text="Admin PIN is fixed company-wide (not editable)."
-                         Foreground="{StaticResource MutedBrush}" FontSize="13" TextWrapping="Wrap"/>
-            </StackPanel>
-
-            <StackPanel Grid.Row="2" Grid.Column="0">
-              <TextBlock Text="RunScore exe (optional)" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}"/>
-              <DockPanel LastChildFill="True">
-                <Button DockPanel.Dock="Right" Content="Browse…" Style="{StaticResource SecondaryButton}"
-                        MinHeight="40" Padding="14,8" Margin="8,0,0,0" Click="BrowseRunScoreExe_Click"/>
-                <TextBox Text="{Binding RunScoreExePath, UpdateSourceTrigger=PropertyChanged}" Padding="10,8"
-                         VerticalContentAlignment="Center"/>
-              </DockPanel>
-            </StackPanel>
-            <StackPanel Grid.Row="2" Grid.Column="2">
-              <TextBlock Text="Timing &amp; Scoring exe (optional)" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}"/>
-              <DockPanel LastChildFill="True">
-                <Button DockPanel.Dock="Right" Content="Browse…" Style="{StaticResource SecondaryButton}"
-                        MinHeight="40" Padding="14,8" Margin="8,0,0,0" Click="BrowseTsExe_Click"/>
-                <TextBox Text="{Binding TimingAndScoringExePath, UpdateSourceTrigger=PropertyChanged}" Padding="10,8"
-                         VerticalContentAlignment="Center"/>
-              </DockPanel>
-            </StackPanel>
-          </Grid>
+          </ScrollViewer>
         </DockPanel>
 
         <!-- Bottom actions + status (updates / library hints) -->
@@ -220,9 +219,17 @@
           <Button DockPanel.Dock="Right" Content="Continue" Style="{StaticResource PrimaryButton}"
                   Width="160" Margin="12,0,0,0" Click="SessionContinue_Click"
                   Visibility="{Binding IsSessionStep, Converter={StaticResource BoolVis}}"/>
+          <Button DockPanel.Dock="Right" Content="Refresh events" Style="{StaticResource SecondaryButton}"
+                  Width="150" Margin="12,0,0,0" Click="RefreshSessions_Click"
+                  Visibility="{Binding IsSessionStep, Converter={StaticResource BoolVis}}"
+                  ToolTip="Re-list this office from OneDrive only — new events in, moved/Past Races events out."/>
           <Button DockPanel.Dock="Right" Content="Load event" Style="{StaticResource PrimaryButton}"
                   Width="160" Margin="12,0,0,0" Click="EventFileContinue_Click"
                   Visibility="{Binding IsEventFileStep, Converter={StaticResource BoolVis}}"/>
+          <Button DockPanel.Dock="Right" Content="Check for updates" Style="{StaticResource SecondaryButton}"
+                  Width="160" Margin="12,0,0,0" Click="CheckUpdates_Click"
+                  Visibility="{Binding ShowCheckForUpdates, Converter={StaticResource BoolVis}}"
+                  ToolTip="Download the latest S2F Race Day build when Wi‑Fi is available."/>
 
           <TextBlock Text="{Binding Status}" Foreground="{StaticResource MutedBrush}"
                      FontSize="13" VerticalAlignment="Center" TextWrapping="Wrap"

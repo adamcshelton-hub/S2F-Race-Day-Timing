@@ -6,6 +6,9 @@ public sealed class PathService
 {
     public const string RunScoreFolderName = "RUNSCORE";
 
+    /// <summary>Under RaceDayRoot — RunScore alternate-save target while checked out.</summary>
+    public const string BackupFolderName = "Backup";
+
     /// <summary>OneDrive folder under RUNSCORE where live Backup mirrors land for mid-race failover.</summary>
     public const string AutosaveFolderName = "_autosave";
 
@@ -17,7 +20,8 @@ public sealed class PathService
 
     /// <summary>
     /// Only these Library root folders are offered as offices.
-    /// (Hides Templates, Attachments, and other OneDrive clutter.)
+    /// Matches folders under OneDrive <c>Start 2 - Personal</c>.
+    /// Templates stays excluded (New Event source, not a checkout office).
     /// </summary>
     public static readonly string[] AllowedOfficeFolders =
     [
@@ -25,9 +29,10 @@ public sealed class PathService
         "Charlotte",
         "Memphis",
         "Northwest Arkansas",
-        "St. Louis",
+        "Other",
         "Past Races",
-        "Test Office" // temporary — sandbox events on OneDrive
+        "St. Louis",
+        "Test Office"
     ];
 
     private static readonly HashSet<string> AllowedOfficeSet =

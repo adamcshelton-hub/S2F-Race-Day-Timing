@@ -6,10 +6,12 @@ Windows app for race-day timing: check out **RUNSCORE + primary MyLaps `.event`*
 
 | Setting | Value |
 |---------|--------|
-| Library root | `C:\OneDrive` |
-| Local race day root | `C:\RaceDay` |
+| Library root | `C:\S2F\Library` (app-managed; existing installs may still use `C:\OneDrive`) |
+| Local race day root | `C:\S2F\RaceDay` |
 | Admin PIN (fixed) | `7690` |
-| Active | `C:\RaceDay\Active\{Office}\{session}\` |
+| Active | `C:\S2F\RaceDay\Active\{Office}\{session}\` |
+
+Admin → **New event…** copies a Template or prior-year pack, sets folder name from race name + date, and writes `race name` / `race date` / `%resultsid%` into `RUNSCORE\Entries.ini`.
 
 Admin settings: **triple-click the header**, enter PIN.
 
@@ -84,8 +86,9 @@ Locks / history / finish backups live under `._checkin\` on the session leaf.
 
 RunScore is launched against the Active `RUNSCORE\` folder, so its **Events** / **Logs**
 subfolders are created there and Finish copies them to OneDrive with the race pack
-(useful for post-race bug reports). Live mid-race mirror data lives in hidden
-`RUNSCORE\_autosave\` (not for staff browsing).
+(useful for post-race bug reports). Mid-race failover overlay lives in hidden
+`RUNSCORE\_autosave\` — **only** RunScore alternate-save files from RaceDay `\Backup`
+(entries/results), not a full Active RUNSCORE mirror. Reclaim = download pack + overlay `_autosave`.
 
 ## RunScore preferences (SOP)
 
@@ -106,6 +109,8 @@ Admin → **Edit RunScore SOP…** opens that file. Use `"{{BackupPath}}"` for a
 | Other Server Preferences | See `bools` / `ints` / `strings` in the JSON |
 
 Timers should not need to open Tools → Preferences on race day. If RunScore was already open, close and relaunch so it reloads the registry. Save the JSON, then checkout or Open RunScore to apply.
+
+**Native RSServer vs race-day:** RunScore has one prefs hive (`HKCU\…\RunScore`). There is no separate “race-day prefs” profile. Before SOP write, the app snapshots the current alternate-folder (and related SOP) values to `%AppData%\S2FRaceDayCheckout\runscore-native-prefs.json`, then restores them on **Finish** (and on app start when nothing is checked out) so opening RSServer outside this app does not keep the race Backup paths.
 
 ## Fixtures
 

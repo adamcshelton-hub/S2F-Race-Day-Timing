@@ -63,6 +63,78 @@ public class CheckoutServiceTests
     }
 
     [Fact]
+    public async Task Checkout_WithoutEvent_CopiesRunScoreOnly()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "s2f-lib-" + Guid.NewGuid().ToString("N"));
+        var pack = Path.Combine(root, "Test Office", "2026 - No Event");
+        Directory.CreateDirectory(Path.Combine(pack, "RUNSCORE"));
+        Directory.CreateDirectory(Path.Combine(pack, "DB's"));
+        File.WriteAllText(Path.Combine(pack, "RUNSCORE", "ENTRIES.FRM"), "data");
+        var raceDay = Path.Combine(Path.GetTempPath(), "s2f-rd-" + Guid.NewGuid().ToString("N"));
+        var settings = new AppSettings { LibraryRoot = root, RaceDayRoot = raceDay, DisplayName = "Adam" };
+        var paths = new PathService();
+        var service = new CheckoutService(
+            paths,
+            new CheckoutLockService(paths, new FakeMachine()),
+            new FileCopyService(),
+            new NoProcesses(),
+            new ActiveCheckoutStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json")),
+            new InstantSync());
+
+        var result = await service.CheckoutAsync(new CheckoutRequest
+        {
+            Pack = PackInfo(pack, "Test Office", "2026 - No Event"),
+            Settings = settings,
+            HolderName = "Adam",
+            PrimaryEventFileOverride = ""
+        });
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal("", result.Active!.PrimaryEventFile);
+        Assert.True(File.Exists(Path.Combine(result.Active.ActivePath, "RUNSCORE", "ENTRIES.FRM")));
+        Assert.Empty(Directory.GetFiles(result.Active.ActivePath, "*.event"));
+    }
+
+    [Fact]
+    public async Task Checkin_DiscoversSaveAsEvent_CopiesToLibrary()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "s2f-lib-" + Guid.NewGuid().ToString("N"));
+        var pack = Path.Combine(root, "Test Office", "2026 - No Event");
+        Directory.CreateDirectory(Path.Combine(pack, "RUNSCORE"));
+        Directory.CreateDirectory(Path.Combine(pack, "DB's"));
+        File.WriteAllText(Path.Combine(pack, "RUNSCORE", "ENTRIES.FRM"), "data");
+        var raceDay = Path.Combine(Path.GetTempPath(), "s2f-rd-" + Guid.NewGuid().ToString("N"));
+        var activeStorePath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json");
+        var settings = new AppSettings { LibraryRoot = root, RaceDayRoot = raceDay, DisplayName = "Adam" };
+        var paths = new PathService();
+        var service = new CheckoutService(
+            paths,
+            new CheckoutLockService(paths, new FakeMachine()),
+            new FileCopyService(),
+            new NoProcesses(),
+            new ActiveCheckoutStore(activeStorePath),
+            new InstantSync());
+
+        var checkout = await service.CheckoutAsync(new CheckoutRequest
+        {
+            Pack = PackInfo(pack, "Test Office", "2026 - No Event"),
+            Settings = settings,
+            HolderName = "Adam",
+            PrimaryEventFileOverride = ""
+        });
+        Assert.True(checkout.Success, checkout.Message);
+        Assert.Equal("", checkout.Active!.PrimaryEventFile);
+
+        // Staff Save As'd a real .event into Active mid-checkout.
+        File.WriteAllText(Path.Combine(checkout.Active.ActivePath, "No Event.event"), "mylaps-zip");
+
+        var checkin = await service.CheckinAsync(settings, "Adam", waitForOneDrive: true);
+        Assert.True(checkin.Success, checkin.Message);
+        Assert.True(File.Exists(Path.Combine(pack, "No Event.event")));
+        Assert.True(File.Exists(Path.Combine(pack, "RUNSCORE", "ENTRIES.FRM")));
+    }
+
+    [Fact]
     public async Task Checkout_OnlyCopiesScoped_LeavesSharedOnOneDrive()
     {
         var (packPath, libraryRoot) = CreateFlatPack();
@@ -385,5 +457,77 @@ public class CheckoutServiceTests
         Assert.True(result.Success, result.Message);
         Assert.Equal("2026 - LRM Weekend / Sunday", result.Active!.DisplayName);
         Assert.Contains(Path.Combine("2026 - LRM Weekend", "Sunday"), result.Active.ActivePath);
+    }
+
+    private sealed class FailingCloudSync : ICloudLibrarySync
+    {
+        public bool IsAvailable => true;
+
+        public Task<CloudSyncResult> RefreshOfficeListAsync(
+            string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new CloudSyncResult { Success = true });
+
+        public Task<CloudSyncResult> RefreshOfficeSessionsAsync(
+            string libraryRoot, string graphDriveRoot, string officeName, IProgress<string>? status = null, CancellationToken cancellationToken = default, string? protectSessionPath = null) =>
+            Task.FromResult(new CloudSyncResult { Success = true });
+
+        public Task<CloudSyncResult> RefreshFolderChildrenAsync(
+            string libraryRoot, string graphDriveRoot, string relativeUnderLibrary, bool probeSessionLeaves = false, IProgress<string>? status = null, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new CloudSyncResult { Success = true });
+
+        public Task<CloudSyncResult> DownloadSessionAsync(
+            string librarySessionPath, string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new CloudSyncResult { Success = true, Message = "local" });
+
+        public Task<CloudSyncResult> UploadSessionAsync(
+            string librarySessionPath, string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default, IReadOnlyList<string>? onlyRelativePaths = null) =>
+            Task.FromResult(new CloudSyncResult { Success = false, Message = "cellular timeout" });
+
+        public Task<CloudSyncResult> UploadFolderAsync(
+            string localFolderPath, string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new CloudSyncResult { Success = true });
+
+        public Task<CloudSyncResult> UploadLocalFilesAsync(
+            IReadOnlyList<string> localFilePaths, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new CloudSyncResult { Success = true });
+
+        public Task<CloudSyncResult> UploadCheckoutLockAsync(
+            string librarySessionPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new CloudSyncResult { Success = true });
+
+        public Task<CloudSyncResult> ClearRemoteFolderAsync(
+            string localFolderPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new CloudSyncResult { Success = true });
+    }
+
+    [Fact]
+    public async Task Checkin_GraphUploadFail_RetainsActiveAndLock()
+    {
+        var (packPath, libraryRoot) = CreateFlatPack();
+        var raceDay = Path.Combine(Path.GetTempPath(), "s2f-rd-" + Guid.NewGuid().ToString("N"));
+        var activeStorePath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json");
+        var settings = new AppSettings { LibraryRoot = libraryRoot, RaceDayRoot = raceDay, DisplayName = "Adam" };
+        var paths = new PathService();
+        var locks = new CheckoutLockService(paths, new FakeMachine());
+        var activeStore = new ActiveCheckoutStore(activeStorePath);
+        var service = new CheckoutService(
+            paths, locks, new FileCopyService(), new NoProcesses(), activeStore,
+            new InstantSync(), cloud: new FailingCloudSync());
+
+        var checkout = await service.CheckoutAsync(new CheckoutRequest
+        {
+            Pack = PackInfo(packPath, "Memphis", "2026 - Sample Event"),
+            Settings = settings,
+            HolderName = "Adam"
+        });
+        Assert.True(checkout.Success, checkout.Message);
+
+        var checkin = await service.CheckinAsync(settings, "Adam", waitForOneDrive: true);
+        Assert.True(checkin.Success, checkin.Message);
+        Assert.True(checkin.RetainActiveForCloudRetry);
+        Assert.True(checkin.AwaitingOneDriveConfirm);
+        Assert.NotNull(activeStore.Load());
+        Assert.NotNull(locks.TryRead(packPath));
+        Assert.Equal(LockLifecycleStatus.Active, locks.TryRead(packPath)!.Status);
     }
 }

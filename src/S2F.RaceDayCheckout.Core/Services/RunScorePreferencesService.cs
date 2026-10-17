@@ -18,6 +18,11 @@ public sealed class PreferenceApplyResult
 /// HKCU\Software\RunTime Software\RunScore before RSServer launches.
 /// Registry value names match RSProfile::SaveToRegistry (not the JSON export keys).
 /// SOP values come from runscore-sop.json (editable); built-in defaults are the fallback.
+/// <para>
+/// RSServer has one prefs hive — race-day cannot use a separate store. Before SOP write we
+/// snapshot non-race alternate folders; <see cref="RestoreNativePrefs"/> puts them back on Finish
+/// so a native (non-app) RSServer launch does not keep the race Backup paths.
+/// </para>
 /// </summary>
 public sealed class RunScorePreferencesService
 {
@@ -36,13 +41,16 @@ public sealed class RunScorePreferencesService
 
     private readonly IRunScorePreferenceStore _store;
     private readonly IRunScoreSopStore _sopStore;
+    private readonly INativeRunScorePrefsStore _nativeStore;
 
     public RunScorePreferencesService(
         IRunScorePreferenceStore? store = null,
-        IRunScoreSopStore? sopStore = null)
+        IRunScoreSopStore? sopStore = null,
+        INativeRunScorePrefsStore? nativeStore = null)
     {
         _store = store ?? CreateDefaultStore();
         _sopStore = sopStore ?? new RunScoreSopStore();
+        _nativeStore = nativeStore ?? new NativeRunScorePrefsStore();
     }
 
     private static IRunScorePreferenceStore CreateDefaultStore()
@@ -87,7 +95,11 @@ public sealed class RunScorePreferencesService
         return list;
     }
 
-    public PreferenceApplyResult ApplySop(string backupPath)
+    /// <param name="backupPath">This checkout’s RaceDay Backup folder (SOP alternate dirs).</param>
+    /// <param name="raceDayRoot">
+    /// Optional RaceDay root — used so we don’t snapshot race Backup paths as “office” prefs.
+    /// </param>
+    public PreferenceApplyResult ApplySop(string backupPath, string? raceDayRoot = null)
     {
         if (string.IsNullOrWhiteSpace(backupPath))
         {
@@ -123,6 +135,8 @@ public sealed class RunScorePreferencesService
 
         var loaded = _sopStore.Load();
         var desired = BuildSop(loaded.Profile, backupPath);
+        TrySnapshotNativePrefs(desired, backupPath, raceDayRoot);
+
         var updated = new List<string>();
         var matched = 0;
 
@@ -167,6 +181,172 @@ public sealed class RunScorePreferencesService
             UpdatedNames = updated,
             Message = msg
         };
+    }
+
+    /// <summary>
+    /// Restore office/native prefs captured before the last race-day SOP write.
+    /// Call on Finish (and app start with no Active) so native RSServer does not keep race Backup paths.
+    /// </summary>
+    public PreferenceApplyResult RestoreNativePrefs()
+    {
+        if (!_store.IsAvailable)
+        {
+            return new PreferenceApplyResult
+            {
+                Success = true,
+                Message = "Native RunScore prefs restore skipped (not Windows)."
+            };
+        }
+
+        var snap = _nativeStore.Load();
+        if (snap is null)
+        {
+            return new PreferenceApplyResult
+            {
+                Success = true,
+                Message = "No saved office RunScore prefs to restore."
+            };
+        }
+
+        var updated = new List<string>();
+        try
+        {
+            foreach (var (name, value) in snap.Bools)
+            {
+                if (_store.TryGetBool(name) == value)
+                    continue;
+                _store.SetBool(name, value);
+                updated.Add(name);
+            }
+
+            foreach (var (name, value) in snap.Ints)
+            {
+                if (_store.TryGetInt(name) == value)
+                    continue;
+                _store.SetInt(name, value);
+                updated.Add(name);
+            }
+
+            foreach (var (name, value) in snap.Strings)
+            {
+                var desired = value ?? string.Empty;
+                if (IsAlternateFolderPref(name))
+                    desired = WithTrailingSeparator(desired);
+                var current = _store.TryGetString(name) ?? string.Empty;
+                if (string.Equals(current, desired, StringComparison.OrdinalIgnoreCase))
+                    continue;
+                _store.SetString(name, desired);
+                updated.Add(name);
+            }
+        }
+        catch (Exception ex)
+        {
+            return new PreferenceApplyResult
+            {
+                Success = false,
+                UpdatedCount = updated.Count,
+                UpdatedNames = updated,
+                Message = "Failed restoring office RunScore prefs: " + ex.Message
+            };
+        }
+
+        return new PreferenceApplyResult
+        {
+            Success = true,
+            UpdatedCount = updated.Count,
+            UpdatedNames = updated,
+            Message = updated.Count == 0
+                ? "Office RunScore prefs already restored."
+                : $"Restored {updated.Count} office RunScore preference(s) for native RSServer."
+        };
+    }
+
+    /// <summary>
+    /// True when <paramref name="path"/> is this checkout’s Backup or under RaceDay\Backup.
+    /// </summary>
+    public static bool IsRaceDayBackupPath(string? path, string backupPath, string? raceDayRoot = null)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return false;
+
+        var cur = NormalizePathish(path);
+        var bak = NormalizePathish(backupPath);
+        if (string.Equals(cur, bak, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        string backupRoot;
+        if (!string.IsNullOrWhiteSpace(raceDayRoot))
+            backupRoot = NormalizePathish(Path.Combine(raceDayRoot, PathService.BackupFolderName));
+        else
+        {
+            // Walk up until a folder named Backup (RaceDay layout).
+            backupRoot = "";
+            var walk = bak;
+            while (!string.IsNullOrEmpty(walk))
+            {
+                if (string.Equals(Path.GetFileName(walk), PathService.BackupFolderName, StringComparison.OrdinalIgnoreCase))
+                {
+                    backupRoot = walk;
+                    break;
+                }
+                walk = Path.GetDirectoryName(walk) ?? "";
+            }
+        }
+
+        if (string.IsNullOrEmpty(backupRoot))
+            return false;
+
+        return cur.StartsWith(backupRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+               || cur.StartsWith(backupRoot + Path.AltDirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+               || string.Equals(cur, backupRoot, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void TrySnapshotNativePrefs(
+        IReadOnlyList<SopPreference> desired,
+        string backupPath,
+        string? raceDayRoot)
+    {
+        try
+        {
+            // If registry already points at race Backup, keep the prior office snapshot.
+            var entries = _store.TryGetString(SaveEntriesDir);
+            var results = _store.TryGetString(SaveResultsDir);
+            if (IsRaceDayBackupPath(entries, backupPath, raceDayRoot)
+                || IsRaceDayBackupPath(results, backupPath, raceDayRoot))
+                return;
+
+            var snap = new NativeRunScorePrefsSnapshot { CapturedAt = DateTimeOffset.UtcNow };
+            foreach (var pref in desired)
+            {
+                switch (pref.Kind)
+                {
+                    case SopPreferenceKind.Bool:
+                        if (_store.TryGetBool(pref.Name) is { } b)
+                            snap.Bools[pref.Name] = b;
+                        break;
+                    case SopPreferenceKind.Int:
+                        if (_store.TryGetInt(pref.Name) is { } i)
+                            snap.Ints[pref.Name] = i;
+                        break;
+                    case SopPreferenceKind.String:
+                        if (_store.TryGetString(pref.Name) is { } s)
+                            snap.Strings[pref.Name] = s;
+                        break;
+                }
+            }
+
+            // Always capture alternate dirs even if empty (office may clear them).
+            snap.Strings[SaveEntriesDir] = entries ?? string.Empty;
+            snap.Strings[SaveResultsDir] = results ?? string.Empty;
+            if (_store.TryGetInt(AutoSaveCounts) is { } counts)
+                snap.Ints[AutoSaveCounts] = counts;
+
+            _nativeStore.Save(snap);
+        }
+        catch
+        {
+            // Non-fatal — race-day SOP still applies; native restore may be missing once.
+        }
     }
 
     private static string ExpandToken(string? template, string backupPathWithSep)

@@ -24,6 +24,7 @@ public class SettingsStoreTests
             Assert.DoesNotContain("AdminPin", json, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain("7690", json);
             Assert.Equal("7690", store.Load().AdminPin);
+            Assert.Equal(AppSettings.DefaultLibraryRoot, store.Load().LibraryRoot);
         }
         finally
         {
@@ -40,6 +41,23 @@ public class SettingsStoreTests
             File.WriteAllText(path, """{"LibraryRoot":"C:\\OneDrive","AdminPin":"1234"}""");
             var settings = new SettingsStore(path).Load();
             Assert.Equal("7690", settings.AdminPin);
+        }
+        finally
+        {
+            try { File.Delete(path); } catch { /* ignore */ }
+        }
+    }
+
+    [Fact]
+    public void Load_ForcesFixedS2FPaths_EvenIfJsonHasOneDrive()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "s2f-settings-" + Guid.NewGuid().ToString("N") + ".json");
+        try
+        {
+            File.WriteAllText(path, """{"LibraryRoot":"C:\\OneDrive","RaceDayRoot":"C:\\RaceDay"}""");
+            var settings = new SettingsStore(path).Load();
+            Assert.Equal(AppSettings.DefaultLibraryRoot, settings.LibraryRoot);
+            Assert.Equal(AppSettings.DefaultRaceDayRoot, settings.RaceDayRoot);
         }
         finally
         {

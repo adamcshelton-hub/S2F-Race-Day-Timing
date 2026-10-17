@@ -17,7 +17,8 @@ public interface IFileCopyService
         IProgress<CopyProgress>? progress = null,
         CancellationToken cancellationToken = default);
 
-    Task MirrorNewerFilesAsync(
+    /// <returns>Absolute destination paths that were copied (empty = nothing newer).</returns>
+    Task<IReadOnlyList<string>> MirrorNewerFilesAsync(
         string source,
         string destination,
         IProgress<CopyProgress>? progress = null,
@@ -46,20 +47,22 @@ public sealed class FileCopyService : IFileCopyService
         if (OperatingSystem.IsWindows() && await TryRobocopyAsync(source, destination, mirror: false, cancellationToken))
             return;
 
-        await CopyRecursiveAsync(source, destination, onlyNewer: false, progress, cancellationToken);
+        await CopyRecursiveAsync(source, destination, onlyNewer: false, progress, cancellationToken)
+            .ConfigureAwait(false);
     }
 
-    public async Task MirrorNewerFilesAsync(
+    public async Task<IReadOnlyList<string>> MirrorNewerFilesAsync(
         string source,
         string destination,
         IProgress<CopyProgress>? progress = null,
         CancellationToken cancellationToken = default)
     {
         if (!Directory.Exists(source))
-            return;
+            return Array.Empty<string>();
 
         Directory.CreateDirectory(destination);
-        await CopyRecursiveAsync(source, destination, onlyNewer: true, progress, cancellationToken);
+        var (_, paths) = await CopyRecursiveAsync(source, destination, onlyNewer: true, progress, cancellationToken);
+        return paths;
     }
 
     private static async Task<bool> TryRobocopyAsync(string source, string destination, bool mirror, CancellationToken ct)
@@ -97,7 +100,7 @@ public sealed class FileCopyService : IFileCopyService
         }
     }
 
-    private static async Task CopyRecursiveAsync(
+    private static async Task<(int Count, IReadOnlyList<string> DestPaths)> CopyRecursiveAsync(
         string source,
         string destination,
         bool onlyNewer,
@@ -105,6 +108,7 @@ public sealed class FileCopyService : IFileCopyService
         CancellationToken cancellationToken)
     {
         var stats = new CopyProgress();
+        var copiedPaths = new List<string>();
         Directory.CreateDirectory(destination);
 
         foreach (var dir in Directory.GetDirectories(source, "*", SearchOption.AllDirectories))
@@ -149,6 +153,7 @@ public sealed class FileCopyService : IFileCopyService
             File.SetLastWriteTimeUtc(destFile, File.GetLastWriteTimeUtc(file));
             stats.FilesCopied++;
             stats.CurrentFile = relative;
+            copiedPaths.Add(destFile);
             progress?.Report(new CopyProgress
             {
                 FilesCopied = stats.FilesCopied,
@@ -156,6 +161,8 @@ public sealed class FileCopyService : IFileCopyService
                 CurrentFile = stats.CurrentFile
             });
         }
+
+        return ((int)stats.FilesCopied, copiedPaths);
     }
 
     private static bool IsAppMetaRelative(string relative) =>

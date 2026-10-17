@@ -28,10 +28,15 @@ public sealed class EventPackInfo
     public string? PrimaryEventFile { get; set; }
     public CheckoutLock? Lock { get; set; }
 
+    /// <summary>True when this row is a Past Races (or similar) folder to open, not a checkoutable session.</summary>
+    public bool IsNavigationFolder { get; init; }
+
     public string DisplayName =>
-        string.Equals(ParentEvent, SessionName, StringComparison.OrdinalIgnoreCase)
+        IsNavigationFolder
             ? SessionName
-            : $"{ParentEvent} / {SessionName}";
+            : string.Equals(ParentEvent, SessionName, StringComparison.OrdinalIgnoreCase)
+                ? SessionName
+                : $"{ParentEvent} / {SessionName}";
 
     public string DbsPath => System.IO.Path.Combine(Path, "DB's");
     public string PreRacePath => System.IO.Path.Combine(Path, "Pre-Race");
@@ -41,6 +46,9 @@ public sealed class EventPackInfo
     {
         get
         {
+            if (IsNavigationFolder)
+                return "Folder";
+
             if (Lock is null || Lock.Status != LockLifecycleStatus.Active)
                 return "Available";
 

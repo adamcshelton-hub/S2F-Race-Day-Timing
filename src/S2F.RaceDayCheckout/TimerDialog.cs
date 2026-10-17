@@ -32,6 +32,70 @@ public static class TimerDialog
         window.ShowDialog();
     }
 
+    /// <summary>
+    /// Checkout confirm with monospace Save As folder map (shown before Active exists).
+    /// </summary>
+    public static bool ConfirmSaveAsGuide(
+        Window? owner,
+        string title,
+        string message,
+        string yesLabel = "Checkout",
+        string noLabel = "Cancel")
+    {
+        var result = false;
+        var window = CreateChromeLess(owner);
+        var stack = new StackPanel();
+        stack.Children.Add(new TextBlock
+        {
+            Text = title,
+            FontSize = 26,
+            FontWeight = FontWeights.Bold,
+            TextAlignment = TextAlignment.Center,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 0, 0, 14)
+        });
+        stack.Children.Add(new TextBlock
+        {
+            Text = message,
+            FontSize = 14,
+            FontFamily = new FontFamily("Consolas, Cascadia Mono, Courier New"),
+            Foreground = Brush("MutedBrush"),
+            TextAlignment = TextAlignment.Left,
+            TextWrapping = TextWrapping.Wrap,
+            LineHeight = 20,
+            Margin = new Thickness(0, 0, 0, 8)
+        });
+
+        var yes = MakeButton(yesLabel, "PrimaryButton", () => { result = true; window.DialogResult = true; });
+        yes.Margin = new Thickness(0, 20, 0, 0);
+        stack.Children.Add(yes);
+        var no = MakeButton(noLabel, "SecondaryButton", () => { result = false; window.DialogResult = false; });
+        no.Margin = new Thickness(0, 10, 0, 0);
+        stack.Children.Add(no);
+
+        var card = new Border
+        {
+            Background = Brush("CardBrush"),
+            CornerRadius = new CornerRadius(12),
+            BorderBrush = Brush("AccentBrush"),
+            BorderThickness = new Thickness(3),
+            Padding = new Thickness(36, 32, 36, 32),
+            MinWidth = 480,
+            MaxWidth = 640,
+            Effect = new DropShadowEffect
+            {
+                BlurRadius = 24,
+                Opacity = 0.35,
+                ShadowDepth = 0,
+                Color = Colors.Black
+            },
+            Child = stack
+        };
+        window.Content = DimmedHost(card);
+        window.ShowDialog();
+        return result;
+    }
+
     public static bool Confirm(Window? owner, string title, string message, string yesLabel = "Yes", string noLabel = "No")
     {
         var result = false;

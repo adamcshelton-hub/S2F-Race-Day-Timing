@@ -2,8 +2,9 @@ namespace S2F.RaceDayCheckout.Core.Models;
 
 public sealed class AppSettings
 {
-    public const string DefaultLibraryRoot = @"C:\OneDrive";
-    public const string DefaultRaceDayRoot = @"C:\RaceDay";
+    /// <summary>App-managed library cache (not OneDrive Desktop).</summary>
+    public const string DefaultLibraryRoot = @"C:\S2F\Library";
+    public const string DefaultRaceDayRoot = @"C:\S2F\RaceDay";
 
     public string LibraryRoot { get; set; } = DefaultLibraryRoot;
     public string RaceDayRoot { get; set; } = DefaultRaceDayRoot;
@@ -26,4 +27,31 @@ public sealed class AppSettings
 
     /// <summary>Optional full path to mylaps_ts_launch.exe. Empty = shell-open .event.</summary>
     public string TimingAndScoringExePath { get; set; } = string.Empty;
+
+    /// <summary>
+    /// True after the first-install Defender exclusion prompt was answered (Yes or No).
+    /// Prevents re-prompt on later launches and routine app updates.
+    /// </summary>
+    public bool DefenderExclusionsConfigured { get; set; }
+
+    /// <summary>
+    /// True when Windows Defender path exclusions were successfully applied.
+    /// Diagnostics only — checkout does not depend on this.
+    /// </summary>
+    public bool DefenderExclusionsApplied { get; set; }
+
+    /// <summary>
+    /// Entra app (public client) Application ID for personal OneDrive Graph sync.
+    /// Default is the S2F Race Day Timing registration.
+    /// </summary>
+    public const string DefaultGraphClientId = "1f6ccaf7-e19c-4223-92d2-c3b825fc2bfe";
+
+    public string GraphClientId { get; set; } = DefaultGraphClientId;
+
+    /// <summary>
+    /// Folder under the signed-in OneDrive root that maps to <see cref="LibraryRoot"/>.
+    /// Empty = My files root (Atlanta, Test Office, … sit directly under My files).
+    /// Only set this if offices live in a subfolder on OneDrive.
+    /// </summary>
+    public string GraphDriveRoot { get; set; } = string.Empty;
 }

@@ -43,6 +43,87 @@ public class AutosaveMirrorServiceTests
     }
 
     [Fact]
+    public async Task MirrorOnce_CopiesBackupOnly_NotActiveRunScore()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "s2f-overlay-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var activeStorePath = Path.Combine(root, "active.json");
+            var backup = Path.Combine(root, "Backup", "Event");
+            var autosave = Path.Combine(root, "Library", "Event", "RUNSCORE", "_autosave");
+            var activePath = Path.Combine(root, "Active", "Event");
+            var activeRs = Path.Combine(activePath, PathService.RunScoreFolderName);
+            Directory.CreateDirectory(backup);
+            Directory.CreateDirectory(activeRs);
+
+            File.WriteAllText(Path.Combine(backup, "ENTRIES.DTA"), "from-backup");
+            File.WriteAllText(Path.Combine(activeRs, "race.dat"), "from-active-only");
+            File.WriteAllText(Path.Combine(activeRs, "ENTRIES.DTA"), "active-entries-ignored");
+
+            var store = new ActiveCheckoutStore(activeStorePath);
+            store.Save(new Models.ActiveCheckout
+            {
+                Office = "Test",
+                ParentEvent = "Event",
+                SessionName = "Event",
+                RelativePath = "Event",
+                LibrarySessionPath = Path.Combine(root, "Library", "Event"),
+                ActivePath = activePath,
+                BackupPath = backup,
+                AutosavePath = autosave,
+                DbsPath = Path.Combine(root, "DB's"),
+                PrimaryEventFile = "Event.event",
+                CheckedOutAt = DateTimeOffset.UtcNow
+            });
+
+            var mirror = new AutosaveMirrorService(new FileCopyService(), store);
+            await mirror.MirrorOnceAsync();
+
+            Assert.Equal("from-backup", File.ReadAllText(Path.Combine(autosave, "ENTRIES.DTA")));
+            Assert.False(
+                File.Exists(Path.Combine(autosave, "race.dat")),
+                "Active RUNSCORE must not be mirrored into _autosave (overlay-only design)");
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); } catch { /* temp */ }
+        }
+    }
+
+    [Fact]
+    public async Task MirrorNewer_ReturnsAbsoluteDestPathsCopied()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "s2f-mirror-paths-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var src = Path.Combine(root, "src");
+            var dst = Path.Combine(root, "dst");
+            Directory.CreateDirectory(src);
+            File.WriteAllText(Path.Combine(src, "ENTRIES.DTA"), "a");
+            File.WriteAllText(Path.Combine(src, "Finish.FN2"), "b");
+
+            var copy = new FileCopyService();
+            var first = await copy.MirrorNewerFilesAsync(src, dst);
+            Assert.Equal(2, first.Count);
+            Assert.All(first, p => Assert.True(File.Exists(p)));
+            Assert.Contains(first, p => p.EndsWith("ENTRIES.DTA", StringComparison.OrdinalIgnoreCase));
+
+            var second = await copy.MirrorNewerFilesAsync(src, dst);
+            Assert.Empty(second);
+
+            File.WriteAllText(Path.Combine(src, "ENTRIES.DTA"), "changed");
+            File.SetLastWriteTimeUtc(Path.Combine(src, "ENTRIES.DTA"), DateTime.UtcNow.AddMinutes(1));
+            var third = await copy.MirrorNewerFilesAsync(src, dst);
+            Assert.Single(third);
+            Assert.EndsWith("ENTRIES.DTA", third[0], StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); } catch { /* temp */ }
+        }
+    }
+
+    [Fact]
     public async Task RecoverMisplacedBackupSiblings_DemanglesAndMovesIntoRaceFolder()
     {
         var root = Path.Combine(Path.GetTempPath(), "s2f-sib-" + Guid.NewGuid().ToString("N"));

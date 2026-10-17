@@ -1,9 +1,7 @@
 using System.ComponentModel;
-using System.IO;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Threading;
-using Microsoft.Win32;
 using S2F.RaceDayCheckout.Core.Models;
 using S2F.RaceDayCheckout.Services;
 using S2F.RaceDayCheckout.ViewModels;
@@ -24,11 +22,34 @@ public partial class MainWindow : Window
 
     private async void Window_Loaded(object sender, RoutedEventArgs e)
     {
-        // Updates first so a new version isn't hidden behind the pin dialog / silent failures.
+        _vm.EnsureLocalRoots();
+        _vm.ReloadFromDisk(); // pick up local office placeholders created above
+        _vm.RefreshGraphLandingStatus();
+
+        // Optional: confirm which offices exist on OneDrive (does not block showing the list).
+        try
+        {
+            await _vm.EnsureLibraryIndexedFromGraphAsync()
+                .WaitAsync(TimeSpan.FromSeconds(25));
+        }
+        catch (TimeoutException)
+        {
+            _vm.Status = "OneDrive office check timed out — local offices are ready; events load when you pick one.";
+        }
+        catch (Exception ex)
+        {
+            _vm.Status = "OneDrive office check skipped: " + ex.Message;
+        }
+
+        // Updates first so a new version isn't hidden behind setup dialogs / silent failures.
         await UpdateService.CheckForUpdatesQuietAsync(
             _vm.HasActive,
             this,
             msg => _vm.Status = msg);
+
+        // First install only (Velopack OnFirstRun): create RaceDay Active/Backup + Defender opt-in.
+        // Not on checkout; not again on routine updates once DefenderExclusionsConfigured is set.
+        DefenderExclusionPrompt.TryOffer(this);
 
         // First launch after Setup: offer taskbar pin (Windows still shows its own confirm).
         await TaskbarPinPrompt.TryOfferAsync(this);
@@ -39,17 +60,20 @@ public partial class MainWindow : Window
 
     private void Back_Click(object sender, RoutedEventArgs e) => _vm.GoBack();
 
-    private void OfficeContinue_Click(object sender, RoutedEventArgs e) =>
-        _vm.SelectOffice(OfficeList.SelectedItem as string);
+    private async void OfficeContinue_Click(object sender, RoutedEventArgs e) =>
+        await _vm.SelectOfficeAsync(OfficeList.SelectedItem as string);
 
-    private void Office_DoubleClick(object sender, MouseButtonEventArgs e) =>
-        _vm.SelectOffice(OfficeList.SelectedItem as string);
+    private async void Office_DoubleClick(object sender, MouseButtonEventArgs e) =>
+        await _vm.SelectOfficeAsync(OfficeList.SelectedItem as string);
 
-    private void SessionContinue_Click(object sender, RoutedEventArgs e) =>
-        _vm.SelectSession(SessionList.SelectedItem as EventPackInfo);
+    private async void RefreshSessions_Click(object sender, RoutedEventArgs e) =>
+        await _vm.RetryOfficeSessionsAsync();
 
-    private void Session_DoubleClick(object sender, MouseButtonEventArgs e) =>
-        _vm.SelectSession(SessionList.SelectedItem as EventPackInfo);
+    private async void SessionContinue_Click(object sender, RoutedEventArgs e) =>
+        await _vm.SelectSessionAsync(SessionList.SelectedItem as EventPackInfo);
+
+    private async void Session_DoubleClick(object sender, MouseButtonEventArgs e) =>
+        await _vm.SelectSessionAsync(SessionList.SelectedItem as EventPackInfo);
 
     private void EventFileContinue_Click(object sender, RoutedEventArgs e) =>
         _vm.ConfirmEventFileAndCheckout();
@@ -69,72 +93,21 @@ public partial class MainWindow : Window
 
     private void SaveAdmin_Click(object sender, RoutedEventArgs e) => _vm.SaveAdminSettings();
 
+    private async void GraphSignIn_Click(object sender, RoutedEventArgs e)
+    {
+        var hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+        await _vm.SignInGraphAsync(hwnd);
+    }
+
+    private async void GraphSignOut_Click(object sender, RoutedEventArgs e) =>
+        await _vm.SignOutGraphAsync();
+
+    private async void GraphRefresh_Click(object sender, RoutedEventArgs e) =>
+        await _vm.RefreshLibraryFromGraphAsync();
+
+    private void NewEvent_Click(object sender, RoutedEventArgs e) => _vm.OpenNewEventBuilder();
+
     private void EditRunScoreSop_Click(object sender, RoutedEventArgs e) => _vm.EditRunScoreSop();
-
-    private void BrowseLibrary_Click(object sender, RoutedEventArgs e)
-    {
-        if (TryPickFolder("Choose Library root (OneDrive)", _vm.LibraryRoot) is { } path)
-            _vm.LibraryRoot = path;
-    }
-
-    private void BrowseRaceDay_Click(object sender, RoutedEventArgs e)
-    {
-        if (TryPickFolder("Choose local Race Day folder", _vm.RaceDayRoot) is { } path)
-            _vm.RaceDayRoot = path;
-    }
-
-    private void BrowseRunScoreExe_Click(object sender, RoutedEventArgs e)
-    {
-        if (TryPickExe("Locate RunScore (rsserver.exe)", _vm.RunScoreExePath) is { } path)
-            _vm.RunScoreExePath = path;
-    }
-
-    private void BrowseTsExe_Click(object sender, RoutedEventArgs e)
-    {
-        if (TryPickExe("Locate Timing & Scoring", _vm.TimingAndScoringExePath) is { } path)
-            _vm.TimingAndScoringExePath = path;
-    }
-
-    private static string? TryPickFolder(string title, string? current)
-    {
-        var dialog = new OpenFolderDialog
-        {
-            Title = title,
-            Multiselect = false
-        };
-        if (!string.IsNullOrWhiteSpace(current) && Directory.Exists(current))
-            dialog.InitialDirectory = current;
-
-        return dialog.ShowDialog() == true ? dialog.FolderName : null;
-    }
-
-    private static string? TryPickExe(string title, string? current)
-    {
-        var dialog = new OpenFileDialog
-        {
-            Title = title,
-            Filter = "Programs (*.exe)|*.exe|All files (*.*)|*.*",
-            CheckFileExists = true,
-            Multiselect = false
-        };
-        if (!string.IsNullOrWhiteSpace(current))
-        {
-            try
-            {
-                var dir = Path.GetDirectoryName(current);
-                if (!string.IsNullOrWhiteSpace(dir) && Directory.Exists(dir))
-                    dialog.InitialDirectory = dir;
-                if (File.Exists(current))
-                    dialog.FileName = Path.GetFileName(current);
-            }
-            catch
-            {
-                // ignore bad current path
-            }
-        }
-
-        return dialog.ShowDialog() == true ? dialog.FileName : null;
-    }
 
     private void Logo_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
