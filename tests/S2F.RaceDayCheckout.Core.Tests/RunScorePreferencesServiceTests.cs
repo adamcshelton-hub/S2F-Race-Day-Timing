@@ -40,8 +40,9 @@ public class RunScorePreferencesServiceTests
 
             Assert.True(result.Success);
             Assert.True(result.UpdatedCount > 0);
-            Assert.Equal(backup, store.TryGetString(RunScorePreferencesService.SaveEntriesDir));
-            Assert.Equal(backup, store.TryGetString(RunScorePreferencesService.SaveResultsDir));
+            var expected = RunScorePreferencesService.WithTrailingSeparator(backup);
+            Assert.Equal(expected, store.TryGetString(RunScorePreferencesService.SaveEntriesDir));
+            Assert.Equal(expected, store.TryGetString(RunScorePreferencesService.SaveResultsDir));
             Assert.Equal(RunScorePreferencesService.SopAutoSaveCounts, store.TryGetInt(RunScorePreferencesService.AutoSaveCounts));
             Assert.Equal(300, store.TryGetInt(RunScorePreferencesService.AutoSaveCounts));
             Assert.True(store.TryGetBool("Save all results"));
@@ -106,15 +107,21 @@ public class RunScorePreferencesServiceTests
         try
         {
             Assert.True(svc.ApplySop(oldBackup).Success);
-            Assert.Equal(oldBackup, store.TryGetString(RunScorePreferencesService.SaveEntriesDir));
+            Assert.Equal(
+                RunScorePreferencesService.WithTrailingSeparator(oldBackup),
+                store.TryGetString(RunScorePreferencesService.SaveEntriesDir));
 
             var result = svc.ApplySop(newBackup);
 
             Assert.True(result.Success);
             Assert.Contains(RunScorePreferencesService.SaveEntriesDir, result.UpdatedNames);
             Assert.Contains(RunScorePreferencesService.SaveResultsDir, result.UpdatedNames);
-            Assert.Equal(newBackup, store.TryGetString(RunScorePreferencesService.SaveEntriesDir));
-            Assert.Equal(newBackup, store.TryGetString(RunScorePreferencesService.SaveResultsDir));
+            Assert.Equal(
+                RunScorePreferencesService.WithTrailingSeparator(newBackup),
+                store.TryGetString(RunScorePreferencesService.SaveEntriesDir));
+            Assert.Equal(
+                RunScorePreferencesService.WithTrailingSeparator(newBackup),
+                store.TryGetString(RunScorePreferencesService.SaveResultsDir));
         }
         finally
         {
@@ -129,10 +136,19 @@ public class RunScorePreferencesServiceTests
         Assert.Equal(RunScoreSopProfile.BackupPathToken, profile.SaveEntriesDir);
 
         var prefs = RunScorePreferencesService.BuildSop(profile, @"C:\RaceDay\Backup\Memphis\Event");
-        Assert.Equal(@"C:\RaceDay\Backup\Memphis\Event",
+        // Trailing backslash required — RunScore concatenates path + "ENTRIES.DTA".
+        Assert.Equal(@"C:\RaceDay\Backup\Memphis\Event\",
             prefs.Single(p => p.Name == RunScorePreferencesService.SaveEntriesDir).StringValue);
-        Assert.Equal(@"C:\RaceDay\Backup\Memphis\Event",
+        Assert.Equal(@"C:\RaceDay\Backup\Memphis\Event\",
             prefs.Single(p => p.Name == RunScorePreferencesService.SaveResultsDir).StringValue);
+    }
+
+    [Fact]
+    public void BuildSop_KeepsTrailingSeparatorWhenAlreadyPresent()
+    {
+        var prefs = RunScorePreferencesService.BuildSop(@"C:\RaceDay\Backup\Memphis\Event\");
+        Assert.Equal(@"C:\RaceDay\Backup\Memphis\Event\",
+            prefs.Single(p => p.Name == RunScorePreferencesService.SaveEntriesDir).StringValue);
     }
 
     [Fact]

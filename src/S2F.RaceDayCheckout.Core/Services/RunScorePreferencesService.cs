@@ -61,7 +61,10 @@ public sealed class RunScorePreferencesService
 
     public static IReadOnlyList<SopPreference> BuildSop(RunScoreSopProfile profile, string backupPath)
     {
-        var alt = (backupPath ?? string.Empty).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        // RunScore concatenates alternate-dir + "ENTRIES.DTA" with no separator.
+        // Without a trailing backslash, files land as siblings of the Backup folder
+        // (e.g. "…\2026 - EventTESTENTRIES.DTA" instead of "…\2026 - Event\ENTRIES.DTA").
+        var alt = WithTrailingSeparator(backupPath ?? string.Empty);
         var list = new List<SopPreference>();
 
         list.Add(SopPreference.String(SaveEntriesDir, ExpandToken(profile.SaveEntriesDir, alt)));
@@ -166,15 +169,30 @@ public sealed class RunScorePreferencesService
         };
     }
 
-    private static string ExpandToken(string? template, string backupPath)
+    private static string ExpandToken(string? template, string backupPathWithSep)
     {
         var t = template ?? string.Empty;
         if (string.IsNullOrWhiteSpace(t) ||
             t.Equals(RunScoreSopProfile.BackupPathToken, StringComparison.OrdinalIgnoreCase))
-            return backupPath;
+            return backupPathWithSep;
 
-        return t.Replace(RunScoreSopProfile.BackupPathToken, backupPath, StringComparison.OrdinalIgnoreCase)
-            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var expanded = t.Replace(
+            RunScoreSopProfile.BackupPathToken,
+            backupPathWithSep.TrimEnd('\\', '/'),
+            StringComparison.OrdinalIgnoreCase);
+        return WithTrailingSeparator(expanded);
+    }
+
+    /// <summary>RunScore requires a trailing separator on alternate folder paths.</summary>
+    public static string WithTrailingSeparator(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return path ?? string.Empty;
+        // Trim both separators explicitly — on non-Windows hosts Path.DirectorySeparatorChar
+        // is '/', so TrimEnd(Path.*) would leave a trailing '\' and we'd double it.
+        var trimmed = path.TrimEnd('\\', '/');
+        // Always use backslash for RunScore (HKCU is Windows-only).
+        return trimmed + '\\';
     }
 
     private bool Matches(SopPreference pref) =>
@@ -209,7 +227,7 @@ public sealed class RunScorePreferencesService
     {
         if (string.IsNullOrWhiteSpace(value))
             return string.Empty;
-        return value.Trim().TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        return value.Trim().TrimEnd('\\', '/');
     }
 }
 

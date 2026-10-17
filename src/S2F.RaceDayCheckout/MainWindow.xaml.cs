@@ -24,6 +24,9 @@ public partial class MainWindow : Window
 
     private async void Window_Loaded(object sender, RoutedEventArgs e)
     {
+        // First launch after Setup: offer taskbar pin (Windows still shows its own confirm).
+        await TaskbarPinPrompt.TryOfferAsync(this);
+
         // Quiet update check; never restarts while Active.
         await UpdateService.CheckForUpdatesQuietAsync(_vm.HasActive, this);
     }

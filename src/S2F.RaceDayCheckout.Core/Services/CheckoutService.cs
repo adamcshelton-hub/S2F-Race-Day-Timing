@@ -48,6 +48,7 @@ public sealed class CheckoutService
     private readonly IOneDriveSyncMonitor _syncMonitor;
     private readonly IOneDriveHydrationService _hydrate;
     private readonly RunScorePreferencesService _runScorePrefs;
+    private readonly SharedFolderLinkService _links;
 
     public CheckoutService(
         PathService paths,
@@ -57,7 +58,8 @@ public sealed class CheckoutService
         ActiveCheckoutStore activeStore,
         IOneDriveSyncMonitor? syncMonitor = null,
         IOneDriveHydrationService? hydrate = null,
-        RunScorePreferencesService? runScorePrefs = null)
+        RunScorePreferencesService? runScorePrefs = null,
+        SharedFolderLinkService? links = null)
     {
         _paths = paths;
         _locks = locks;
@@ -67,6 +69,7 @@ public sealed class CheckoutService
         _syncMonitor = syncMonitor ?? new SettlingOneDriveSyncMonitor();
         _hydrate = hydrate ?? new OneDriveHydrationService();
         _runScorePrefs = runScorePrefs ?? new RunScorePreferencesService();
+        _links = links ?? new SharedFolderLinkService();
     }
 
     public ActiveCheckout? GetActive() => _activeStore.Load();
@@ -186,6 +189,13 @@ public sealed class CheckoutService
         Directory.CreateDirectory(activePath);
         File.Copy(libraryEventFile, activeEventFile, overwrite: true);
 
+        // Keep RunScore relative exports (Backupsave / announcersave → ~..\DB's\…) on OneDrive.
+        statusProgress?.Report("Linking Active DB's to OneDrive…");
+        var dbsLink = _links.EnsureDbsLink(activePath, request.Pack.Path);
+        var dbsLinkNote = dbsLink.Success
+            ? (dbsLink.Created ? " Active DB's linked to OneDrive for announcer/backup exports." : "")
+            : $" DB's link warning: {dbsLink.Message}";
+
         // Mid-race failover: apply newer OneDrive RUNSCORE\_autosave only on reclaim/force.
         // Normal checkout must NOT merge leftovers — Finish clears _autosave so post-race
         // OneDrive edits are not overwritten by stale mid-race mirrors.
@@ -278,9 +288,11 @@ public sealed class CheckoutService
                 ? reclaimLead
                   + failoverNote
                   + prefNote
-                  + " DB's / Pre-Race / other .events stay on OneDrive."
+                  + dbsLinkNote
+                  + " DB's stay on OneDrive (linked from Active); Pre-Race / other .events stay on OneDrive."
                 : "Checkout complete. Launch RunScore/T&S from Active only."
                   + prefNote
+                  + dbsLinkNote
         };
     }
 
@@ -359,8 +371,9 @@ public sealed class CheckoutService
         {
             try
             {
+                // Drop DB's junction/symlink first — recursive delete must not wipe OneDrive DB's.
                 if (Directory.Exists(active.ActivePath))
-                    Directory.Delete(active.ActivePath, recursive: true);
+                    _links.DeleteActiveTreeSafe(active.ActivePath);
             }
             catch (Exception ex)
             {

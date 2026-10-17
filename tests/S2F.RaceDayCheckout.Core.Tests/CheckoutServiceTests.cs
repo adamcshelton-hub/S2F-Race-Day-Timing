@@ -88,10 +88,46 @@ public class CheckoutServiceTests
         Assert.Equal("Sample Event.event", result.Active!.PrimaryEventFile);
         Assert.True(File.Exists(Path.Combine(result.Active.ActivePath, "RUNSCORE", "ENTRIES.FRM")));
         Assert.True(File.Exists(Path.Combine(result.Active.ActivePath, "Sample Event.event")));
-        Assert.False(Directory.Exists(Path.Combine(result.Active.ActivePath, "DB's")));
+        // Active DB's is a link to OneDrive so RunScore ~..\DB's\ exports stay on the cloud pack.
+        var activeDbs = Path.Combine(result.Active.ActivePath, "DB's");
+        Assert.True(Directory.Exists(activeDbs));
+        Assert.True(File.GetAttributes(activeDbs).HasFlag(FileAttributes.ReparsePoint));
         Assert.False(File.Exists(Path.Combine(result.Active.ActivePath, "Sample Event-S2F-MEM-1.event")));
         Assert.True(File.Exists(Path.Combine(packPath, "DB's", "live.csv")));
         Assert.Contains("RUNSCORE", result.Active.ScopedPaths);
+    }
+
+    [Fact]
+    public async Task Checkout_DbsLink_WritesLandOnOneDrive_AndCheckinDoesNotWipeThem()
+    {
+        var (packPath, libraryRoot) = CreateFlatPack();
+        var raceDay = Path.Combine(Path.GetTempPath(), "s2f-rd-" + Guid.NewGuid().ToString("N"));
+        var activeStorePath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json");
+        var settings = new AppSettings { LibraryRoot = libraryRoot, RaceDayRoot = raceDay, DisplayName = "Adam" };
+        var paths = new PathService();
+        var service = new CheckoutService(
+            paths, new CheckoutLockService(paths, new FakeMachine()), new FileCopyService(),
+            new NoProcesses(), new ActiveCheckoutStore(activeStorePath), new InstantSync());
+
+        var pack = PackInfo(packPath, "Memphis", "2026 - Sample Event");
+        var result = await service.CheckoutAsync(new CheckoutRequest
+        {
+            Pack = pack,
+            Settings = settings,
+            HolderName = "Adam"
+        });
+        Assert.True(result.Success, result.Message);
+
+        var viaLink = Path.Combine(result.Active!.ActivePath, "DB's", "from-runscore.csv");
+        File.WriteAllText(viaLink, "announcer");
+        Assert.True(File.Exists(Path.Combine(packPath, "DB's", "from-runscore.csv")));
+        Assert.True(File.Exists(Path.Combine(packPath, "DB's", "live.csv")));
+
+        var checkin = await service.CheckinAsync(settings, "Adam", waitForOneDrive: true);
+        Assert.True(checkin.Success, checkin.Message);
+        Assert.False(Directory.Exists(result.Active.ActivePath));
+        Assert.True(File.Exists(Path.Combine(packPath, "DB's", "from-runscore.csv")));
+        Assert.True(File.Exists(Path.Combine(packPath, "DB's", "live.csv")));
     }
 
     [Fact]

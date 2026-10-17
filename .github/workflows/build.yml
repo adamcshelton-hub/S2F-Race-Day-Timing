@@ -130,6 +130,7 @@ jobs:
             "--packTitle", "S2F Race Day Timing",
             "--icon", "src/S2F.RaceDayCheckout/Assets/app.ico",
             "--shortcuts", "StartMenuRoot",
+            "--aumid", "Start2Finish.RaceDayCheckout",
             "--channel", $channel,
             "--outputDir", "releases/$channel"
           )
