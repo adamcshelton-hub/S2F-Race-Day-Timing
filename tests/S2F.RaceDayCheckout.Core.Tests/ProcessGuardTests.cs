@@ -20,14 +20,15 @@ public class ProcessGuardTests
     }
 
     [Fact]
-    public async Task WaitForBlockingClearedAsync_ReturnsImmediatelyWhenNothingBlocking()
+    public async Task WaitForBlockingClearedAsync_ReturnsClearedWhenNothingBlocking()
     {
         // Use names that never match real processes on the test host.
         var guard = new ProcessGuard(
             exactNames: ["__S2F_NeverRunning_XYZ__"],
             substrings: ["__S2F_NeverSub_XYZ__"]);
 
-        var remaining = await guard.WaitForBlockingClearedAsync(TimeSpan.FromSeconds(2));
-        Assert.Empty(remaining);
+        var result = await guard.WaitForBlockingClearedAsync(TimeSpan.FromSeconds(2));
+        Assert.Equal(BlockingWaitKind.Cleared, result.Kind);
+        Assert.Empty(result.ProcessNames);
     }
 }

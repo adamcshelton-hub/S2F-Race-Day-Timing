@@ -593,24 +593,33 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
         try
         {
-            // RSServer often keeps running a few seconds after the RunScore window closes.
+            // 1) Fail fast if the RunScore/T&S window is still open.
+            // 2) Only then wait for headless RSServer (often lingers after the UI closes).
             SetFinishProgress(
                 "1 · Waiting for RunScore",
-                "Checking that RunScore is fully closed…\n(RSServer can linger a few seconds after the window closes.)");
-            var stillRunning = await _processGuard.WaitForBlockingClearedAsync(
+                "Checking that RunScore is closed…");
+            var wait = await _processGuard.WaitForBlockingClearedAsync(
                 TimeSpan.FromSeconds(25),
                 new Progress<string>(s => SetFinishProgress("1 · Waiting for RunScore", s)));
-            if (stillRunning.Count > 0)
+            if (wait.Kind == BlockingWaitKind.WindowStillOpen)
             {
-                var names = string.Join(", ", stillRunning);
+                var names = string.Join(", ", wait.ProcessNames);
                 await ShowBusyResultAsync(
                     "Still open",
-                    "RunScore is still running in the background"
-                    + (stillRunning.Any(ProcessGuard.IsRunScoreProcess)
-                        ? " (RSServer can take a moment after you close the window)."
-                        : ".")
+                    "Close RunScore (and Timing & Scoring) first, then tap Finish again.\n\n"
+                    + $"Still open: {names}");
+                return;
+            }
+
+            if (wait.Kind == BlockingWaitKind.StillRunning)
+            {
+                var names = string.Join(", ", wait.ProcessNames);
+                await ShowBusyResultAsync(
+                    "Still open",
+                    "The RunScore window is closed, but a background process is still running"
+                    + (wait.ProcessNames.Any(ProcessGuard.IsRunScoreProcess) ? " (RSServer)." : ".")
                     + $"\n\nStill detected: {names}\n\n"
-                    + "Wait a few seconds and tap Finish again. If it keeps happening, end the process in Task Manager.");
+                    + "Wait a few seconds and tap Finish again. If it keeps happening, end it in Task Manager.");
                 return;
             }
 

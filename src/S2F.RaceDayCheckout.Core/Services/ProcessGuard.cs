@@ -10,6 +10,36 @@ public interface IProcessGuard
     IReadOnlyList<string> GetRunScoreProcessNames();
 }
 
+/// <summary>Result of Finish's "close RunScore first" gate.</summary>
+public sealed class BlockingWaitResult
+{
+    public static BlockingWaitResult Cleared() => new() { Kind = BlockingWaitKind.Cleared };
+
+    public static BlockingWaitResult WindowStillOpen(IReadOnlyList<string> names) => new()
+    {
+        Kind = BlockingWaitKind.WindowStillOpen,
+        ProcessNames = names
+    };
+
+    public static BlockingWaitResult StillRunning(IReadOnlyList<string> names) => new()
+    {
+        Kind = BlockingWaitKind.StillRunning,
+        ProcessNames = names
+    };
+
+    public BlockingWaitKind Kind { get; init; }
+    public IReadOnlyList<string> ProcessNames { get; init; } = Array.Empty<string>();
+}
+
+public enum BlockingWaitKind
+{
+    Cleared,
+    /// <summary>A timing app still has a visible window — user must close it.</summary>
+    WindowStillOpen,
+    /// <summary>No window, but process(es) did not exit before timeout.</summary>
+    StillRunning
+}
+
 public sealed class ProcessGuard : IProcessGuard
 {
     /// <summary>
@@ -58,26 +88,32 @@ public sealed class ProcessGuard : IProcessGuard
     ];
 
     public IReadOnlyList<string> GetBlockingProcessNames() =>
-        EnumerateMatching(IsBlocking);
+        EnumerateMatching(IsBlocking).Select(p => p.Name).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(n => n).ToList();
 
     public IReadOnlyList<string> GetRunScoreProcessNames() =>
-        EnumerateMatching(IsRunScoreProcess);
+        EnumerateMatching(IsRunScoreProcess).Select(p => p.Name).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(n => n).ToList();
 
     /// <summary>
-    /// Poll until blocking timing apps exit. RSServer often lingers several seconds after
-    /// the RunScore window is closed while it flushes files.
+    /// Finish gate: if a timing app still has a visible window, fail immediately.
+    /// Only then wait for headless leftovers (RSServer flushing after the UI closed).
     /// </summary>
-    /// <returns>Empty when clear; otherwise the names still running when <paramref name="timeout"/> elapsed.</returns>
-    public async Task<IReadOnlyList<string>> WaitForBlockingClearedAsync(
+    public async Task<BlockingWaitResult> WaitForBlockingClearedAsync(
         TimeSpan timeout,
         IProgress<string>? progress = null,
         CancellationToken cancellationToken = default)
     {
-        var deadline = DateTime.UtcNow + timeout;
-        IReadOnlyList<string> blocking = GetBlockingProcessNames();
-        if (blocking.Count == 0)
-            return blocking;
+        var snapshot = EnumerateMatching(IsBlocking);
+        if (snapshot.Count == 0)
+            return BlockingWaitResult.Cleared();
 
+        var withWindow = snapshot.Where(p => p.HasMainWindow).Select(p => p.Name)
+            .Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(n => n).ToList();
+        if (withWindow.Count > 0)
+            return BlockingWaitResult.WindowStillOpen(withWindow);
+
+        // Window is gone — give RSServer a short window to finish exiting.
+        var deadline = DateTime.UtcNow + timeout;
+        var blocking = snapshot.Select(p => p.Name).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(n => n).ToList();
         progress?.Report(FormatWaitingMessage(blocking, deadline - DateTime.UtcNow));
 
         while (DateTime.UtcNow < deadline)
@@ -85,14 +121,21 @@ public sealed class ProcessGuard : IProcessGuard
             cancellationToken.ThrowIfCancellationRequested();
             await Task.Delay(400, cancellationToken).ConfigureAwait(false);
 
-            blocking = GetBlockingProcessNames();
-            if (blocking.Count == 0)
-                return blocking;
+            snapshot = EnumerateMatching(IsBlocking);
+            if (snapshot.Count == 0)
+                return BlockingWaitResult.Cleared();
 
+            // User reopened the UI while we were waiting.
+            withWindow = snapshot.Where(p => p.HasMainWindow).Select(p => p.Name)
+                .Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(n => n).ToList();
+            if (withWindow.Count > 0)
+                return BlockingWaitResult.WindowStillOpen(withWindow);
+
+            blocking = snapshot.Select(p => p.Name).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(n => n).ToList();
             progress?.Report(FormatWaitingMessage(blocking, deadline - DateTime.UtcNow));
         }
 
-        return blocking;
+        return BlockingWaitResult.StillRunning(blocking);
     }
 
     private static string FormatWaitingMessage(IReadOnlyList<string> blocking, TimeSpan remaining)
@@ -100,8 +143,8 @@ public sealed class ProcessGuard : IProcessGuard
         var names = string.Join(", ", blocking);
         var seconds = Math.Max(1, (int)Math.Ceiling(remaining.TotalSeconds));
         if (blocking.Any(IsRunScoreProcess))
-            return $"RunScore is still closing in the background ({names}).\nWaiting up to {seconds}s…";
-        return $"Timing apps still closing ({names}).\nWaiting up to {seconds}s…";
+            return $"RunScore window is closed.\nWaiting for background process to exit ({names}) — up to {seconds}s…";
+        return $"App window is closed.\nWaiting for background process to exit ({names}) — up to {seconds}s…";
     }
 
     public bool IsBlocking(string processName)
@@ -126,9 +169,11 @@ public sealed class ProcessGuard : IProcessGuard
                || processName.Contains("RSServer", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static IReadOnlyList<string> EnumerateMatching(Func<string, bool> match)
+    private readonly record struct ProcessMatch(string Name, bool HasMainWindow);
+
+    private static IReadOnlyList<ProcessMatch> EnumerateMatching(Func<string, bool> match)
     {
-        var found = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var found = new List<ProcessMatch>();
         try
         {
             foreach (var process in Process.GetProcesses())
@@ -136,8 +181,21 @@ public sealed class ProcessGuard : IProcessGuard
                 try
                 {
                     var name = process.ProcessName;
-                    if (match(name))
-                        found.Add(name);
+                    if (!match(name))
+                        continue;
+
+                    var hasWindow = false;
+                    try
+                    {
+                        // MainWindowHandle != 0 ⇒ process still owns a visible top-level window.
+                        hasWindow = process.MainWindowHandle != IntPtr.Zero;
+                    }
+                    catch
+                    {
+                        // access denied — treat as unknown/no window so we still wait rather than false "open"
+                    }
+
+                    found.Add(new ProcessMatch(name, hasWindow));
                 }
                 catch
                 {
@@ -154,6 +212,6 @@ public sealed class ProcessGuard : IProcessGuard
             // ignore enumeration failures
         }
 
-        return found.OrderBy(n => n).ToList();
+        return found;
     }
 }

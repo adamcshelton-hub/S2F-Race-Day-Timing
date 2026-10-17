@@ -8,8 +8,8 @@
     <UseWPF>true</UseWPF>
     <RootNamespace>S2F.RaceDayCheckout</RootNamespace>
     <AssemblyName>S2F.RaceDayCheckout</AssemblyName>
-    <Version>0.3.7</Version>
-    <InformationalVersion>0.3.7</InformationalVersion>
+    <Version>0.3.8</Version>
+    <InformationalVersion>0.3.8</InformationalVersion>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
     <!-- Velopack: custom Main before WPF startup -->
     <StartupObject>S2F.RaceDayCheckout.Program</StartupObject>
