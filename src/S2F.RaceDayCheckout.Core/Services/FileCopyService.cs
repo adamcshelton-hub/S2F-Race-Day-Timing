@@ -66,7 +66,9 @@ public sealed class FileCopyService : IFileCopyService
     {
         try
         {
-            var args = $"\"{source}\" \"{destination}\" /E /R:2 /W:2 /NFL /NDL /NJH /NJS /NP";
+            // Never bulk-copy the live autosave mirror folder as part of a full tree replace.
+            var args =
+                $"\"{source}\" \"{destination}\" /E /R:2 /W:2 /NFL /NDL /NJH /NJS /NP /XD \"{PathService.AutosaveFolderName}\" \"{PathService.AppMetaFolderName}\" \"._checkin_backup\"";
             if (mirror)
                 args += " /XO"; // exclude older
 
@@ -156,8 +158,12 @@ public sealed class FileCopyService : IFileCopyService
     }
 
     private static bool IsAppMetaRelative(string relative) =>
-        relative.Equals(PathService.AppMetaFolderName, StringComparison.OrdinalIgnoreCase)
-        || relative.StartsWith(PathService.AppMetaFolderName + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
-        || relative.StartsWith(PathService.AppMetaFolderName + Path.AltDirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
-        || relative.StartsWith("._checkin_backup", StringComparison.OrdinalIgnoreCase);
+        IsExcludedTree(relative, PathService.AppMetaFolderName)
+        || IsExcludedTree(relative, PathService.AutosaveFolderName)
+        || IsExcludedTree(relative, "._checkin_backup");
+
+    private static bool IsExcludedTree(string relative, string folderName) =>
+        relative.Equals(folderName, StringComparison.OrdinalIgnoreCase)
+        || relative.StartsWith(folderName + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+        || relative.StartsWith(folderName + Path.AltDirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
 }

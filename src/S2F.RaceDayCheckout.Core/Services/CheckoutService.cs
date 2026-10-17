@@ -38,6 +38,7 @@ public sealed class CheckoutService
     private readonly ActiveCheckoutStore _activeStore;
     private readonly IOneDriveSyncMonitor _syncMonitor;
     private readonly IOneDriveHydrationService _hydrate;
+    private readonly RunScorePreferencesService _runScorePrefs;
 
     public CheckoutService(
         PathService paths,
@@ -46,7 +47,8 @@ public sealed class CheckoutService
         IProcessGuard processes,
         ActiveCheckoutStore activeStore,
         IOneDriveSyncMonitor? syncMonitor = null,
-        IOneDriveHydrationService? hydrate = null)
+        IOneDriveHydrationService? hydrate = null,
+        RunScorePreferencesService? runScorePrefs = null)
     {
         _paths = paths;
         _locks = locks;
@@ -55,6 +57,7 @@ public sealed class CheckoutService
         _activeStore = activeStore;
         _syncMonitor = syncMonitor ?? new SettlingOneDriveSyncMonitor();
         _hydrate = hydrate ?? new OneDriveHydrationService();
+        _runScorePrefs = runScorePrefs ?? new RunScorePreferencesService();
     }
 
     public ActiveCheckout? GetActive() => _activeStore.Load();
@@ -162,11 +165,30 @@ public sealed class CheckoutService
         statusProgress?.Report("Making sure race files are downloaded…");
         await _hydrate.HydrateDirectoryAsync(libraryRunScore, statusProgress, cancellationToken);
         await _hydrate.HydrateFileAsync(libraryEventFile, statusProgress, cancellationToken);
+        if (Directory.Exists(autosavePath))
+            await _hydrate.HydrateDirectoryAsync(autosavePath, statusProgress, cancellationToken);
 
         statusProgress?.Report("Copying race files to this laptop…");
         await _copy.CopyDirectoryAsync(libraryRunScore, activeRunScore, progress, cancellationToken);
         Directory.CreateDirectory(activePath);
         File.Copy(libraryEventFile, activeEventFile, overwrite: true);
+
+        // Mid-race failover: apply newer OneDrive RUNSCORE\_autosave on top of Active.
+        // (Primary laptop mirrors Backup → _autosave while racing; 2nd laptop must pick that up.)
+        var autosaveMerged = 0;
+        if (Directory.Exists(autosavePath)
+            && Directory.EnumerateFiles(autosavePath, "*", SearchOption.AllDirectories).Any())
+        {
+            statusProgress?.Report("Applying live autosave from OneDrive…");
+            var mergeProgress = new Progress<CopyProgress>(p =>
+            {
+                autosaveMerged = (int)p.FilesCopied;
+                progress?.Report(p);
+            });
+            await _copy.MirrorNewerFilesAsync(autosavePath, activeRunScore, mergeProgress, cancellationToken);
+            // Seed local Backup so RunScore alternate folder also has the recovered files.
+            await _copy.MirrorNewerFilesAsync(activeRunScore, backupPath, cancellationToken: cancellationToken);
+        }
 
         var scoped = new List<string> { PathService.RunScoreFolderName, primary };
         var emergency = eval.Outcome == LockAcquireOutcome.NeedsEmergencyConfirm;
@@ -198,14 +220,34 @@ public sealed class CheckoutService
         };
         _activeStore.Save(active);
 
+        // Point RunScore alternate-save folders at this checkout's Backup before the timer opens RS.
+        // Re-applied again on Open RunScore; doing it here covers Explorer / manual launches too.
+        var prefResult = _runScorePrefs.ApplySop(backupPath);
+        var prefNote = prefResult.Success
+            ? (prefResult.UpdatedCount > 0
+                ? $" RunScore preferences updated to SOP ({prefResult.UpdatedCount} change(s))."
+                : " RunScore preferences already match SOP.")
+            : $" RunScore preference SOP warning: {prefResult.Message}";
+
+        var failoverNote = autosaveMerged > 0
+            ? $" Applied {autosaveMerged} newer autosave file(s) from OneDrive."
+            : Directory.Exists(autosavePath)
+                ? " No newer autosave files were found on OneDrive (recovery may be limited to last Finish)."
+                : "";
+
         return new CheckoutResult
         {
             Success = true,
             Outcome = eval.Outcome,
             Active = active,
             Message = emergency
-                ? "Emergency reclaim succeeded. RUNSCORE + primary .event are local under Active. DB's / Pre-Race / other .events stay on OneDrive."
-                : "Checkout complete. Launch RunScore/T&S from Active only. Point live CSV export at OneDrive DB's — not Active."
+                ? "Emergency reclaim succeeded. RUNSCORE + primary .event are local under Active."
+                  + failoverNote
+                  + prefNote
+                  + " DB's / Pre-Race / other .events stay on OneDrive."
+                : "Checkout complete. Launch RunScore/T&S from Active only."
+                  + (autosaveMerged > 0 ? failoverNote : "")
+                  + prefNote
         };
     }
 
@@ -254,6 +296,9 @@ public sealed class CheckoutService
         statusProgress?.Report("Copying Active → OneDrive (RUNSCORE + primary .event)…");
         await _copy.CopyDirectoryAsync(activeRunScore, libraryRunScore, progress, cancellationToken);
         File.Copy(activeEvent, libraryEvent, overwrite: true);
+
+        // Race is finished — clear mid-race autosave so the next checkout doesn't merge leftovers.
+        TryClearAutosave(active.AutosavePath);
 
         _locks.Release(active.LibrarySessionPath, holderName);
 
@@ -312,5 +357,18 @@ public sealed class CheckoutService
                 "Finish copied files and released the lock, but OneDrive sync was not confirmed yet. " + syncMessage
                 + " Check the OneDrive cloud icon, then shut down only when it shows synced."
         };
+    }
+
+    private static void TryClearAutosave(string autosavePath)
+    {
+        try
+        {
+            if (Directory.Exists(autosavePath))
+                Directory.Delete(autosavePath, recursive: true);
+        }
+        catch
+        {
+            // OneDrive may lock briefly; leftover autosave is still OK (newer-only merge).
+        }
     }
 }

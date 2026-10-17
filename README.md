@@ -73,6 +73,26 @@ dotnet run --project src\S2F.RaceDayCheckout
 
 Locks / history / finish backups live under `._checkin\` on the session leaf.
 
+## RunScore preferences (SOP)
+
+On **checkout** and again on **Open RunScore**, the app writes company SOP values into
+`HKCU\Software\RunTime Software\RunScore` (same store RunScore Preferences uses).
+
+Editable file (seeded on first use):
+
+`%AppData%\S2FRaceDayCheckout\runscore-sop.json`
+
+Admin → **Edit RunScore SOP…** opens that file. Use `"{{BackupPath}}"` for alternate folders (filled per checkout). `autoSaveMinutes` is converted to RunScore counts (`× 300`).
+
+| Preference | Default SOP |
+|------------|-------------|
+| Alternate folder to save entries (`Save entries dir`) | `{{BackupPath}}` → this checkout’s Backup |
+| Alternate folder to save results (`Save results dir`) | Same |
+| Minutes for Auto Save | **1** (`autoSaveMinutes`; → `300` counts) |
+| Other Server Preferences | See `bools` / `ints` / `strings` in the JSON |
+
+Timers should not need to open Tools → Preferences on race day. If RunScore was already open, close and relaunch so it reloads the registry. Save the JSON, then checkout or Open RunScore to apply.
+
 ## Fixtures
 
 `fixtures/SampleLibrary` — Memphis + Nashville sample sessions for safe QA.

@@ -132,6 +132,8 @@
         <DockPanel Grid.Row="1" LastChildFill="True"
                    Visibility="{Binding IsAdminStep, Converter={StaticResource BoolVis}}">
           <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+            <Button Content="Edit RunScore SOP…" Style="{StaticResource SecondaryButton}"
+                    Width="180" Margin="0,0,12,0" Click="EditRunScoreSop_Click"/>
             <Button Content="Check for updates" Style="{StaticResource SecondaryButton}"
                     Width="170" Margin="0,0,12,0" Click="CheckUpdates_Click"/>
             <Button Content="Save settings" Style="{StaticResource PrimaryButton}"
@@ -151,11 +153,21 @@
 
             <StackPanel Grid.Row="0" Grid.Column="0" Margin="0,0,0,14">
               <TextBlock Text="Library root" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}"/>
-              <TextBox Text="{Binding LibraryRoot}" Padding="10,8"/>
+              <DockPanel LastChildFill="True">
+                <Button DockPanel.Dock="Right" Content="Browse…" Style="{StaticResource SecondaryButton}"
+                        MinHeight="40" Padding="14,8" Margin="8,0,0,0" Click="BrowseLibrary_Click"/>
+                <TextBox Text="{Binding LibraryRoot, UpdateSourceTrigger=PropertyChanged}" Padding="10,8"
+                         VerticalContentAlignment="Center"/>
+              </DockPanel>
             </StackPanel>
             <StackPanel Grid.Row="0" Grid.Column="2" Margin="0,0,0,14">
               <TextBlock Text="Local race day folder" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}"/>
-              <TextBox Text="{Binding RaceDayRoot}" Padding="10,8"/>
+              <DockPanel LastChildFill="True">
+                <Button DockPanel.Dock="Right" Content="Browse…" Style="{StaticResource SecondaryButton}"
+                        MinHeight="40" Padding="14,8" Margin="8,0,0,0" Click="BrowseRaceDay_Click"/>
+                <TextBox Text="{Binding RaceDayRoot, UpdateSourceTrigger=PropertyChanged}" Padding="10,8"
+                         VerticalContentAlignment="Center"/>
+              </DockPanel>
             </StackPanel>
 
             <StackPanel Grid.Row="1" Grid.Column="0" Margin="0,0,0,14">
@@ -169,11 +181,21 @@
 
             <StackPanel Grid.Row="2" Grid.Column="0">
               <TextBlock Text="RunScore exe (optional)" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}"/>
-              <TextBox Text="{Binding RunScoreExePath}" Padding="10,8"/>
+              <DockPanel LastChildFill="True">
+                <Button DockPanel.Dock="Right" Content="Browse…" Style="{StaticResource SecondaryButton}"
+                        MinHeight="40" Padding="14,8" Margin="8,0,0,0" Click="BrowseRunScoreExe_Click"/>
+                <TextBox Text="{Binding RunScoreExePath, UpdateSourceTrigger=PropertyChanged}" Padding="10,8"
+                         VerticalContentAlignment="Center"/>
+              </DockPanel>
             </StackPanel>
             <StackPanel Grid.Row="2" Grid.Column="2">
               <TextBlock Text="Timing &amp; Scoring exe (optional)" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}"/>
-              <TextBox Text="{Binding TimingAndScoringExePath}" Padding="10,8"/>
+              <DockPanel LastChildFill="True">
+                <Button DockPanel.Dock="Right" Content="Browse…" Style="{StaticResource SecondaryButton}"
+                        MinHeight="40" Padding="14,8" Margin="8,0,0,0" Click="BrowseTsExe_Click"/>
+                <TextBox Text="{Binding TimingAndScoringExePath, UpdateSourceTrigger=PropertyChanged}" Padding="10,8"
+                         VerticalContentAlignment="Center"/>
+              </DockPanel>
             </StackPanel>
           </Grid>
         </DockPanel>

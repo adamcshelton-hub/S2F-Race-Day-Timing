@@ -1,7 +1,9 @@
 using System.ComponentModel;
+using System.IO;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Threading;
+using Microsoft.Win32;
 using S2F.RaceDayCheckout.Core.Models;
 using S2F.RaceDayCheckout.Services;
 using S2F.RaceDayCheckout.ViewModels;
@@ -60,6 +62,73 @@ public partial class MainWindow : Window
     private void BusyOk_Click(object sender, RoutedEventArgs e) => _vm.AcknowledgeBusy();
 
     private void SaveAdmin_Click(object sender, RoutedEventArgs e) => _vm.SaveAdminSettings();
+
+    private void EditRunScoreSop_Click(object sender, RoutedEventArgs e) => _vm.EditRunScoreSop();
+
+    private void BrowseLibrary_Click(object sender, RoutedEventArgs e)
+    {
+        if (TryPickFolder("Choose Library root (OneDrive)", _vm.LibraryRoot) is { } path)
+            _vm.LibraryRoot = path;
+    }
+
+    private void BrowseRaceDay_Click(object sender, RoutedEventArgs e)
+    {
+        if (TryPickFolder("Choose local Race Day folder", _vm.RaceDayRoot) is { } path)
+            _vm.RaceDayRoot = path;
+    }
+
+    private void BrowseRunScoreExe_Click(object sender, RoutedEventArgs e)
+    {
+        if (TryPickExe("Locate RunScore (rsserver.exe)", _vm.RunScoreExePath) is { } path)
+            _vm.RunScoreExePath = path;
+    }
+
+    private void BrowseTsExe_Click(object sender, RoutedEventArgs e)
+    {
+        if (TryPickExe("Locate Timing & Scoring", _vm.TimingAndScoringExePath) is { } path)
+            _vm.TimingAndScoringExePath = path;
+    }
+
+    private static string? TryPickFolder(string title, string? current)
+    {
+        var dialog = new OpenFolderDialog
+        {
+            Title = title,
+            Multiselect = false
+        };
+        if (!string.IsNullOrWhiteSpace(current) && Directory.Exists(current))
+            dialog.InitialDirectory = current;
+
+        return dialog.ShowDialog() == true ? dialog.FolderName : null;
+    }
+
+    private static string? TryPickExe(string title, string? current)
+    {
+        var dialog = new OpenFileDialog
+        {
+            Title = title,
+            Filter = "Programs (*.exe)|*.exe|All files (*.*)|*.*",
+            CheckFileExists = true,
+            Multiselect = false
+        };
+        if (!string.IsNullOrWhiteSpace(current))
+        {
+            try
+            {
+                var dir = Path.GetDirectoryName(current);
+                if (!string.IsNullOrWhiteSpace(dir) && Directory.Exists(dir))
+                    dialog.InitialDirectory = dir;
+                if (File.Exists(current))
+                    dialog.FileName = Path.GetFileName(current);
+            }
+            catch
+            {
+                // ignore bad current path
+            }
+        }
+
+        return dialog.ShowDialog() == true ? dialog.FileName : null;
+    }
 
     private void Logo_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {

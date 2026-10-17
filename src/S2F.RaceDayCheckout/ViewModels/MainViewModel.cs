@@ -23,6 +23,7 @@ public enum WizardStep
 public sealed class MainViewModel : INotifyPropertyChanged
 {
     private readonly SettingsStore _settingsStore = new();
+    private readonly RunScoreSopStore _sopStore = new();
     private readonly PathService _paths = new();
     private readonly MachineIdentity _machine = new();
     private readonly FileCopyService _copy = new();
@@ -249,7 +250,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
         if (string.IsNullOrWhiteSpace(technical))
             return "Please wait…";
         if (technical.Contains("Downloading from OneDrive", StringComparison.OrdinalIgnoreCase)
-            || technical.Contains("downloaded", StringComparison.OrdinalIgnoreCase))
+            || technical.Contains("downloaded", StringComparison.OrdinalIgnoreCase)
+            || technical.Contains("autosave", StringComparison.OrdinalIgnoreCase))
             return technical;
         if (technical.Contains("OneDrive", StringComparison.OrdinalIgnoreCase)
             || technical.Contains("settle", StringComparison.OrdinalIgnoreCase)
@@ -417,14 +419,20 @@ public sealed class MainViewModel : INotifyPropertyChanged
             if (eval.Outcome == LockAcquireOutcome.NeedsEmergencyConfirm)
             {
                 ClearBusy();
+                var holder = eval.Lock?.HolderName ?? "another timer";
+                var machine = eval.Lock?.MachineName ?? "another laptop";
+                var lastSeen = eval.Lock?.LastSeenAt.ToLocalTime().ToString("g") ?? "unknown";
                 if (!TimerDialog.Confirm(
                         OwnerWindow,
                         "Take over event?",
-                        "This event looks stuck from another computer that may have crashed.\n\nTake it over for this laptop?",
+                        $"This event was checked out by {holder} on {machine}.\n"
+                        + $"Last seen {lastSeen} — that laptop looks offline (crashed or shut down).\n\n"
+                        + "Take over on this laptop?\n\n"
+                        + "We'll load the race from OneDrive and apply any newer live autosave files from the other machine.",
                         yesLabel: "Take over",
                         noLabel: "Cancel"))
                     return;
-                SetBusy("Loading event", "Getting your race ready…");
+                SetBusy("Loading event", "Recovering race…");
                 reason = "Emergency reclaim — other laptop unavailable";
                 confirmEmergency = true;
             }
@@ -454,7 +462,18 @@ public sealed class MainViewModel : INotifyPropertyChanged
             Active = result.Active;
             Step = WizardStep.Active;
             Status = string.Empty;
-            ClearBusy();
+
+            // After crash take-over (or any checkout that applied autosave), make recovery obvious.
+            if (confirmEmergency || result.Message.Contains("autosave", StringComparison.OrdinalIgnoreCase))
+            {
+                await ShowBusyResultAsync(
+                    confirmEmergency ? "Race recovered" : "Race loaded",
+                    result.Message);
+            }
+            else
+            {
+                ClearBusy();
+            }
         }
         catch (Exception ex)
         {
@@ -564,7 +583,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
         if (!result.Success)
             Alert("RunScore", result.Message);
         else
-            Status = "RunScore opening…";
+            Status = result.Message.Contains("Updated", StringComparison.OrdinalIgnoreCase)
+                ? "RunScore opening… (preferences set to SOP)"
+                : "RunScore opening…";
     }
 
     public void LaunchTimingAndScoring()
@@ -603,6 +624,24 @@ public sealed class MainViewModel : INotifyPropertyChanged
         _settingsStore.Save(_settings);
         Status = "Settings saved.";
         ReloadFromDisk();
+    }
+
+    public void EditRunScoreSop()
+    {
+        try
+        {
+            var path = _sopStore.EnsureFile();
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = path,
+                UseShellExecute = true
+            });
+            Status = "Opened RunScore SOP — save the file, then checkout / Open RunScore to apply.";
+        }
+        catch (Exception ex)
+        {
+            Alert("RunScore SOP", "Could not open runscore-sop.json:\n" + ex.Message);
+        }
     }
 
     private void LoadOffices()

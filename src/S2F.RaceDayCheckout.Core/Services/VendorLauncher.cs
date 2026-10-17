@@ -14,11 +14,25 @@ public sealed class VendorLauncher
     private static readonly string[] RunScoreExeNames = ["rsserver.exe", "RSServer.exe", "RunScore.exe"];
     private static readonly string[] RaceFileNames = ["ENTRIES.FRM", "entries.frm", "ENTRIES.DTA"];
 
+    private readonly RunScorePreferencesService _prefs;
+
+    public VendorLauncher(RunScorePreferencesService? prefs = null)
+    {
+        _prefs = prefs ?? new RunScorePreferencesService();
+    }
+
     public LaunchResult LaunchRunScore(ActiveCheckout active, AppSettings settings)
     {
         var runScoreDir = Path.Combine(active.ActivePath, PathService.RunScoreFolderName);
         if (!Directory.Exists(runScoreDir))
             return new LaunchResult { Success = false, Message = $"Active RUNSCORE missing: {runScoreDir}" };
+
+        // Zero timer steps: enforce company SOP prefs (alternate Backup folder, 1-min auto-save, etc.)
+        // before RSServer loads the registry into memory.
+        var prefResult = _prefs.ApplySop(active.BackupPath);
+        var prefNote = prefResult.Success
+            ? " " + prefResult.Message
+            : " Preference SOP warning: " + prefResult.Message;
 
         var raceFile = FindRaceFile(runScoreDir);
         var exe = ResolveRunScoreExe(settings);
@@ -32,6 +46,7 @@ public sealed class VendorLauncher
                 {
                     Success = true,
                     Message = "RunScore exe not found — opened Active RUNSCORE folder. Set RunScore path in Settings for one-click launch."
+                              + prefNote
                 };
             }
             catch (Exception ex)
@@ -55,9 +70,10 @@ public sealed class VendorLauncher
             return new LaunchResult
             {
                 Success = true,
-                Message = raceFile is null
+                Message = (raceFile is null
                     ? $"Launched RunScore. Open the race under {runScoreDir}."
-                    : $"Launched RunScore with {Path.GetFileName(raceFile)}."
+                    : $"Launched RunScore with {Path.GetFileName(raceFile)}.")
+                    + prefNote
             };
         }
         catch (Exception ex)

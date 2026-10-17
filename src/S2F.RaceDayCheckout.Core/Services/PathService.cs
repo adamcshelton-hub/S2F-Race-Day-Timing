@@ -6,6 +6,9 @@ public sealed class PathService
 {
     public const string RunScoreFolderName = "RUNSCORE";
 
+    /// <summary>OneDrive folder under RUNSCORE where live Backup mirrors land for mid-race failover.</summary>
+    public const string AutosaveFolderName = "_autosave";
+
     /// <summary>Hidden app metadata under each session (locks, history, finish backups).</summary>
     public const string AppMetaFolderName = "._checkin";
 
@@ -34,7 +37,7 @@ public sealed class PathService
         Path.Combine(settings.RaceDayRoot, "Backup", office, relativePath);
 
     public string GetAutosavePath(string librarySessionPath) =>
-        Path.Combine(librarySessionPath, RunScoreFolderName, "_autosave");
+        Path.Combine(librarySessionPath, RunScoreFolderName, AutosaveFolderName);
 
     public string GetAppMetaFolder(string librarySessionPath) =>
         Path.Combine(librarySessionPath, AppMetaFolderName);

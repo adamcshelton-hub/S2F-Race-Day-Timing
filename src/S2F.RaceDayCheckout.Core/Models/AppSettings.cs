@@ -9,8 +9,10 @@ public sealed class AppSettings
     public string RaceDayRoot { get; set; } = DefaultRaceDayRoot;
     public string DisplayName { get; set; } = string.Empty;
     public string AdminPin { get; set; } = "7690";
+    public const int DefaultStaleLockMinutes = 18;
+
     public int HeartbeatSeconds { get; set; } = 120;
-    public int StaleLockMinutes { get; set; } = 18;
+    public int StaleLockMinutes { get; set; } = DefaultStaleLockMinutes;
     public int AutosaveMirrorSeconds { get; set; } = 60;
     public int OneDriveSyncWaitSeconds { get; set; } = 180;
 

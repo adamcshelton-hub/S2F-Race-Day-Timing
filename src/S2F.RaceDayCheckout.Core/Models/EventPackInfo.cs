@@ -43,10 +43,14 @@ public sealed class EventPackInfo
         {
             if (Lock is null || Lock.Status != LockLifecycleStatus.Active)
                 return "Available";
-            var scope = Lock.ScopedPaths is { Count: > 0 }
-                ? " — " + string.Join(", ", Lock.ScopedPaths)
-                : string.Empty;
-            return $"{Lock.HolderName} @ {Lock.MachineName}{scope}";
+
+            // Match AppSettings.StaleLockMinutes default — list should not look "free" after a crash.
+            var staleAfter = TimeSpan.FromMinutes(AppSettings.DefaultStaleLockMinutes);
+            var age = DateTimeOffset.UtcNow - Lock.LastSeenAt;
+            if (age > staleAfter)
+                return $"Stale — was {Lock.HolderName} @ {Lock.MachineName} (can take over)";
+
+            return $"{Lock.HolderName} @ {Lock.MachineName}";
         }
     }
 }

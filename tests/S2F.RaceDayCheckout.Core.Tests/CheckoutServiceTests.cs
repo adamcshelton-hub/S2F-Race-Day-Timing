@@ -117,6 +117,43 @@ public class CheckoutServiceTests
     }
 
     [Fact]
+    public async Task Checkout_MergesNewerAutosaveIntoActiveRunScore()
+    {
+        var (packPath, libraryRoot) = CreateFlatPack();
+        // Stale base RUNSCORE on OneDrive…
+        File.WriteAllText(Path.Combine(packPath, "RUNSCORE", "ENTRIES.FRM"), "stale-base");
+        File.SetLastWriteTimeUtc(Path.Combine(packPath, "RUNSCORE", "ENTRIES.FRM"), DateTime.UtcNow.AddHours(-2));
+        // …but live autosave from crashed laptop is newer.
+        var autosave = Path.Combine(packPath, "RUNSCORE", "_autosave");
+        Directory.CreateDirectory(autosave);
+        var autosaveFrm = Path.Combine(autosave, "ENTRIES.FRM");
+        File.WriteAllText(autosaveFrm, "live-autosave");
+        File.SetLastWriteTimeUtc(autosaveFrm, DateTime.UtcNow);
+
+        var raceDay = Path.Combine(Path.GetTempPath(), "s2f-rd-" + Guid.NewGuid().ToString("N"));
+        var settings = new AppSettings { LibraryRoot = libraryRoot, RaceDayRoot = raceDay, DisplayName = "Adam" };
+        var paths = new PathService();
+        var service = new CheckoutService(
+            paths, new CheckoutLockService(paths, new FakeMachine()), new FileCopyService(),
+            new NoProcesses(), new ActiveCheckoutStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json")),
+            new InstantSync());
+
+        var result = await service.CheckoutAsync(new CheckoutRequest
+        {
+            Pack = PackInfo(packPath, "Memphis", "2026 - Sample Event"),
+            Settings = settings,
+            HolderName = "Adam"
+        });
+
+        Assert.True(result.Success, result.Message);
+        var activeFrm = Path.Combine(result.Active!.ActivePath, "RUNSCORE", "ENTRIES.FRM");
+        Assert.Equal("live-autosave", File.ReadAllText(activeFrm));
+        Assert.Contains("autosave", result.Message, StringComparison.OrdinalIgnoreCase);
+        // Backup seeded for RunScore alternate recovery
+        Assert.Equal("live-autosave", File.ReadAllText(Path.Combine(result.Active.BackupPath, "ENTRIES.FRM")));
+    }
+
+    [Fact]
     public async Task NestedSunday_SessionRelativePath()
     {
         var libraryRoot = Path.Combine(Path.GetTempPath(), "s2f-lrm-" + Guid.NewGuid().ToString("N"));
