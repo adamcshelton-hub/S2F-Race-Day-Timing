@@ -8,3 +8,6 @@ publish/
 .DS_Store
 .idea/
 *.DotSettings.user
+
+# Cursor local plans / agent notes — not part of the product
+.cursor/
