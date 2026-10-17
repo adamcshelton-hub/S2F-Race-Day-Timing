@@ -70,6 +70,21 @@ public class AutosaveMirrorServiceTests
         Assert.False(File.Exists(status));
     }
 
+    [Theory]
+    [InlineData("2026 - EventENTRIES.DTA", "2026 - Event", "ENTRIES.DTA", true)]
+    [InlineData("2026 - EventFinish.FN2", "2026 - Event", "Finish.FN2", true)]
+    [InlineData("2026 - Event TESTENTRIES.DTA", "2026 - Event", "", false)]
+    [InlineData("2026 - Events.pdf", "2026 - Event", "", false)]
+    [InlineData("2026 - Event", "2026 - Event", "", false)]
+    public void TryDemangleMisplacedSibling_RejectsPrefixCollisions(
+        string fileName, string folderName, string expectedDest, bool expectMatch)
+    {
+        var matched = AutosaveMirrorService.TryDemangleMisplacedSibling(fileName, folderName, out var dest);
+        Assert.Equal(expectMatch, matched);
+        if (expectMatch)
+            Assert.Equal(expectedDest, dest);
+    }
+
     [Fact]
     public async Task MirrorMisplacedEntriesSiblings_DemanglesConcatenatedNames()
     {

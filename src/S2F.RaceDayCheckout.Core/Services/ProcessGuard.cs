@@ -165,8 +165,7 @@ public sealed class ProcessGuard : IProcessGuard
             return false;
 
         return RunScoreExactNames.Any(n => processName.Equals(n, StringComparison.OrdinalIgnoreCase))
-               || processName.Contains("rsserver", StringComparison.OrdinalIgnoreCase)
-               || processName.Contains("RSServer", StringComparison.OrdinalIgnoreCase);
+               || processName.Contains("rsserver", StringComparison.OrdinalIgnoreCase);
     }
 
     private readonly record struct ProcessMatch(string Name, bool HasMainWindow);

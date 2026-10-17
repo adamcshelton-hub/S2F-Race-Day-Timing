@@ -82,6 +82,11 @@ dotnet run --project src\S2F.RaceDayCheckout
 
 Locks / history / finish backups live under `._checkin\` on the session leaf.
 
+RunScore is launched against the Active `RUNSCORE\` folder, so its **Events** / **Logs**
+subfolders are created there and Finish copies them to OneDrive with the race pack
+(useful for post-race bug reports). Live mid-race mirror data lives in hidden
+`RUNSCORE\_autosave\` (not for staff browsing).
+
 ## RunScore preferences (SOP)
 
 On **checkout** and again on **Open RunScore**, the app writes company SOP values into

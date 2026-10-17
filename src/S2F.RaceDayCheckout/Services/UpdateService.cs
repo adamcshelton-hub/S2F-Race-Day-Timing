@@ -119,9 +119,10 @@ public static class UpdateService
             }
 
             var target = FormatVersion(update.TargetFullRelease.Version);
-            progress.SetMessage($"Downloading update v{target}…");
+            var downloadProgress = progress;
+            downloadProgress.SetMessage($"Downloading update v{target}…");
             await mgr.DownloadUpdatesAsync(update, percent =>
-                progress.SetMessage($"Downloading update v{target}… ({percent}%)"));
+                downloadProgress.SetMessage($"Downloading update v{target}… ({percent}%)"));
 
             progress.Dispose();
             progress = null;

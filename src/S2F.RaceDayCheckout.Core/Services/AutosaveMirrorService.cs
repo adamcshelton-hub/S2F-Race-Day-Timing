@@ -112,13 +112,7 @@ public sealed class AutosaveMirrorService
         {
             cancellationToken.ThrowIfCancellationRequested();
             var name = Path.GetFileName(file);
-            if (!name.StartsWith(folderName, StringComparison.OrdinalIgnoreCase)
-                || name.Length <= folderName.Length)
-                continue;
-
-            // "2026 - EventENTRIES.DTA" → "ENTRIES.DTA"; same for Finish/status/etc.
-            var destName = name[folderName.Length..];
-            if (string.IsNullOrWhiteSpace(destName) || destName.StartsWith('.'))
+            if (!TryDemangleMisplacedSibling(name, folderName, out var destName))
                 continue;
 
             var backupDest = Path.Combine(trimmedBackup, destName);
@@ -141,6 +135,46 @@ public sealed class AutosaveMirrorService
             }
         }
     }
+
+    /// <summary>
+    /// RunScore missing-'\' bug concatenates folder + artifact with no separator
+    /// (e.g. "2026 - EventENTRIES.DTA"). Reject prefix collisions like
+    /// "2026 - Event TEST…" or unrelated "2026 - Events.pdf".
+    /// </summary>
+    public static bool TryDemangleMisplacedSibling(string fileName, string folderName, out string destName)
+    {
+        destName = string.Empty;
+        if (string.IsNullOrWhiteSpace(fileName) || string.IsNullOrWhiteSpace(folderName))
+            return false;
+        if (!fileName.StartsWith(folderName, StringComparison.OrdinalIgnoreCase)
+            || fileName.Length <= folderName.Length)
+            return false;
+
+        var rest = fileName[folderName.Length..];
+        // Next char must start the artifact name (not space/dash from a longer event name).
+        if (rest.Length == 0 || !char.IsLetter(rest[0]))
+            return false;
+
+        if (!MangledRunScoreStems.Any(stem => rest.StartsWith(stem, StringComparison.OrdinalIgnoreCase)))
+            return false;
+
+        // Require an extension so we don't swallow odd extensionless leftovers.
+        if (rest.IndexOf('.') < 1)
+            return false;
+
+        destName = rest;
+        return true;
+    }
+
+    private static readonly string[] MangledRunScoreStems =
+    [
+        "ENTRIES",
+        "Finish",
+        "status",
+        "Results",
+        "TIMES",
+        "BIBS"
+    ];
 
     private static async Task<bool> CopyIfNewerAsync(
         string source,
