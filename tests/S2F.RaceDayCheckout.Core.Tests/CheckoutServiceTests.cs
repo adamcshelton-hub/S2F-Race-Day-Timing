@@ -323,7 +323,7 @@ public class CheckoutServiceTests
         var checkin = await service.CheckinAsync(settings, "Adam", waitForOneDrive: true);
         Assert.True(checkin.Success, checkin.Message);
         Assert.True(checkin.AutosaveCleared);
-        Assert.False(Directory.Exists(autosave));
+        Assert.True(CheckoutService.IsAutosaveCleared(autosave));
         Assert.Null(new ActiveCheckoutStore(activeStorePath).Load());
     }
 
@@ -338,7 +338,16 @@ public class CheckoutServiceTests
         File.SetAttributes(file, FileAttributes.ReadOnly);
 
         Assert.True(CheckoutService.ClearAutosaveWithRetry(autosave));
-        Assert.False(Directory.Exists(autosave));
+        Assert.True(CheckoutService.IsAutosaveCleared(autosave));
+    }
+
+    [Fact]
+    public void IsAutosaveCleared_EmptyFolderCountsAsCleared()
+    {
+        var autosave = Path.Combine(Path.GetTempPath(), "s2f-as-empty-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(autosave);
+        Assert.True(CheckoutService.IsAutosaveCleared(autosave));
+        try { Directory.Delete(autosave); } catch { }
     }
 
     private sealed class OtherMachine : IMachineIdentity

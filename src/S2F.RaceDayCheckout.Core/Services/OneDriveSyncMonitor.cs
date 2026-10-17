@@ -86,7 +86,10 @@ public sealed class SettlingOneDriveSyncMonitor : IOneDriveSyncMonitor
         {
             foreach (var file in Directory.EnumerateFiles(runScore, "*", SearchOption.AllDirectories))
             {
-                if (file.Contains($"{Path.DirectorySeparatorChar}{PathService.AppMetaFolderName}{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase)
+                // Ignore live mid-race mirror — Finish deletes it separately; waiting on it
+                // only slows check-in and keeps OneDrive locks on the folder we need to remove.
+                if (file.Contains($"{Path.DirectorySeparatorChar}{PathService.AutosaveFolderName}{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase)
+                    || file.Contains($"{Path.DirectorySeparatorChar}{PathService.AppMetaFolderName}{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase)
                     || file.Contains($"{Path.DirectorySeparatorChar}._checkin_backup{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase))
                     continue;
                 try

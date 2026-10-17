@@ -176,6 +176,7 @@ public sealed class CheckoutService
         Directory.CreateDirectory(activePath);
         Directory.CreateDirectory(backupPath);
         Directory.CreateDirectory(autosavePath);
+        TryRemoveAutosaveTombstone(autosavePath);
 
         // Pull OneDrive Files On-Demand placeholders local before copy.
         statusProgress?.Report("Making sure race files are downloaded…");
@@ -354,6 +355,12 @@ public sealed class CheckoutService
         await _copy.CopyDirectoryAsync(activeRunScore, libraryRunScore, progress, cancellationToken);
         File.Copy(activeEvent, libraryEvent, overwrite: true);
 
+        // Clear mid-race autosave ASAP (before the OneDrive settle wait). Waiting first kept
+        // OneDrive locks on _autosave and made Finish both slow and unable to delete it.
+        var autosavePath = active.AutosavePath;
+        statusProgress?.Report("Clearing live autosave…");
+        ClearAutosaveWithRetry(autosavePath);
+
         _locks.Release(active.LibrarySessionPath, holderName);
 
         var syncOk = true;
@@ -385,16 +392,12 @@ public sealed class CheckoutService
             }
         }
 
-        // Drop local active record before clearing _autosave so a live mirror tick
-        // cannot recreate the folder while Finish is still running.
-        var autosavePath = active.AutosavePath;
+        // Drop local active record, then one last clear (mirror is paused by the UI).
         _activeStore.Save(null);
-
-        statusProgress?.Report("Clearing live autosave…");
         var autosaveCleared = ClearAutosaveWithRetry(autosavePath);
         var autosaveNote = autosaveCleared
             ? string.Empty
-            : " Live autosave folder could not be deleted — ask setup to remove RUNSCORE\\_autosave before the next race.";
+            : " Live autosave files could not be fully removed — ask setup to delete RUNSCORE\\_autosave before the next race.";
 
         if (activeRemoveError is not null)
         {
@@ -435,42 +438,100 @@ public sealed class CheckoutService
     }
 
     /// <summary>
-    /// Deletes OneDrive RUNSCORE\_autosave with retries. Clears read-only bits and
-    /// falls back to per-file delete when OneDrive holds the directory briefly.
+    /// Removes OneDrive RUNSCORE\_autosave contents (and the folder when possible).
+    /// Success = no files left. An empty leftover folder is OK — reclaim only merges when files exist.
     /// </summary>
     public static bool ClearAutosaveWithRetry(string autosavePath)
     {
         if (string.IsNullOrWhiteSpace(autosavePath) || !Directory.Exists(autosavePath))
             return true;
 
-        for (var attempt = 0; attempt < 8; attempt++)
+        for (var attempt = 0; attempt < 5; attempt++)
         {
-            try
+            TryDeleteAutosaveTree(autosavePath);
+
+            if (IsAutosaveCleared(autosavePath))
+                return true;
+
+            Thread.Sleep(120 * (attempt + 1));
+        }
+
+        return IsAutosaveCleared(autosavePath);
+    }
+
+    /// <summary>True when folder is gone or contains no files (empty dir is safe for reclaim).</summary>
+    public static bool IsAutosaveCleared(string autosavePath)
+    {
+        if (string.IsNullOrWhiteSpace(autosavePath) || !Directory.Exists(autosavePath))
+            return true;
+
+        try
+        {
+            return !Directory.EnumerateFiles(autosavePath, "*", SearchOption.AllDirectories).Any();
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static void TryDeleteAutosaveTree(string autosavePath)
+    {
+        if (!Directory.Exists(autosavePath))
+            return;
+
+        ClearReadOnlyRecursive(autosavePath);
+        TryDeleteAutosaveContents(autosavePath);
+
+        // OneDrive often blocks Directory.Delete on a hot folder — rename then delete.
+        try
+        {
+            if (Directory.Exists(autosavePath)
+                && !Directory.EnumerateFiles(autosavePath, "*", SearchOption.AllDirectories).Any())
             {
-                ClearReadOnlyRecursive(autosavePath);
-                Directory.Delete(autosavePath, recursive: true);
-            }
-            catch
-            {
-                TryDeleteAutosaveContents(autosavePath);
+                var tombstone = autosavePath.TrimEnd('\\', '/') + ".~delete";
+                if (Directory.Exists(tombstone))
+                {
+                    try { Directory.Delete(tombstone, recursive: true); }
+                    catch { /* best effort */ }
+                }
+
                 try
                 {
-                    if (Directory.Exists(autosavePath))
-                        Directory.Delete(autosavePath, recursive: false);
+                    Directory.Move(autosavePath, tombstone);
+                    Directory.Delete(tombstone, recursive: true);
+                    return;
                 }
                 catch
                 {
-                    // retry below
+                    try { Directory.Delete(autosavePath, recursive: false); }
+                    catch { /* empty folder leftover is OK */ }
                 }
             }
-
-            if (!Directory.Exists(autosavePath))
-                return true;
-
-            Thread.Sleep(300 * (attempt + 1));
+            else if (Directory.Exists(autosavePath))
+            {
+                Directory.Delete(autosavePath, recursive: true);
+            }
         }
+        catch
+        {
+            // Contents may still be cleared; IsAutosaveCleared decides success.
+        }
+    }
 
-        return !Directory.Exists(autosavePath);
+    private static void TryRemoveAutosaveTombstone(string autosavePath)
+    {
+        var tombstone = autosavePath.TrimEnd('\\', '/') + ".~delete";
+        if (!Directory.Exists(tombstone))
+            return;
+        try
+        {
+            Directory.Delete(tombstone, recursive: true);
+        }
+        catch
+        {
+            // leftover from a prior Finish — ignore
+        }
     }
 
     private static void ClearReadOnlyRecursive(string root)
@@ -481,9 +542,7 @@ public sealed class CheckoutService
             {
                 try
                 {
-                    var attrs = File.GetAttributes(file);
-                    if ((attrs & FileAttributes.ReadOnly) != 0)
-                        File.SetAttributes(file, attrs & ~FileAttributes.ReadOnly);
+                    File.SetAttributes(file, FileAttributes.Normal);
                 }
                 catch
                 {

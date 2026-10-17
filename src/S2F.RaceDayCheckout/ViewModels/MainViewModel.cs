@@ -577,8 +577,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
             if (!result.AutosaveCleared)
             {
                 doneBody +=
-                    "\n\nWarning: live autosave (RUNSCORE\\_autosave) could not be deleted. "
-                    + "Ask setup to remove that folder before the next race so post-event edits are not overwritten.";
+                    "\n\nWarning: some live autosave files (RUNSCORE\\_autosave) could not be removed. "
+                    + "Ask setup to delete that folder before the next race so post-event edits are not overwritten.";
             }
 
             // Same branded overlay — OK to dismiss. No second Windows dialog.
