@@ -168,26 +168,13 @@ jobs:
           name: velopack-win-arm64
           path: releases/win-arm64
 
-      - name: Upload to GitHub Release (x64)
+      # Release already exists (created by `gh release create` / UI). Attach assets; don't create again.
+      - name: Upload assets to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: pwsh
         run: |
-          vpk upload github `
-            --repoUrl https://github.com/${{ github.repository }} `
-            --token ${{ secrets.GITHUB_TOKEN }} `
-            --channel win-x64 `
-            --outputDir releases/win-x64 `
-            --publish `
-            --releaseName "S2F Race Day Timing ${{ github.event.release.tag_name }}" `
-            --tag ${{ github.event.release.tag_name }}
-
-      - name: Upload to GitHub Release (arm64)
-        shell: pwsh
-        run: |
-          vpk upload github `
-            --repoUrl https://github.com/${{ github.repository }} `
-            --token ${{ secrets.GITHUB_TOKEN }} `
-            --channel win-arm64 `
-            --outputDir releases/win-arm64 `
-            --publish `
-            --releaseName "S2F Race Day Timing ${{ github.event.release.tag_name }}" `
-            --tag ${{ github.event.release.tag_name }}
+          gh release upload "${{ github.event.release.tag_name }}" `
+            (Get-ChildItem -Path releases/win-x64,releases/win-arm64 -File).FullName `
+            --repo "${{ github.repository }}" `
+            --clobber
