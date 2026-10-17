@@ -30,6 +30,17 @@ public sealed class VendorLauncher
         // Zero timer steps: enforce company SOP prefs (alternate Backup folder, 1-min auto-save, etc.)
         // before RSServer loads the registry into memory.
         var prefResult = _prefs.ApplySop(active.BackupPath);
+        try
+        {
+            AutosaveMirrorService.RecoverMisplacedBackupSiblingsAsync(
+                    active.BackupPath, active.AutosavePath)
+                .GetAwaiter().GetResult();
+        }
+        catch
+        {
+            // Non-fatal — live mirror will retry.
+        }
+
         var prefNote = prefResult.Success
             ? " " + prefResult.Message
             : " Preference SOP warning: " + prefResult.Message;

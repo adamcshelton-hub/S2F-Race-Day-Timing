@@ -252,6 +252,17 @@ public sealed class CheckoutService
         // Point RunScore alternate-save folders at this checkout's Backup before the timer opens RS.
         // Re-applied on Open RunScore only when RS is not already running (prefs load at process start).
         var prefResult = _runScorePrefs.ApplySop(backupPath);
+
+        // Heal any mangled siblings left by a prior missing-trailing-slash registry path.
+        try
+        {
+            await AutosaveMirrorService.RecoverMisplacedBackupSiblingsAsync(
+                backupPath, autosavePath, cancellationToken);
+        }
+        catch
+        {
+            // Non-fatal — mirror timer will retry while checkout is held.
+        }
         var rsRunning = _processes.GetRunScoreProcessNames();
         var runScoreNeedsRestart = rsRunning.Count > 0;
         var prefNote = prefResult.Success
@@ -343,10 +354,6 @@ public sealed class CheckoutService
         await _copy.CopyDirectoryAsync(activeRunScore, libraryRunScore, progress, cancellationToken);
         File.Copy(activeEvent, libraryEvent, overwrite: true);
 
-        // Race is finished — clear mid-race autosave so post-event OneDrive edits aren't
-        // overwritten by stale mirrors on a later reclaim.
-        var autosaveCleared = ClearAutosaveWithRetry(active.AutosavePath);
-
         _locks.Release(active.LibrarySessionPath, holderName);
 
         var syncOk = true;
@@ -363,10 +370,7 @@ public sealed class CheckoutService
             syncMessage = sync.Message;
         }
 
-        var autosaveNote = autosaveCleared
-            ? string.Empty
-            : " Live autosave folder could not be deleted — ask setup to remove RUNSCORE\\_autosave before the next race.";
-
+        string? activeRemoveError = null;
         if (removeActive)
         {
             try
@@ -377,21 +381,34 @@ public sealed class CheckoutService
             }
             catch (Exception ex)
             {
-                _activeStore.Save(null);
-                return new CheckinResult
-                {
-                    Success = true,
-                    AutosaveCleared = autosaveCleared,
-                    AwaitingOneDriveConfirm = !syncOk,
-                    Message = syncOk
-                        ? $"Checked in; could not remove Active folder: {ex.Message}. Safe to shut down after confirming OneDrive."
-                          + autosaveNote
-                        : $"Checked in; Active folder leftover ({ex.Message}). {syncMessage}" + autosaveNote
-                };
+                activeRemoveError = ex.Message;
             }
         }
 
+        // Drop local active record before clearing _autosave so a live mirror tick
+        // cannot recreate the folder while Finish is still running.
+        var autosavePath = active.AutosavePath;
         _activeStore.Save(null);
+
+        statusProgress?.Report("Clearing live autosave…");
+        var autosaveCleared = ClearAutosaveWithRetry(autosavePath);
+        var autosaveNote = autosaveCleared
+            ? string.Empty
+            : " Live autosave folder could not be deleted — ask setup to remove RUNSCORE\\_autosave before the next race.";
+
+        if (activeRemoveError is not null)
+        {
+            return new CheckinResult
+            {
+                Success = true,
+                AutosaveCleared = autosaveCleared,
+                AwaitingOneDriveConfirm = !syncOk,
+                Message = syncOk
+                    ? $"Checked in; could not remove Active folder: {activeRemoveError}. Safe to shut down after confirming OneDrive."
+                      + autosaveNote
+                    : $"Checked in; Active folder leftover ({activeRemoveError}). {syncMessage}" + autosaveNote
+            };
+        }
 
         if (syncOk)
         {
@@ -418,30 +435,97 @@ public sealed class CheckoutService
     }
 
     /// <summary>
-    /// Deletes OneDrive RUNSCORE\_autosave with short retries (OneDrive often holds files briefly).
+    /// Deletes OneDrive RUNSCORE\_autosave with retries. Clears read-only bits and
+    /// falls back to per-file delete when OneDrive holds the directory briefly.
     /// </summary>
-    private static bool ClearAutosaveWithRetry(string autosavePath)
+    public static bool ClearAutosaveWithRetry(string autosavePath)
     {
         if (string.IsNullOrWhiteSpace(autosavePath) || !Directory.Exists(autosavePath))
             return true;
 
-        for (var attempt = 0; attempt < 4; attempt++)
+        for (var attempt = 0; attempt < 8; attempt++)
         {
             try
             {
+                ClearReadOnlyRecursive(autosavePath);
                 Directory.Delete(autosavePath, recursive: true);
             }
             catch
             {
-                // retry below
+                TryDeleteAutosaveContents(autosavePath);
+                try
+                {
+                    if (Directory.Exists(autosavePath))
+                        Directory.Delete(autosavePath, recursive: false);
+                }
+                catch
+                {
+                    // retry below
+                }
             }
 
             if (!Directory.Exists(autosavePath))
                 return true;
 
-            Thread.Sleep(250 * (attempt + 1));
+            Thread.Sleep(300 * (attempt + 1));
         }
 
         return !Directory.Exists(autosavePath);
+    }
+
+    private static void ClearReadOnlyRecursive(string root)
+    {
+        try
+        {
+            foreach (var file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
+            {
+                try
+                {
+                    var attrs = File.GetAttributes(file);
+                    if ((attrs & FileAttributes.ReadOnly) != 0)
+                        File.SetAttributes(file, attrs & ~FileAttributes.ReadOnly);
+                }
+                catch
+                {
+                    // continue — delete may still succeed
+                }
+            }
+        }
+        catch
+        {
+            // directory may already be gone / inaccessible
+        }
+    }
+
+    private static void TryDeleteAutosaveContents(string autosavePath)
+    {
+        if (!Directory.Exists(autosavePath))
+            return;
+
+        foreach (var file in Directory.EnumerateFiles(autosavePath, "*", SearchOption.AllDirectories))
+        {
+            try
+            {
+                File.SetAttributes(file, FileAttributes.Normal);
+                File.Delete(file);
+            }
+            catch
+            {
+                // OneDrive / share lock — next attempt
+            }
+        }
+
+        foreach (var dir in Directory.EnumerateDirectories(autosavePath, "*", SearchOption.AllDirectories)
+                     .OrderByDescending(d => d.Length))
+        {
+            try
+            {
+                Directory.Delete(dir, recursive: false);
+            }
+            catch
+            {
+                // nested retry on next loop
+            }
+        }
     }
 }

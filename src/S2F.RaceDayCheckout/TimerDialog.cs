@@ -49,6 +49,123 @@ public static class TimerDialog
         return result;
     }
 
+    /// <summary>
+    /// Non-modal busy overlay. Close via Dispose before showing Alert/Confirm.
+    /// </summary>
+    public static ProgressSession ShowProgress(Window? owner, string title, string message)
+    {
+        var window = CreateChromeLess(owner, allowEscapeClose: false);
+        var messageBlock = new TextBlock
+        {
+            Text = message,
+            FontSize = 16,
+            Foreground = Brush("MutedBrush"),
+            TextAlignment = TextAlignment.Center,
+            TextWrapping = TextWrapping.Wrap,
+            LineHeight = 24
+        };
+
+        var stack = new StackPanel();
+        stack.Children.Add(new TextBlock
+        {
+            Text = title,
+            FontSize = 26,
+            FontWeight = FontWeights.Bold,
+            TextAlignment = TextAlignment.Center,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 0, 0, 14)
+        });
+        stack.Children.Add(messageBlock);
+        stack.Children.Add(new TextBlock
+        {
+            Text = "Keep this window open.",
+            FontSize = 14,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = Brush("AccentBrush"),
+            TextAlignment = TextAlignment.Center,
+            Margin = new Thickness(0, 22, 0, 0)
+        });
+
+        var card = new Border
+        {
+            Background = Brush("CardBrush"),
+            CornerRadius = new CornerRadius(12),
+            BorderBrush = Brush("AccentBrush"),
+            BorderThickness = new Thickness(3),
+            Padding = new Thickness(40, 36, 40, 36),
+            MinWidth = 420,
+            MaxWidth = 520,
+            Effect = new DropShadowEffect
+            {
+                BlurRadius = 24,
+                Opacity = 0.35,
+                ShadowDepth = 0,
+                Color = Colors.Black
+            },
+            Child = stack
+        };
+
+        window.Content = DimmedHost(card);
+        if (owner is not null)
+            owner.IsEnabled = false;
+        window.Show();
+        return new ProgressSession(window, messageBlock, owner);
+    }
+
+    public sealed class ProgressSession : IDisposable
+    {
+        private readonly Window _window;
+        private readonly TextBlock _messageBlock;
+        private readonly Window? _owner;
+        private bool _disposed;
+
+        internal ProgressSession(Window window, TextBlock messageBlock, Window? owner)
+        {
+            _window = window;
+            _messageBlock = messageBlock;
+            _owner = owner;
+        }
+
+        public void SetMessage(string message)
+        {
+            if (_disposed)
+                return;
+
+            void Apply() => _messageBlock.Text = message;
+            if (_messageBlock.Dispatcher.CheckAccess())
+                Apply();
+            else
+                _messageBlock.Dispatcher.Invoke(Apply);
+        }
+
+        public void Dispose()
+        {
+            if (_disposed)
+                return;
+            _disposed = true;
+
+            void Close()
+            {
+                try
+                {
+                    _window.Close();
+                }
+                catch
+                {
+                    // Window may already be closing with the owner.
+                }
+
+                if (_owner is not null)
+                    _owner.IsEnabled = true;
+            }
+
+            if (_window.Dispatcher.CheckAccess())
+                Close();
+            else
+                _window.Dispatcher.Invoke(Close);
+        }
+    }
+
     public static TimerCloseChoice AskCloseWhileActive(Window? owner)
     {
         var result = TimerCloseChoice.KeepWorking;
@@ -91,7 +208,7 @@ public static class TimerDialog
         return result;
     }
 
-    private static Window CreateChromeLess(Window? owner)
+    private static Window CreateChromeLess(Window? owner, bool allowEscapeClose = true)
     {
         var window = new Window
         {
@@ -121,14 +238,17 @@ public static class TimerDialog
             window.WindowStartupLocation = WindowStartupLocation.CenterScreen;
         }
 
-        window.KeyDown += (_, e) =>
+        if (allowEscapeClose)
         {
-            if (e.Key == Key.Escape)
+            window.KeyDown += (_, e) =>
             {
-                window.DialogResult = false;
-                e.Handled = true;
-            }
-        };
+                if (e.Key == Key.Escape)
+                {
+                    window.DialogResult = false;
+                    e.Handled = true;
+                }
+            };
+        }
 
         return window;
     }

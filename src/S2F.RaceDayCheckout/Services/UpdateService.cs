@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Windows;
+using System.Windows.Threading;
 using Velopack;
 using Velopack.Sources;
 
@@ -13,6 +14,8 @@ public static class UpdateService
 {
     public const string RepoUrl = "https://github.com/adamcshelton-hub/S2F-Race-Day-Timing";
     public const string PackId = "S2F.RaceDayCheckout";
+
+    private static int _interactiveCheckRunning;
 
     public static string CurrentChannel =>
         RuntimeInformation.ProcessArchitecture == Architecture.Arm64 ? "win-arm64" : "win-x64";
@@ -80,27 +83,48 @@ public static class UpdateService
 
     public static async Task CheckForUpdatesInteractiveAsync(bool hasActiveCheckout, Window? owner = null)
     {
+        if (Interlocked.CompareExchange(ref _interactiveCheckRunning, 1, 0) != 0)
+            return;
+
+        TimerDialog.ProgressSession? progress = null;
         try
         {
+            progress = TimerDialog.ShowProgress(
+                owner,
+                "Checking for updates",
+                "Looking for a newer version…");
+            // Let the overlay paint before the network call blocks the UI feel.
+            await Application.Current.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Loaded);
+
             var mgr = CreateManager();
             if (!mgr.IsInstalled)
             {
+                progress.Dispose();
+                progress = null;
                 TimerDialog.Alert(owner, "Updates",
                     "This copy wasn't installed with Setup.exe, so auto-update isn't available.\n\n"
                     + "Install from the GitHub Release for your PC (x64 or ARM).");
                 return;
             }
 
+            progress.SetMessage($"Checking GitHub… (v{FormatVersion(mgr.CurrentVersion)}, {CurrentChannel})");
             var update = await mgr.CheckForUpdatesAsync();
             if (update is null)
             {
+                progress.Dispose();
+                progress = null;
                 TimerDialog.Alert(owner, "Updates",
                     $"You're on the latest version (v{FormatVersion(mgr.CurrentVersion)}) for {CurrentChannel}.");
                 return;
             }
 
             var target = FormatVersion(update.TargetFullRelease.Version);
-            await mgr.DownloadUpdatesAsync(update);
+            progress.SetMessage($"Downloading update v{target}…");
+            await mgr.DownloadUpdatesAsync(update, percent =>
+                progress.SetMessage($"Downloading update v{target}… ({percent}%)"));
+
+            progress.Dispose();
+            progress = null;
 
             if (hasActiveCheckout)
             {
@@ -120,7 +144,14 @@ public static class UpdateService
         }
         catch (Exception ex)
         {
+            progress?.Dispose();
+            progress = null;
             TimerDialog.Alert(owner, "Updates", "Couldn't check for updates.\n\n" + ex.Message);
+        }
+        finally
+        {
+            progress?.Dispose();
+            Interlocked.Exchange(ref _interactiveCheckRunning, 0);
         }
     }
 

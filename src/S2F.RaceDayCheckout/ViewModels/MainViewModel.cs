@@ -518,6 +518,19 @@ public sealed class MainViewModel : INotifyPropertyChanged
         SetBusy(
             closingApp ? "Closing — saving your race" : "Finishing up",
             "Please wait. Do not shut down yet…");
+
+        // Pause live mirror so it cannot recreate RUNSCORE\_autosave while Finish deletes it.
+        _mirrorTimer.Stop();
+        _mirror.Pause();
+        try
+        {
+            await _mirror.DrainAsync();
+        }
+        catch
+        {
+            // continue Finish even if drain fails
+        }
+
         try
         {
             var copyProgress = new Progress<CopyProgress>(p =>
@@ -577,6 +590,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
         finally
         {
+            _mirror.Resume();
+            _mirrorTimer.Start();
             if (Busy && !BusyNeedsAcknowledge)
                 ClearBusy();
         }

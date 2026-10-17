@@ -200,12 +200,32 @@ public sealed class RunScorePreferencesService
         {
             SopPreferenceKind.Bool => _store.TryGetBool(pref.Name) == pref.BoolValue,
             SopPreferenceKind.Int => _store.TryGetInt(pref.Name) == pref.IntValue,
-            SopPreferenceKind.String => string.Equals(
-                NormalizePathish(_store.TryGetString(pref.Name)),
-                NormalizePathish(pref.StringValue),
-                StringComparison.OrdinalIgnoreCase),
+            SopPreferenceKind.String => MatchesString(pref.Name, pref.StringValue),
             _ => false
         };
+
+    private bool MatchesString(string name, string desired)
+    {
+        var current = _store.TryGetString(name) ?? string.Empty;
+        desired ??= string.Empty;
+
+        // Alternate-folder paths are load-bearing: RunScore concatenates dir + "ENTRIES.DTA"
+        // with no separator. NormalizePathish used to strip '\' so a registry value without
+        // the trailing slash looked "already matched" and never got repaired.
+        if (IsAlternateFolderPref(name))
+        {
+            return string.Equals(current, WithTrailingSeparator(desired), StringComparison.OrdinalIgnoreCase);
+        }
+
+        return string.Equals(
+            NormalizePathish(current),
+            NormalizePathish(desired),
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsAlternateFolderPref(string name) =>
+        string.Equals(name, SaveEntriesDir, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(name, SaveResultsDir, StringComparison.OrdinalIgnoreCase);
 
     private void Write(SopPreference pref)
     {

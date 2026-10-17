@@ -130,6 +130,34 @@ public class RunScorePreferencesServiceTests
     }
 
     [Fact]
+    public void ApplySop_RewritesAlternateFolderMissingTrailingSeparator()
+    {
+        var (svc, store, sopPath, backup) = CreateSvc();
+        try
+        {
+            // First write sets full SOP (with trailing '\').
+            Assert.True(svc.ApplySop(backup).Success);
+
+            // Simulate RunScore / older builds stripping the trailing separator.
+            store.SetString(RunScorePreferencesService.SaveEntriesDir, backup.TrimEnd('\\', '/'));
+            store.SetString(RunScorePreferencesService.SaveResultsDir, backup.TrimEnd('\\', '/'));
+
+            var result = svc.ApplySop(backup);
+
+            Assert.True(result.Success);
+            Assert.Contains(RunScorePreferencesService.SaveEntriesDir, result.UpdatedNames);
+            Assert.Contains(RunScorePreferencesService.SaveResultsDir, result.UpdatedNames);
+            var expected = RunScorePreferencesService.WithTrailingSeparator(backup);
+            Assert.Equal(expected, store.TryGetString(RunScorePreferencesService.SaveEntriesDir));
+            Assert.Equal(expected, store.TryGetString(RunScorePreferencesService.SaveResultsDir));
+        }
+        finally
+        {
+            Cleanup(sopPath, backup);
+        }
+    }
+
+    [Fact]
     public void BuildSop_ExpandsBackupPathToken()
     {
         var profile = RunScoreSopProfile.CreateDefaults();

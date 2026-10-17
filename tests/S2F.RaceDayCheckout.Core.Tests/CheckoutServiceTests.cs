@@ -324,6 +324,21 @@ public class CheckoutServiceTests
         Assert.True(checkin.Success, checkin.Message);
         Assert.True(checkin.AutosaveCleared);
         Assert.False(Directory.Exists(autosave));
+        Assert.Null(new ActiveCheckoutStore(activeStorePath).Load());
+    }
+
+    [Fact]
+    public void ClearAutosaveWithRetry_RemovesReadOnlyFiles()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "s2f-as-" + Guid.NewGuid().ToString("N"));
+        var autosave = Path.Combine(root, "RUNSCORE", "_autosave");
+        Directory.CreateDirectory(autosave);
+        var file = Path.Combine(autosave, "ENTRIES.DTA");
+        File.WriteAllText(file, "x");
+        File.SetAttributes(file, FileAttributes.ReadOnly);
+
+        Assert.True(CheckoutService.ClearAutosaveWithRetry(autosave));
+        Assert.False(Directory.Exists(autosave));
     }
 
     private sealed class OtherMachine : IMachineIdentity
