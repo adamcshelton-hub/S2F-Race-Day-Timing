@@ -46,48 +46,15 @@
                      FontSize="15" Margin="0,6,0,0"/>
         </StackPanel>
 
-        <!-- OFFICE — two columns so more locations fit without scrolling -->
+        <!-- OFFICE — same single-column row style as event picker -->
         <ListBox x:Name="OfficeList" Grid.Row="1"
                  Style="{StaticResource StepListBox}"
                  ItemsSource="{Binding Offices}"
                  Visibility="{Binding IsOfficeStep, Converter={StaticResource BoolVis}}"
-                 MouseDoubleClick="Office_DoubleClick"
-                 ScrollViewer.HorizontalScrollBarVisibility="Disabled">
-          <ListBox.ItemsPanel>
-            <ItemsPanelTemplate>
-              <UniformGrid Columns="2"/>
-            </ItemsPanelTemplate>
-          </ListBox.ItemsPanel>
-          <ListBox.ItemContainerStyle>
-            <Style TargetType="ListBoxItem">
-              <Setter Property="Padding" Value="0"/>
-              <Setter Property="Margin" Value="0,0,8,6"/>
-              <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
-              <Setter Property="Template">
-                <Setter.Value>
-                  <ControlTemplate TargetType="ListBoxItem">
-                    <Border x:Name="Bd" Background="{StaticResource CardBrush}" CornerRadius="6"
-                            BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Padding="14,9">
-                      <ContentPresenter/>
-                    </Border>
-                    <ControlTemplate.Triggers>
-                      <Trigger Property="IsMouseOver" Value="True">
-                        <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource AccentBrush}"/>
-                      </Trigger>
-                      <Trigger Property="IsSelected" Value="True">
-                        <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource AccentBrush}"/>
-                        <Setter TargetName="Bd" Property="BorderThickness" Value="2"/>
-                        <Setter TargetName="Bd" Property="Background" Value="#FFF4E5"/>
-                      </Trigger>
-                    </ControlTemplate.Triggers>
-                  </ControlTemplate>
-                </Setter.Value>
-              </Setter>
-            </Style>
-          </ListBox.ItemContainerStyle>
+                 MouseDoubleClick="Office_DoubleClick">
           <ListBox.ItemTemplate>
             <DataTemplate>
-              <TextBlock Text="{Binding}" FontSize="16" FontWeight="SemiBold" TextWrapping="Wrap"/>
+              <TextBlock Text="{Binding}" FontSize="15" FontWeight="SemiBold" TextWrapping="Wrap"/>
             </DataTemplate>
           </ListBox.ItemTemplate>
         </ListBox>
