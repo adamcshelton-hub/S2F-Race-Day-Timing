@@ -81,7 +81,9 @@ public static class TimerDialog
 
         var card = BuildCard(
             "Race still open",
-            "You're still checked out for a race.\n\nSave your work before closing. If you close without saving, another timer may not be able to use this event.",
+            "You're still checked out for a race.\n\n"
+            + "Keep this app open while racing — it mirrors live files to OneDrive for failover.\n\n"
+            + "Save your work before closing. If you close without saving, another timer may not be able to use this event.",
             buttons: new[] { save, stay, discard });
 
         window.Content = DimmedHost(card);

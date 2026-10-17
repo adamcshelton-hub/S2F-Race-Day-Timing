@@ -3,6 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:conv="clr-namespace:S2F.RaceDayCheckout.Converters"
         Title="S2F Race Day"
+        Icon="pack://application:,,,/Assets/logo-mark.png"
         Height="720" Width="920"
         MinHeight="560" MinWidth="720"
         WindowStartupLocation="CenterScreen"
@@ -117,10 +118,16 @@
                     HorizontalAlignment="Left" Margin="0,0,0,28" Click="OpenWorkingFolder_Click"
                     ToolTip="Opens the local working copy of this race if you need to find a file."/>
 
+            <Border Background="#FFF8E8" BorderBrush="#E6C35C" BorderThickness="1"
+                    CornerRadius="8" Padding="16" Margin="0,0,0,12">
+              <TextBlock TextWrapping="Wrap" FontSize="14"
+                         Text="Keep this app open for the whole race. It copies live RunScore files to OneDrive every minute so a second laptop can take over if this one fails."/>
+            </Border>
+
             <Border Background="#F3FBF6" BorderBrush="{StaticResource SaveBrush}" BorderThickness="1"
                     CornerRadius="8" Padding="16" Margin="0,0,0,16">
               <TextBlock TextWrapping="Wrap" FontSize="14"
-                         Text="When you're done: close RunScore and Timing &amp; Scoring, then tap Finish below."/>
+                         Text="When you're done: close RunScore and Timing &amp; Scoring, then tap Finish below. Finish clears the live autosave folder so post-race edits on OneDrive stay clean."/>
             </Border>
 
             <Button Content="Finish" Style="{StaticResource SaveButton}"
@@ -171,8 +178,9 @@
             </StackPanel>
 
             <StackPanel Grid.Row="1" Grid.Column="0" Margin="0,0,0,14">
-              <TextBlock Text="Display name on locks" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}"/>
-              <TextBox Text="{Binding DisplayName}" Padding="10,8"/>
+              <TextBlock Text="Display name on locks (this PC)" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}"/>
+              <TextBox Text="{Binding DisplayName}" Padding="10,8" IsReadOnly="True"
+                       Background="#F3F4F6" ToolTip="Taken from the Windows computer name."/>
             </StackPanel>
             <StackPanel Grid.Row="1" Grid.Column="2" Margin="0,0,0,14">
               <TextBlock Text="Admin PIN" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}"/>

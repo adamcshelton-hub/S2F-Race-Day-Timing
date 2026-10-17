@@ -5,6 +5,9 @@ namespace S2F.RaceDayCheckout.Core.Services;
 public interface IProcessGuard
 {
     IReadOnlyList<string> GetBlockingProcessNames();
+
+    /// <summary>RunScore server/client only (for launch-before-prefs warning).</summary>
+    IReadOnlyList<string> GetRunScoreProcessNames();
 }
 
 public sealed class ProcessGuard : IProcessGuard
@@ -45,7 +48,44 @@ public sealed class ProcessGuard : IProcessGuard
         _substrings = substrings?.ToArray() ?? DefaultBlockingSubstrings;
     }
 
-    public IReadOnlyList<string> GetBlockingProcessNames()
+    private static readonly string[] RunScoreExactNames =
+    [
+        "RSServer",
+        "rsserver",
+        "RSClient",
+        "rsclient",
+        "RunScore"
+    ];
+
+    public IReadOnlyList<string> GetBlockingProcessNames() =>
+        EnumerateMatching(IsBlocking);
+
+    public IReadOnlyList<string> GetRunScoreProcessNames() =>
+        EnumerateMatching(IsRunScoreProcess);
+
+    public bool IsBlocking(string processName)
+    {
+        if (string.IsNullOrWhiteSpace(processName))
+            return false;
+
+        if (_exactNames.Any(n => processName.Equals(n, StringComparison.OrdinalIgnoreCase)))
+            return true;
+
+        return _substrings.Any(s =>
+            s.Length >= 6 && processName.Contains(s, StringComparison.OrdinalIgnoreCase));
+    }
+
+    public static bool IsRunScoreProcess(string processName)
+    {
+        if (string.IsNullOrWhiteSpace(processName))
+            return false;
+
+        return RunScoreExactNames.Any(n => processName.Equals(n, StringComparison.OrdinalIgnoreCase))
+               || processName.Contains("rsserver", StringComparison.OrdinalIgnoreCase)
+               || processName.Contains("RSServer", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static IReadOnlyList<string> EnumerateMatching(Func<string, bool> match)
     {
         var found = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         try
@@ -55,7 +95,7 @@ public sealed class ProcessGuard : IProcessGuard
                 try
                 {
                     var name = process.ProcessName;
-                    if (IsBlocking(name))
+                    if (match(name))
                         found.Add(name);
                 }
                 catch
@@ -74,17 +114,5 @@ public sealed class ProcessGuard : IProcessGuard
         }
 
         return found.OrderBy(n => n).ToList();
-    }
-
-    public bool IsBlocking(string processName)
-    {
-        if (string.IsNullOrWhiteSpace(processName))
-            return false;
-
-        if (_exactNames.Any(n => processName.Equals(n, StringComparison.OrdinalIgnoreCase)))
-            return true;
-
-        return _substrings.Any(s =>
-            s.Length >= 6 && processName.Contains(s, StringComparison.OrdinalIgnoreCase));
     }
 }

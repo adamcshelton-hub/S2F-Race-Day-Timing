@@ -8,6 +8,13 @@ public class CheckoutServiceTests
     private sealed class NoProcesses : IProcessGuard
     {
         public IReadOnlyList<string> GetBlockingProcessNames() => Array.Empty<string>();
+        public IReadOnlyList<string> GetRunScoreProcessNames() => Array.Empty<string>();
+    }
+
+    private sealed class RunScoreRunning : IProcessGuard
+    {
+        public IReadOnlyList<string> GetBlockingProcessNames() => new[] { "RSServer" };
+        public IReadOnlyList<string> GetRunScoreProcessNames() => new[] { "RSServer" };
     }
 
     private sealed class InstantSync : IOneDriveSyncMonitor
@@ -117,18 +124,38 @@ public class CheckoutServiceTests
     }
 
     [Fact]
-    public async Task Checkout_MergesNewerAutosaveIntoActiveRunScore()
+    public async Task Checkout_WhenRunScoreAlreadyOpen_FlagsNeedsRestart()
     {
         var (packPath, libraryRoot) = CreateFlatPack();
-        // Stale base RUNSCORE on OneDrive…
-        File.WriteAllText(Path.Combine(packPath, "RUNSCORE", "ENTRIES.FRM"), "stale-base");
-        File.SetLastWriteTimeUtc(Path.Combine(packPath, "RUNSCORE", "ENTRIES.FRM"), DateTime.UtcNow.AddHours(-2));
-        // …but live autosave from crashed laptop is newer.
+        var raceDay = Path.Combine(Path.GetTempPath(), "s2f-rd-" + Guid.NewGuid().ToString("N"));
+        var settings = new AppSettings { LibraryRoot = libraryRoot, RaceDayRoot = raceDay, DisplayName = "Adam" };
+        var paths = new PathService();
+        var service = new CheckoutService(
+            paths, new CheckoutLockService(paths, new FakeMachine()), new FileCopyService(),
+            new RunScoreRunning(), new ActiveCheckoutStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json")),
+            new InstantSync());
+
+        var result = await service.CheckoutAsync(new CheckoutRequest
+        {
+            Pack = PackInfo(packPath, "Memphis", "2026 - Sample Event"),
+            Settings = settings,
+            HolderName = "Adam"
+        });
+
+        Assert.True(result.Success, result.Message);
+        Assert.True(result.RunScoreNeedsRestart);
+        Assert.Contains("already open", result.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Checkout_Normal_DoesNotMergeLeftoverAutosave()
+    {
+        var (packPath, libraryRoot) = CreateFlatPack();
+        File.WriteAllText(Path.Combine(packPath, "RUNSCORE", "ENTRIES.FRM"), "onedrive-final");
         var autosave = Path.Combine(packPath, "RUNSCORE", "_autosave");
         Directory.CreateDirectory(autosave);
-        var autosaveFrm = Path.Combine(autosave, "ENTRIES.FRM");
-        File.WriteAllText(autosaveFrm, "live-autosave");
-        File.SetLastWriteTimeUtc(autosaveFrm, DateTime.UtcNow);
+        File.WriteAllText(Path.Combine(autosave, "ENTRIES.FRM"), "stale-leftover");
+        File.SetLastWriteTimeUtc(Path.Combine(autosave, "ENTRIES.FRM"), DateTime.UtcNow.AddHours(1));
 
         var raceDay = Path.Combine(Path.GetTempPath(), "s2f-rd-" + Guid.NewGuid().ToString("N"));
         var settings = new AppSettings { LibraryRoot = libraryRoot, RaceDayRoot = raceDay, DisplayName = "Adam" };
@@ -146,11 +173,128 @@ public class CheckoutServiceTests
         });
 
         Assert.True(result.Success, result.Message);
+        Assert.Equal(
+            "onedrive-final",
+            File.ReadAllText(Path.Combine(result.Active!.ActivePath, "RUNSCORE", "ENTRIES.FRM")));
+    }
+
+    [Fact]
+    public async Task Checkout_EmergencyReclaim_MergesNewerAutosaveIntoActiveRunScore()
+    {
+        var (packPath, libraryRoot) = CreateFlatPack();
+        File.WriteAllText(Path.Combine(packPath, "RUNSCORE", "ENTRIES.FRM"), "stale-base");
+        File.SetLastWriteTimeUtc(Path.Combine(packPath, "RUNSCORE", "ENTRIES.FRM"), DateTime.UtcNow.AddHours(-2));
+        var autosave = Path.Combine(packPath, "RUNSCORE", "_autosave");
+        Directory.CreateDirectory(autosave);
+        var autosaveFrm = Path.Combine(autosave, "ENTRIES.FRM");
+        File.WriteAllText(autosaveFrm, "live-autosave");
+        File.SetLastWriteTimeUtc(autosaveFrm, DateTime.UtcNow);
+
+        var raceDay = Path.Combine(Path.GetTempPath(), "s2f-rd-" + Guid.NewGuid().ToString("N"));
+        var settings = new AppSettings
+        {
+            LibraryRoot = libraryRoot,
+            RaceDayRoot = raceDay,
+            DisplayName = "Adam",
+            StaleLockMinutes = 18
+        };
+        var paths = new PathService();
+        var t0 = DateTimeOffset.Parse("2026-10-16T12:00:00Z");
+        new CheckoutLockService(paths, new OtherMachine(), () => t0)
+            .Acquire(packPath, "Memphis", "2026 - Sample Event", "2026 - Sample Event", "Other",
+                new[] { "RUNSCORE" }, primaryEventFile: "Sample Event.event");
+
+        // Evaluator clock is past stale window → NeedsEmergencyConfirm.
+        var locks = new CheckoutLockService(paths, new FakeMachine(), () => t0.AddMinutes(30));
+        var service = new CheckoutService(
+            paths, locks, new FileCopyService(),
+            new NoProcesses(), new ActiveCheckoutStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json")),
+            new InstantSync());
+
+        var result = await service.CheckoutAsync(new CheckoutRequest
+        {
+            Pack = PackInfo(packPath, "Memphis", "2026 - Sample Event"),
+            Settings = settings,
+            HolderName = "Adam",
+            ConfirmEmergencyReclaim = true,
+            EmergencyReason = "Other laptop crashed"
+        });
+
+        Assert.True(result.Success, result.Message);
         var activeFrm = Path.Combine(result.Active!.ActivePath, "RUNSCORE", "ENTRIES.FRM");
         Assert.Equal("live-autosave", File.ReadAllText(activeFrm));
         Assert.Contains("autosave", result.Message, StringComparison.OrdinalIgnoreCase);
-        // Backup seeded for RunScore alternate recovery
         Assert.Equal("live-autosave", File.ReadAllText(Path.Combine(result.Active.BackupPath, "ENTRIES.FRM")));
+    }
+
+    [Fact]
+    public async Task Checkout_ForceTakeover_WhenLockLooksAlive()
+    {
+        var (packPath, libraryRoot) = CreateFlatPack();
+        var raceDay = Path.Combine(Path.GetTempPath(), "s2f-rd-" + Guid.NewGuid().ToString("N"));
+        var settings = new AppSettings { LibraryRoot = libraryRoot, RaceDayRoot = raceDay, DisplayName = "Adam" };
+        var paths = new PathService();
+        var other = new CheckoutLockService(paths, new OtherMachine());
+        other.Acquire(packPath, "Memphis", "2026 - Sample Event", "2026 - Sample Event", "Other",
+            new[] { "RUNSCORE" }, primaryEventFile: "Sample Event.event");
+
+        var service = new CheckoutService(
+            paths, new CheckoutLockService(paths, new FakeMachine()), new FileCopyService(),
+            new NoProcesses(), new ActiveCheckoutStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json")),
+            new InstantSync());
+
+        var blocked = await service.CheckoutAsync(new CheckoutRequest
+        {
+            Pack = PackInfo(packPath, "Memphis", "2026 - Sample Event"),
+            Settings = settings,
+            HolderName = "Adam"
+        });
+        Assert.False(blocked.Success);
+        Assert.Equal(LockAcquireOutcome.BlockedAlive, blocked.Outcome);
+
+        var forced = await service.CheckoutAsync(new CheckoutRequest
+        {
+            Pack = PackInfo(packPath, "Memphis", "2026 - Sample Event"),
+            Settings = settings,
+            HolderName = "Adam",
+            ConfirmForceTakeover = true,
+            EmergencyReason = "Force take-over (Admin PIN)"
+        });
+        Assert.True(forced.Success, forced.Message);
+        Assert.Contains("Force take-over", forced.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Checkin_ClearsAutosaveFolder()
+    {
+        var (packPath, libraryRoot) = CreateFlatPack();
+        var raceDay = Path.Combine(Path.GetTempPath(), "s2f-rd-" + Guid.NewGuid().ToString("N"));
+        var activeStorePath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json");
+        var settings = new AppSettings { LibraryRoot = libraryRoot, RaceDayRoot = raceDay, DisplayName = "Adam" };
+        var paths = new PathService();
+        var service = new CheckoutService(
+            paths, new CheckoutLockService(paths, new FakeMachine()), new FileCopyService(),
+            new NoProcesses(), new ActiveCheckoutStore(activeStorePath), new InstantSync());
+
+        var pack = PackInfo(packPath, "Memphis", "2026 - Sample Event");
+        var result = await service.CheckoutAsync(new CheckoutRequest { Pack = pack, Settings = settings, HolderName = "Adam" });
+        Assert.True(result.Success, result.Message);
+
+        var autosave = result.Active!.AutosavePath;
+        Directory.CreateDirectory(autosave);
+        File.WriteAllText(Path.Combine(autosave, "ENTRIES.FRM"), "mid-race");
+
+        var checkin = await service.CheckinAsync(settings, "Adam", waitForOneDrive: true);
+        Assert.True(checkin.Success, checkin.Message);
+        Assert.True(checkin.AutosaveCleared);
+        Assert.False(Directory.Exists(autosave));
+    }
+
+    private sealed class OtherMachine : IMachineIdentity
+    {
+        public string MachineId => "OTHERMACHINE";
+        public string MachineName => "OtherPC";
+        public string WindowsUser => "other";
     }
 
     [Fact]

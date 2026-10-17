@@ -8,7 +8,7 @@ public sealed class AppSettings
     public string LibraryRoot { get; set; } = DefaultLibraryRoot;
     public string RaceDayRoot { get; set; } = DefaultRaceDayRoot;
     public string DisplayName { get; set; } = string.Empty;
-    public string AdminPin { get; set; } = "7690";
+    public string AdminPin { get; set; } = "7698";
     public const int DefaultStaleLockMinutes = 18;
 
     public int HeartbeatSeconds { get; set; } = 120;

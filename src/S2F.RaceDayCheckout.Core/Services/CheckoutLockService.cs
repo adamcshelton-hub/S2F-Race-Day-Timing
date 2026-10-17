@@ -214,10 +214,8 @@ public sealed class CheckoutLockService
 
     private void WriteLockWithRetry(string libraryEventPath, CheckoutLock lockInfo)
     {
+        _paths.EnsureAppMetaFolder(libraryEventPath);
         var path = _paths.GetLockPath(libraryEventPath);
-        var dir = Path.GetDirectoryName(path);
-        if (!string.IsNullOrEmpty(dir))
-            Directory.CreateDirectory(dir);
 
         var json = JsonSerializer.Serialize(lockInfo, JsonOptions);
         const int attempts = 8;
@@ -240,10 +238,8 @@ public sealed class CheckoutLockService
 
     private void AppendHistory(string libraryEventPath, LockHistoryEntry entry)
     {
+        _paths.EnsureAppMetaFolder(libraryEventPath);
         var path = _paths.GetLockHistoryPath(libraryEventPath);
-        var dir = Path.GetDirectoryName(path);
-        if (!string.IsNullOrEmpty(dir))
-            Directory.CreateDirectory(dir);
 
         // One-time migrate: keep prior root history when first writing under ._checkin.
         var legacy = _paths.GetLegacyLockHistoryPath(libraryEventPath);

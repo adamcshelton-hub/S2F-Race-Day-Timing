@@ -9,7 +9,7 @@
     <AssemblyName>S2F.RaceDayCheckout</AssemblyName>
     <Version>0.3.0</Version>
     <InformationalVersion>0.3.0</InformationalVersion>
-    <ApplicationIcon />
+    <ApplicationIcon>Assets\app.ico</ApplicationIcon>
     <!-- Velopack: custom Main before WPF startup -->
     <StartupObject>S2F.RaceDayCheckout.Program</StartupObject>
   </PropertyGroup>

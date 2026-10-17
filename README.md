@@ -8,7 +8,7 @@ Windows app for race-day timing: check out **RUNSCORE + primary MyLaps `.event`*
 |---------|--------|
 | Library root | `C:\OneDrive` |
 | Local race day root | `C:\RaceDay` |
-| Admin PIN (new installs) | `7690` |
+| Admin PIN (new installs) | `7698` |
 | Active | `C:\RaceDay\Active\{Office}\{session}\` |
 
 Admin settings: **triple-click the header**, enter PIN.

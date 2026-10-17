@@ -119,6 +119,8 @@ jobs:
         run: |
           $channel = "${{ matrix.rid }}"
           $version = "${{ steps.ver.outputs.version }}"
+          # Start menu only — Desktop is OneDrive-backed on race laptops; Velopack/OneDrive
+          # rewriting the .lnk resets icon position (looks like the shortcut is "stuck").
           $args = @(
             "pack",
             "--packId", "S2F.RaceDayCheckout",
@@ -126,6 +128,8 @@ jobs:
             "--packDir", "publish/$channel",
             "--mainExe", "S2F.RaceDayCheckout.exe",
             "--packTitle", "S2F Race Day Timing",
+            "--icon", "src/S2F.RaceDayCheckout/Assets/app.ico",
+            "--shortcuts", "StartMenuRoot",
             "--channel", $channel,
             "--outputDir", "releases/$channel"
           )

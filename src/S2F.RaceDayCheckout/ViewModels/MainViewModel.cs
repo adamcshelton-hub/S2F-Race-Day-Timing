@@ -125,7 +125,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         WizardStep.EventFile => SelectedSession is null ? "" : SelectedSession.DisplayName,
         WizardStep.Active => Active is null
             ? ""
-            : $"{Active.Office} · Open RunScore and Timing & Scoring to start",
+            : $"{Active.Office} · Keep this app open while racing (live backup)",
         WizardStep.Admin => "For setup staff only — not needed on race morning.",
         _ => ""
     };
@@ -312,8 +312,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
 
         LoadOffices();
-        if (string.IsNullOrWhiteSpace(_settings.DisplayName))
-            EnsureDisplayName();
+        SyncDisplayNameFromMachine();
         Status = Directory.Exists(_settings.LibraryRoot)
             ? string.Empty
             : "Library folder not found. Ask setup staff to check Admin settings.";
@@ -399,7 +398,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         if (SelectedSession is null || string.IsNullOrWhiteSpace(SelectedEventFile))
             return;
 
-        EnsureDisplayName();
+        SyncDisplayNameFromMachine();
         SetBusy("Loading event", "Getting your race ready…");
         try
         {
@@ -407,13 +406,37 @@ public sealed class MainViewModel : INotifyPropertyChanged
             string? reason = null;
             var confirmEmergency = false;
 
+            var confirmForce = false;
+
             if (eval.Outcome == LockAcquireOutcome.BlockedAlive)
             {
                 ClearBusy();
-                Alert(
-                    "Already in use",
-                    $"Someone else is already using this event.\n\n{eval.Lock?.HolderName} on {eval.Lock?.MachineName}");
-                return;
+                var holder = eval.Lock?.HolderName ?? "another timer";
+                var machine = eval.Lock?.MachineName ?? "another laptop";
+                var lastSeen = eval.Lock?.LastSeenAt.ToLocalTime().ToString("g") ?? "unknown";
+                if (!TimerDialog.Confirm(
+                        OwnerWindow,
+                        "Already in use",
+                        $"Someone else is already using this event.\n\n"
+                        + $"{holder} on {machine}\nLast seen {lastSeen}\n\n"
+                        + "Only force take-over if that laptop truly cannot finish (crash, power loss, or you're the only timer left).\n\n"
+                        + "Force take-over requires the Admin PIN.",
+                        yesLabel: "Force take-over…",
+                        noLabel: "Cancel"))
+                    return;
+
+                var pin = PromptPin("Enter Admin PIN to force take-over:");
+                if (pin is null)
+                    return;
+                if (!string.Equals(pin, _settings.AdminPin, StringComparison.Ordinal))
+                {
+                    Alert("Wrong PIN", "Admin PIN did not match. Event was not taken over.");
+                    return;
+                }
+
+                SetBusy("Loading event", "Force take-over — recovering race…");
+                reason = "Force take-over (Admin PIN) — other laptop still looked alive";
+                confirmForce = true;
             }
 
             if (eval.Outcome == LockAcquireOutcome.NeedsEmergencyConfirm)
@@ -448,6 +471,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 HolderName = DisplayName.Trim(),
                 PrimaryEventFileOverride = SelectedEventFile,
                 ConfirmEmergencyReclaim = confirmEmergency,
+                ConfirmForceTakeover = confirmForce,
                 EmergencyReason = reason
             }, progress, statusProgress);
 
@@ -463,12 +487,16 @@ public sealed class MainViewModel : INotifyPropertyChanged
             Step = WizardStep.Active;
             Status = string.Empty;
 
-            // After crash take-over (or any checkout that applied autosave), make recovery obvious.
-            if (confirmEmergency || result.Message.Contains("autosave", StringComparison.OrdinalIgnoreCase))
+            // One-shot warnings: reclaim/autosave recovery, or prefs written while RSServer was already open.
+            if (confirmEmergency || confirmForce
+                || result.RunScoreNeedsRestart
+                || result.Message.Contains("autosave", StringComparison.OrdinalIgnoreCase))
             {
-                await ShowBusyResultAsync(
-                    confirmEmergency ? "Race recovered" : "Race loaded",
-                    result.Message);
+                var title = confirmForce ? "Force take-over complete"
+                    : confirmEmergency ? "Race recovered"
+                    : result.RunScoreNeedsRestart ? "Close RunScore, then reopen here"
+                    : "Race loaded";
+                await ShowBusyResultAsync(title, result.Message);
             }
             else
             {
@@ -536,12 +564,18 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 Step = WizardStep.Office;
             Status = string.Empty;
 
+            var doneBody = result.AwaitingOneDriveConfirm
+                ? "Your race is saved.\n\nCheck the OneDrive cloud icon in the taskbar — when it looks finished, you can shut down this laptop."
+                : "Your race is saved.\n\nSafe to shut down this laptop.";
+            if (!result.AutosaveCleared)
+            {
+                doneBody +=
+                    "\n\nWarning: live autosave (RUNSCORE\\_autosave) could not be deleted. "
+                    + "Ask setup to remove that folder before the next race so post-event edits are not overwritten.";
+            }
+
             // Same branded overlay — OK to dismiss. No second Windows dialog.
-            await ShowBusyResultAsync(
-                "All done",
-                result.AwaitingOneDriveConfirm
-                    ? "Your race is saved.\n\nCheck the OneDrive cloud icon in the taskbar — when it looks finished, you can shut down this laptop."
-                    : "Your race is saved.\n\nSafe to shut down this laptop.");
+            await ShowBusyResultAsync("All done", doneBody);
         }
         catch (Exception ex)
         {
@@ -579,11 +613,23 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public void LaunchRunScore()
     {
         if (Active is null) return;
+
+        // Prefs are written at checkout. Only re-apply + launch when RS is not already running
+        // (registry is read at RSServer start). No popup nag if it's already open — checkout warned once.
+        var running = _processGuard.GetRunScoreProcessNames();
+        if (running.Count > 0)
+        {
+            Status = "RunScore is already open. Close it, then tap Open RunScore here if you need the race-day preferences.";
+            return;
+        }
+
         var result = _launcher.LaunchRunScore(Active, _settings);
         if (!result.Success)
             Alert("RunScore", result.Message);
         else
             Status = result.Message.Contains("Updated", StringComparison.OrdinalIgnoreCase)
+                     || result.Message.Contains("SOP", StringComparison.OrdinalIgnoreCase)
+                     || result.Message.Contains("preference", StringComparison.OrdinalIgnoreCase)
                 ? "RunScore opening… (preferences set to SOP)"
                 : "RunScore opening…";
     }
@@ -658,11 +704,13 @@ public sealed class MainViewModel : INotifyPropertyChanged
             Sessions.Add(session);
     }
 
-    private void EnsureDisplayName()
+    /// <summary>Lock holder name is always this PC's computer name (Environment.MachineName).</summary>
+    private void SyncDisplayNameFromMachine()
     {
-        if (!string.IsNullOrWhiteSpace(_settings.DisplayName))
+        var name = _machine.MachineName;
+        if (string.Equals(_settings.DisplayName, name, StringComparison.Ordinal))
             return;
-        _settings.DisplayName = Environment.UserName;
+        _settings.DisplayName = name;
         _settingsStore.Save(_settings);
         OnPropertyChanged(nameof(DisplayName));
     }

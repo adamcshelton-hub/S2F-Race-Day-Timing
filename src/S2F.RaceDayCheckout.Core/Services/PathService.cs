@@ -42,6 +42,34 @@ public sealed class PathService
     public string GetAppMetaFolder(string librarySessionPath) =>
         Path.Combine(librarySessionPath, AppMetaFolderName);
 
+    /// <summary>
+    /// Create <see cref="AppMetaFolderName"/> if needed and mark it Hidden.
+    /// (A leading "." does not hide folders in Windows Explorer.)
+    /// </summary>
+    public string EnsureAppMetaFolder(string librarySessionPath)
+    {
+        var folder = GetAppMetaFolder(librarySessionPath);
+        Directory.CreateDirectory(folder);
+        TryMarkHidden(folder);
+        return folder;
+    }
+
+    public static void TryMarkHidden(string path)
+    {
+        try
+        {
+            if (!Directory.Exists(path) && !File.Exists(path))
+                return;
+            var attrs = File.GetAttributes(path);
+            if ((attrs & FileAttributes.Hidden) == 0)
+                File.SetAttributes(path, attrs | FileAttributes.Hidden);
+        }
+        catch
+        {
+            // OneDrive / permissions — folder still works if visible.
+        }
+    }
+
     public string GetLockPath(string librarySessionPath) =>
         Path.Combine(GetAppMetaFolder(librarySessionPath), "_checkout.json");
 

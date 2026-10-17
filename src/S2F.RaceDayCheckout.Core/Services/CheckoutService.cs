@@ -9,6 +9,8 @@ public sealed class CheckoutRequest
     public required string HolderName { get; init; }
     public string? PrimaryEventFileOverride { get; init; }
     public bool ConfirmEmergencyReclaim { get; init; }
+    /// <summary>Admin PIN confirmed force take-over while the other lock still looks alive.</summary>
+    public bool ConfirmForceTakeover { get; init; }
     public string? EmergencyReason { get; init; }
 }
 
@@ -19,6 +21,11 @@ public sealed class CheckoutResult
     public ActiveCheckout? Active { get; init; }
     public LockAcquireOutcome? Outcome { get; init; }
     public CheckoutLock? BlockingLock { get; init; }
+    /// <summary>
+    /// Registry SOP was written while RunScore was already running — timer must close RS
+    /// and reopen via this app so the new alternate-save folder is loaded.
+    /// </summary>
+    public bool RunScoreNeedsRestart { get; init; }
 }
 
 public sealed class CheckinResult
@@ -27,6 +34,8 @@ public sealed class CheckinResult
     public string Message { get; init; } = string.Empty;
     public IReadOnlyList<string> BlockingProcesses { get; init; } = Array.Empty<string>();
     public bool AwaitingOneDriveConfirm { get; init; }
+    /// <summary>False when Finish could not delete OneDrive RUNSCORE\_autosave (retry / ask setup).</summary>
+    public bool AutosaveCleared { get; init; } = true;
 }
 
 public sealed class CheckoutService
@@ -125,13 +134,17 @@ public sealed class CheckoutService
         switch (eval.Outcome)
         {
             case LockAcquireOutcome.BlockedAlive:
-                return new CheckoutResult
+                if (!request.ConfirmForceTakeover || string.IsNullOrWhiteSpace(request.EmergencyReason))
                 {
-                    Success = false,
-                    Outcome = eval.Outcome,
-                    BlockingLock = eval.Lock,
-                    Message = eval.Message
-                };
+                    return new CheckoutResult
+                    {
+                        Success = false,
+                        Outcome = eval.Outcome,
+                        BlockingLock = eval.Lock,
+                        Message = eval.Message
+                    };
+                }
+                break;
             case LockAcquireOutcome.NeedsEmergencyConfirm:
                 if (!request.ConfirmEmergencyReclaim || string.IsNullOrWhiteSpace(request.EmergencyReason))
                 {
@@ -173,10 +186,15 @@ public sealed class CheckoutService
         Directory.CreateDirectory(activePath);
         File.Copy(libraryEventFile, activeEventFile, overwrite: true);
 
-        // Mid-race failover: apply newer OneDrive RUNSCORE\_autosave on top of Active.
-        // (Primary laptop mirrors Backup → _autosave while racing; 2nd laptop must pick that up.)
+        // Mid-race failover: apply newer OneDrive RUNSCORE\_autosave only on reclaim/force.
+        // Normal checkout must NOT merge leftovers — Finish clears _autosave so post-race
+        // OneDrive edits are not overwritten by stale mid-race mirrors.
+        var reclaim =
+            eval.Outcome is LockAcquireOutcome.NeedsEmergencyConfirm or LockAcquireOutcome.SameMachineReclaim
+            || request.ConfirmForceTakeover;
         var autosaveMerged = 0;
-        if (Directory.Exists(autosavePath)
+        if (reclaim
+            && Directory.Exists(autosavePath)
             && Directory.EnumerateFiles(autosavePath, "*", SearchOption.AllDirectories).Any())
         {
             statusProgress?.Report("Applying live autosave from OneDrive…");
@@ -191,7 +209,8 @@ public sealed class CheckoutService
         }
 
         var scoped = new List<string> { PathService.RunScoreFolderName, primary };
-        var emergency = eval.Outcome == LockAcquireOutcome.NeedsEmergencyConfirm;
+        var emergency =
+            eval.Outcome == LockAcquireOutcome.NeedsEmergencyConfirm || request.ConfirmForceTakeover;
         _locks.Acquire(
             request.Pack.Path,
             request.Pack.Office,
@@ -221,32 +240,46 @@ public sealed class CheckoutService
         _activeStore.Save(active);
 
         // Point RunScore alternate-save folders at this checkout's Backup before the timer opens RS.
-        // Re-applied again on Open RunScore; doing it here covers Explorer / manual launches too.
+        // Re-applied on Open RunScore only when RS is not already running (prefs load at process start).
         var prefResult = _runScorePrefs.ApplySop(backupPath);
+        var rsRunning = _processes.GetRunScoreProcessNames();
+        var runScoreNeedsRestart = rsRunning.Count > 0;
         var prefNote = prefResult.Success
             ? (prefResult.UpdatedCount > 0
                 ? $" RunScore preferences updated to SOP ({prefResult.UpdatedCount} change(s))."
                 : " RunScore preferences already match SOP.")
             : $" RunScore preference SOP warning: {prefResult.Message}";
+        if (runScoreNeedsRestart)
+        {
+            prefNote +=
+                " RunScore was already open (" + string.Join(", ", rsRunning)
+                + ") — close it, then tap Open RunScore in this app so the new autosave folder takes effect.";
+        }
 
         var failoverNote = autosaveMerged > 0
             ? $" Applied {autosaveMerged} newer autosave file(s) from OneDrive."
-            : Directory.Exists(autosavePath)
+            : reclaim && Directory.Exists(autosavePath)
                 ? " No newer autosave files were found on OneDrive (recovery may be limited to last Finish)."
                 : "";
+
+        var reclaimLead = request.ConfirmForceTakeover
+            ? "Force take-over succeeded. RUNSCORE + primary .event are local under Active."
+            : emergency
+                ? "Emergency reclaim succeeded. RUNSCORE + primary .event are local under Active."
+                : null;
 
         return new CheckoutResult
         {
             Success = true,
             Outcome = eval.Outcome,
             Active = active,
-            Message = emergency
-                ? "Emergency reclaim succeeded. RUNSCORE + primary .event are local under Active."
+            RunScoreNeedsRestart = runScoreNeedsRestart,
+            Message = reclaimLead is not null
+                ? reclaimLead
                   + failoverNote
                   + prefNote
                   + " DB's / Pre-Race / other .events stay on OneDrive."
                 : "Checkout complete. Launch RunScore/T&S from Active only."
-                  + (autosaveMerged > 0 ? failoverNote : "")
                   + prefNote
         };
     }
@@ -284,6 +317,7 @@ public sealed class CheckoutService
             return new CheckinResult { Success = false, Message = $"Active primary .event missing: {activeEvent}" };
 
         statusProgress?.Report("Backing up OneDrive scoped items…");
+        _paths.EnsureAppMetaFolder(active.LibrarySessionPath);
         var backupDest = _paths.GetCheckinBackupPath(active.LibrarySessionPath, DateTimeOffset.Now);
         var libraryRunScore = Path.Combine(active.LibrarySessionPath, PathService.RunScoreFolderName);
         var libraryEvent = Path.Combine(active.LibrarySessionPath, active.PrimaryEventFile);
@@ -297,8 +331,9 @@ public sealed class CheckoutService
         await _copy.CopyDirectoryAsync(activeRunScore, libraryRunScore, progress, cancellationToken);
         File.Copy(activeEvent, libraryEvent, overwrite: true);
 
-        // Race is finished — clear mid-race autosave so the next checkout doesn't merge leftovers.
-        TryClearAutosave(active.AutosavePath);
+        // Race is finished — clear mid-race autosave so post-event OneDrive edits aren't
+        // overwritten by stale mirrors on a later reclaim.
+        var autosaveCleared = ClearAutosaveWithRetry(active.AutosavePath);
 
         _locks.Release(active.LibrarySessionPath, holderName);
 
@@ -316,6 +351,10 @@ public sealed class CheckoutService
             syncMessage = sync.Message;
         }
 
+        var autosaveNote = autosaveCleared
+            ? string.Empty
+            : " Live autosave folder could not be deleted — ask setup to remove RUNSCORE\\_autosave before the next race.";
+
         if (removeActive)
         {
             try
@@ -329,10 +368,12 @@ public sealed class CheckoutService
                 return new CheckinResult
                 {
                     Success = true,
+                    AutosaveCleared = autosaveCleared,
                     AwaitingOneDriveConfirm = !syncOk,
                     Message = syncOk
                         ? $"Checked in; could not remove Active folder: {ex.Message}. Safe to shut down after confirming OneDrive."
-                        : $"Checked in; Active folder leftover ({ex.Message}). {syncMessage}"
+                          + autosaveNote
+                        : $"Checked in; Active folder leftover ({ex.Message}). {syncMessage}" + autosaveNote
                 };
             }
         }
@@ -344,31 +385,50 @@ public sealed class CheckoutService
             return new CheckinResult
             {
                 Success = true,
+                AutosaveCleared = autosaveCleared,
                 Message =
                     "Finish complete. Scoped files are on OneDrive and sync looks settled. You can shut down this laptop."
+                    + autosaveNote
             };
         }
 
         return new CheckinResult
         {
             Success = true,
+            AutosaveCleared = autosaveCleared,
             AwaitingOneDriveConfirm = true,
             Message =
                 "Finish copied files and released the lock, but OneDrive sync was not confirmed yet. " + syncMessage
                 + " Check the OneDrive cloud icon, then shut down only when it shows synced."
+                + autosaveNote
         };
     }
 
-    private static void TryClearAutosave(string autosavePath)
+    /// <summary>
+    /// Deletes OneDrive RUNSCORE\_autosave with short retries (OneDrive often holds files briefly).
+    /// </summary>
+    private static bool ClearAutosaveWithRetry(string autosavePath)
     {
-        try
+        if (string.IsNullOrWhiteSpace(autosavePath) || !Directory.Exists(autosavePath))
+            return true;
+
+        for (var attempt = 0; attempt < 4; attempt++)
         {
-            if (Directory.Exists(autosavePath))
+            try
+            {
                 Directory.Delete(autosavePath, recursive: true);
+            }
+            catch
+            {
+                // retry below
+            }
+
+            if (!Directory.Exists(autosavePath))
+                return true;
+
+            Thread.Sleep(250 * (attempt + 1));
         }
-        catch
-        {
-            // OneDrive may lock briefly; leftover autosave is still OK (newer-only merge).
-        }
+
+        return !Directory.Exists(autosavePath);
     }
 }
