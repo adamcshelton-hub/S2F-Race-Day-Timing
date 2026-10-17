@@ -48,7 +48,7 @@ public sealed class SettlingOneDriveSyncMonitor : IOneDriveSyncMonitor
             if (fingerprint == lastFingerprint)
             {
                 stableTicks++;
-                progress?.Report($"OneDrive settle check ({stableTicks}/{requiredStable})…");
+                progress?.Report($"finish:sync-stable:{stableTicks}:{requiredStable}");
                 if (stableTicks >= requiredStable)
                 {
                     return new SyncWaitResult
@@ -62,7 +62,7 @@ public sealed class SettlingOneDriveSyncMonitor : IOneDriveSyncMonitor
             {
                 stableTicks = 0;
                 lastFingerprint = fingerprint;
-                progress?.Report("Waiting for OneDrive file activity to settle…");
+                progress?.Report("finish:sync-wait");
             }
 
             await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);

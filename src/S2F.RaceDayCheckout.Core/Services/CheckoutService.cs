@@ -340,7 +340,7 @@ public sealed class CheckoutService
         if (!File.Exists(activeEvent))
             return new CheckinResult { Success = false, Message = $"Active primary .event missing: {activeEvent}" };
 
-        statusProgress?.Report("Backing up OneDrive scoped items…");
+        statusProgress?.Report("finish:backup");
         _paths.EnsureAppMetaFolder(active.LibrarySessionPath);
         var backupDest = _paths.GetCheckinBackupPath(active.LibrarySessionPath, DateTimeOffset.Now);
         var libraryRunScore = Path.Combine(active.LibrarySessionPath, PathService.RunScoreFolderName);
@@ -351,14 +351,14 @@ public sealed class CheckoutService
         if (File.Exists(libraryEvent))
             File.Copy(libraryEvent, Path.Combine(backupDest, active.PrimaryEventFile), overwrite: true);
 
-        statusProgress?.Report("Copying Active → OneDrive (RUNSCORE + primary .event)…");
+        statusProgress?.Report("finish:copy");
         await _copy.CopyDirectoryAsync(activeRunScore, libraryRunScore, progress, cancellationToken);
         File.Copy(activeEvent, libraryEvent, overwrite: true);
 
         // Clear mid-race autosave ASAP (before the OneDrive settle wait). Waiting first kept
         // OneDrive locks on _autosave and made Finish both slow and unable to delete it.
         var autosavePath = active.AutosavePath;
-        statusProgress?.Report("Clearing live autosave…");
+        statusProgress?.Report("finish:autosave");
         ClearAutosaveWithRetry(autosavePath);
 
         _locks.Release(active.LibrarySessionPath, holderName);
@@ -367,7 +367,7 @@ public sealed class CheckoutService
         var syncMessage = string.Empty;
         if (waitForOneDrive)
         {
-            statusProgress?.Report("Waiting for OneDrive to sync…");
+            statusProgress?.Report("finish:sync");
             var sync = await _syncMonitor.WaitUntilSettledAsync(
                 active.LibrarySessionPath,
                 TimeSpan.FromSeconds(Math.Max(15, settings.OneDriveSyncWaitSeconds)),
@@ -380,6 +380,7 @@ public sealed class CheckoutService
         string? activeRemoveError = null;
         if (removeActive)
         {
+            statusProgress?.Report("finish:cleanup");
             try
             {
                 // Drop DB's junction/symlink first — recursive delete must not wipe OneDrive DB's.
@@ -394,6 +395,7 @@ public sealed class CheckoutService
 
         // Drop local active record, then one last clear (mirror is paused by the UI).
         _activeStore.Save(null);
+        statusProgress?.Report("finish:autosave");
         var autosaveCleared = ClearAutosaveWithRetry(autosavePath);
         var autosaveNote = autosaveCleared
             ? string.Empty

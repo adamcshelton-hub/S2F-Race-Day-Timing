@@ -265,6 +265,66 @@ public sealed class MainViewModel : INotifyPropertyChanged
         return technical;
     }
 
+    private void SetFinishProgress(string title, string detail)
+    {
+        BusyTitle = title;
+        ProgressText = detail;
+    }
+
+    /// <summary>Map check-in status codes to timer-facing Finish overlay copy.</summary>
+    private void ApplyFinishStatus(string? status)
+    {
+        if (string.IsNullOrWhiteSpace(status))
+        {
+            SetFinishProgress("Finishing up", "Please wait…");
+            return;
+        }
+
+        if (status.StartsWith("finish:sync-stable:", StringComparison.OrdinalIgnoreCase))
+        {
+            var parts = status.Split(':');
+            var cur = parts.Length > 2 ? parts[2] : "?";
+            var need = parts.Length > 3 ? parts[3] : "?";
+            SetFinishProgress(
+                "3 · Uploading to OneDrive",
+                $"Cloud upload looks stable ({cur}/{need}).\nAlmost done — keep this window open.");
+            return;
+        }
+
+        switch (status)
+        {
+            case "finish:backup":
+                SetFinishProgress(
+                    "2 · Saving your race",
+                    "Backing up the current OneDrive race files…");
+                return;
+            case "finish:copy":
+                SetFinishProgress(
+                    "2 · Saving your race",
+                    "Copying this laptop's race files to OneDrive…");
+                return;
+            case "finish:autosave":
+                SetFinishProgress(
+                    "2 · Saving your race",
+                    "Clearing the mid-race live autosave folder…");
+                return;
+            case "finish:sync":
+            case "finish:sync-wait":
+                SetFinishProgress(
+                    "3 · Uploading to OneDrive",
+                    "Waiting for OneDrive to finish uploading.\nThis can take a minute — keep this window open.");
+                return;
+            case "finish:cleanup":
+                SetFinishProgress(
+                    "4 · Cleaning up",
+                    "Removing the local Active copy on this laptop…");
+                return;
+            default:
+                SetFinishProgress("Finishing up", FriendlyProgress(status));
+                return;
+        }
+    }
+
     public string LibraryRoot
     {
         get => _settings.LibraryRoot;
@@ -517,7 +577,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
         SetBusy(
             closingApp ? "Closing — saving your race" : "Finishing up",
-            "Please wait. Do not shut down yet…");
+            "Starting Finish…\nDo not shut down this laptop yet.");
 
         // Pause live mirror so it cannot recreate RUNSCORE\_autosave while Finish deletes it.
         _mirrorTimer.Stop();
@@ -534,10 +594,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
         try
         {
             // RSServer often keeps running a few seconds after the RunScore window closes.
-            ProgressText = "Checking that RunScore is closed…";
+            SetFinishProgress(
+                "1 · Waiting for RunScore",
+                "Checking that RunScore is fully closed…\n(RSServer can linger a few seconds after the window closes.)");
             var stillRunning = await _processGuard.WaitForBlockingClearedAsync(
                 TimeSpan.FromSeconds(25),
-                new Progress<string>(s => ProgressText = s));
+                new Progress<string>(s => SetFinishProgress("1 · Waiting for RunScore", s)));
             if (stillRunning.Count > 0)
             {
                 var names = string.Join(", ", stillRunning);
@@ -552,9 +614,14 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 return;
             }
 
+            SetFinishProgress("2 · Saving your race", "Starting file save to OneDrive…");
             var copyProgress = new Progress<CopyProgress>(p =>
-                ProgressText = p.FilesCopied > 0 ? $"Saving race files… ({p.FilesCopied})" : "Saving race files…");
-            var statusProgress = new Progress<string>(s => ProgressText = FriendlyProgress(s));
+                SetFinishProgress(
+                    "2 · Saving your race",
+                    p.FilesCopied > 0
+                        ? $"Copying race files to OneDrive… ({p.FilesCopied} files)"
+                        : "Copying race files to OneDrive…"));
+            var statusProgress = new Progress<string>(ApplyFinishStatus);
 
             var result = await _checkout.CheckinAsync(
                 _settings,

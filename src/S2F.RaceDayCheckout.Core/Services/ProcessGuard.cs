@@ -78,7 +78,7 @@ public sealed class ProcessGuard : IProcessGuard
         if (blocking.Count == 0)
             return blocking;
 
-        progress?.Report(FormatWaitingMessage(blocking));
+        progress?.Report(FormatWaitingMessage(blocking, deadline - DateTime.UtcNow));
 
         while (DateTime.UtcNow < deadline)
         {
@@ -89,18 +89,19 @@ public sealed class ProcessGuard : IProcessGuard
             if (blocking.Count == 0)
                 return blocking;
 
-            progress?.Report(FormatWaitingMessage(blocking));
+            progress?.Report(FormatWaitingMessage(blocking, deadline - DateTime.UtcNow));
         }
 
         return blocking;
     }
 
-    private static string FormatWaitingMessage(IReadOnlyList<string> blocking)
+    private static string FormatWaitingMessage(IReadOnlyList<string> blocking, TimeSpan remaining)
     {
         var names = string.Join(", ", blocking);
-        if (blocking.Any(n => IsRunScoreProcess(n)))
-            return $"Waiting for RunScore to finish closing ({names})…";
-        return $"Waiting for timing apps to close ({names})…";
+        var seconds = Math.Max(1, (int)Math.Ceiling(remaining.TotalSeconds));
+        if (blocking.Any(IsRunScoreProcess))
+            return $"RunScore is still closing in the background ({names}).\nWaiting up to {seconds}s…";
+        return $"Timing apps still closing ({names}).\nWaiting up to {seconds}s…";
     }
 
     public bool IsBlocking(string processName)
