@@ -52,6 +52,7 @@ public sealed class AutosaveMirrorService
 
             Directory.CreateDirectory(active.BackupPath);
             Directory.CreateDirectory(active.AutosavePath);
+            PathService.TryMarkHidden(active.AutosavePath);
 
             // Heal files RunScore wrote beside Backup when the registry path lacked '\'
             // (e.g. "2026 - EventENTRIES.DTA" in the office folder).
@@ -102,7 +103,10 @@ public sealed class AutosaveMirrorService
 
         Directory.CreateDirectory(trimmedBackup);
         if (!string.IsNullOrWhiteSpace(autosavePath))
+        {
             Directory.CreateDirectory(autosavePath);
+            PathService.TryMarkHidden(autosavePath);
+        }
 
         foreach (var file in Directory.EnumerateFiles(parent))
         {

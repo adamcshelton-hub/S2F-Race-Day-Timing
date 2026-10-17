@@ -176,6 +176,7 @@ public sealed class CheckoutService
         Directory.CreateDirectory(activePath);
         Directory.CreateDirectory(backupPath);
         Directory.CreateDirectory(autosavePath);
+        PathService.TryMarkHidden(autosavePath);
         TryRemoveAutosaveTombstone(autosavePath);
 
         // Pull OneDrive Files On-Demand placeholders local before copy.
@@ -453,12 +454,20 @@ public sealed class CheckoutService
             TryDeleteAutosaveTree(autosavePath);
 
             if (IsAutosaveCleared(autosavePath))
+            {
+                if (Directory.Exists(autosavePath))
+                    PathService.TryMarkHidden(autosavePath);
                 return true;
+            }
 
             Thread.Sleep(120 * (attempt + 1));
         }
 
-        return IsAutosaveCleared(autosavePath);
+        var cleared = IsAutosaveCleared(autosavePath);
+        if (Directory.Exists(autosavePath))
+            PathService.TryMarkHidden(autosavePath);
+        TryRemoveAutosaveTombstone(autosavePath);
+        return cleared;
     }
 
     /// <summary>True when folder is gone or contains no files (empty dir is safe for reclaim).</summary>
@@ -491,23 +500,28 @@ public sealed class CheckoutService
             if (Directory.Exists(autosavePath)
                 && !Directory.EnumerateFiles(autosavePath, "*", SearchOption.AllDirectories).Any())
             {
-                var tombstone = autosavePath.TrimEnd('\\', '/') + ".~delete";
+                var tombstone = autosavePath.TrimEnd('\\', '/') + PathService.AutosaveTombstoneSuffix;
                 if (Directory.Exists(tombstone))
                 {
                     try { Directory.Delete(tombstone, recursive: true); }
-                    catch { /* best effort */ }
+                    catch { PathService.TryMarkHidden(tombstone); }
                 }
 
                 try
                 {
                     Directory.Move(autosavePath, tombstone);
+                    PathService.TryMarkHidden(tombstone);
                     Directory.Delete(tombstone, recursive: true);
                     return;
                 }
                 catch
                 {
+                    PathService.TryMarkHidden(tombstone);
                     try { Directory.Delete(autosavePath, recursive: false); }
-                    catch { /* empty folder leftover is OK */ }
+                    catch
+                    {
+                        PathService.TryMarkHidden(autosavePath);
+                    }
                 }
             }
             else if (Directory.Exists(autosavePath))
@@ -523,7 +537,7 @@ public sealed class CheckoutService
 
     private static void TryRemoveAutosaveTombstone(string autosavePath)
     {
-        var tombstone = autosavePath.TrimEnd('\\', '/') + ".~delete";
+        var tombstone = autosavePath.TrimEnd('\\', '/') + PathService.AutosaveTombstoneSuffix;
         if (!Directory.Exists(tombstone))
             return;
         try
@@ -532,7 +546,8 @@ public sealed class CheckoutService
         }
         catch
         {
-            // leftover from a prior Finish — ignore
+            // Keep it out of the way if OneDrive still holds it.
+            PathService.TryMarkHidden(tombstone);
         }
     }
 

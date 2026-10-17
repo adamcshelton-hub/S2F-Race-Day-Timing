@@ -67,8 +67,9 @@ public sealed class FileCopyService : IFileCopyService
         try
         {
             // Never bulk-copy the live autosave mirror folder as part of a full tree replace.
+            var tombstone = PathService.AutosaveFolderName + PathService.AutosaveTombstoneSuffix;
             var args =
-                $"\"{source}\" \"{destination}\" /E /R:2 /W:2 /NFL /NDL /NJH /NJS /NP /XD \"{PathService.AutosaveFolderName}\" \"{PathService.AppMetaFolderName}\" \"._checkin_backup\"";
+                $"\"{source}\" \"{destination}\" /E /R:2 /W:2 /NFL /NDL /NJH /NJS /NP /XD \"{PathService.AutosaveFolderName}\" \"{tombstone}\" \"{PathService.AppMetaFolderName}\" \"._checkin_backup\"";
             if (mirror)
                 args += " /XO"; // exclude older
 
@@ -160,6 +161,7 @@ public sealed class FileCopyService : IFileCopyService
     private static bool IsAppMetaRelative(string relative) =>
         IsExcludedTree(relative, PathService.AppMetaFolderName)
         || IsExcludedTree(relative, PathService.AutosaveFolderName)
+        || IsExcludedTree(relative, PathService.AutosaveFolderName + PathService.AutosaveTombstoneSuffix)
         || IsExcludedTree(relative, "._checkin_backup");
 
     private static bool IsExcludedTree(string relative, string folderName) =>

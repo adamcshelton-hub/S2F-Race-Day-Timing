@@ -9,6 +9,9 @@ public sealed class PathService
     /// <summary>OneDrive folder under RUNSCORE where live Backup mirrors land for mid-race failover.</summary>
     public const string AutosaveFolderName = "_autosave";
 
+    /// <summary>Leftover rename target when OneDrive blocks deleting <see cref="AutosaveFolderName"/>.</summary>
+    public const string AutosaveTombstoneSuffix = ".~delete";
+
     /// <summary>Hidden app metadata under each session (locks, history, finish backups).</summary>
     public const string AppMetaFolderName = "._checkin";
 
