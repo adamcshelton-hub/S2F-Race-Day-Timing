@@ -52,7 +52,7 @@ public sealed class RunScoreSopProfile
             ["Warn on delete"] = true,
             ["Check for record changed"] = true,
             ["Listings beep"] = false,
-            ["Type ahead"] = false,
+            ["Type ahead"] = true,
             ["Edit res both"] = true,
             ["Auto login"] = true,
             ["Auto connect to cloud"] = false,

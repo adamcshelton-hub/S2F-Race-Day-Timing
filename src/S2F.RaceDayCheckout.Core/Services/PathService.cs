@@ -22,6 +22,7 @@ public sealed class PathService
     /// Only these Library root folders are offered as offices.
     /// Matches folders under OneDrive <c>Start 2 - Personal</c>.
     /// Templates stays excluded (New Event source, not a checkout office).
+    /// <c>Other</c> is intentionally excluded — OneDrive-only storage outside this app.
     /// </summary>
     public static readonly string[] AllowedOfficeFolders =
     [
@@ -29,9 +30,9 @@ public sealed class PathService
         "Charlotte",
         "Memphis",
         "Northwest Arkansas",
-        "Other",
-        "Past Races",
         "St. Louis",
+        // Always last on race-day + Admin office lists (not alpha with live offices).
+        "Past Races",
         "Test Office"
     ];
 

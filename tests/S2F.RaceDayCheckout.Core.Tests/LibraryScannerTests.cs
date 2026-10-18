@@ -40,18 +40,38 @@ public class LibraryScannerTests
         var sunday = Path.Combine(root, "Memphis", "2026 - LRM Weekend", "Sunday");
         SessionRoleStore.Save(sunday, new SessionRoles
         {
-            PrimaryEventFile = "26 LRM Sunday-S2F-MEM-3.event",
-            AnnouncerEventFile = "26 LRM Sunday-announcer.event"
+            PrimaryEventFile = "26 LRM Sunday-S2F-MEM-3.event"
         });
         File.WriteAllText(Path.Combine(sunday, "26 LRM Sunday-announcer.event"), "a");
         var assigned = scanner.ListSessions(root, officeFilter: "Memphis")
             .Single(s => s.SessionName == "Sunday");
         Assert.Equal("26 LRM Sunday-S2F-MEM-3.event", assigned.PrimaryEventFile);
-        Assert.Equal("26 LRM Sunday-announcer.event", assigned.AnnouncerEventFile);
+        Assert.True(SecondaryEventSelector.HasSecondary(assigned.EventFiles, assigned.PrimaryEventFile));
 
         var search = scanner.ListSessions(root, search: "Sunday");
         Assert.Single(search);
         Assert.Equal("Sunday", search[0].SessionName);
+    }
+
+    [Fact]
+    public void ListOffices_PutsPastRacesAndTestOfficeLast()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "s2f-off-" + Guid.NewGuid().ToString("N"));
+        foreach (var name in new[] { "Test Office", "St. Louis", "Past Races", "Atlanta", "Memphis" })
+            Directory.CreateDirectory(Path.Combine(root, name));
+
+        try
+        {
+            var paths = new PathService();
+            var scanner = new LibraryScanner(paths, new CheckoutLockService(paths, new MachineIdentity()));
+            Assert.Equal(
+                new[] { "Atlanta", "Memphis", "St. Louis", "Past Races", "Test Office" },
+                scanner.ListOffices(root).Select(o => o.Name).ToArray());
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); } catch { /* best effort */ }
+        }
     }
 
     [Fact]

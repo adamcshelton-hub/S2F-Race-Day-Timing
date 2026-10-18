@@ -49,6 +49,19 @@ public class VendorLauncherTests
     }
 
     [Fact]
+    public void FormatActiveSaveAsReminder_KeepsFolderTreeForActiveScreen()
+    {
+        var guide = VendorLauncher.FormatActiveSaveAsReminder(
+            Active(@"C:\S2F\RaceDay\Active\2026 - Weekend\Saturday", "Saturday"));
+        Assert.Contains("Save the Timing & Scoring .event here", guide, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("announcer", guide, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("This PC", guide, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("not Documents", guide, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Saturday.event", guide);
+        Assert.Contains("← open this folder", guide);
+    }
+
+    [Fact]
     public void ResolvePrimaryEventFile_FindsSaveAsOnDisk()
     {
         var root = Path.Combine(Path.GetTempPath(), "s2f-vl-" + Guid.NewGuid().ToString("N"));

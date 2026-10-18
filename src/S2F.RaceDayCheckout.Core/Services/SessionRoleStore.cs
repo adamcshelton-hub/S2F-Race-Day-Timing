@@ -5,8 +5,8 @@ using S2F.RaceDayCheckout.Core.Models;
 namespace S2F.RaceDayCheckout.Core.Services;
 
 /// <summary>
-/// App-owned session assignment. Source of truth for which .event is timing
-/// and which is announcer — race day does not guess from file names.
+/// App-owned session assignment. Source of truth for the main timing .event.
+/// Announcer T&amp;S secondaries are any other .event in the session folder — not listed here.
 /// </summary>
 public static class SessionRoleStore
 {
@@ -73,10 +73,10 @@ public static class SessionRoleStore
         Directory.CreateDirectory(folder);
         PathService.TryMarkHidden(folder);
 
+        // Primary only — do not re-write legacy announcerEventFile on new saves.
         var normalized = new SessionRoles
         {
-            PrimaryEventFile = NormalizeFileName(roles.PrimaryEventFile),
-            AnnouncerEventFile = NormalizeFileName(roles.AnnouncerEventFile)
+            PrimaryEventFile = NormalizeFileName(roles.PrimaryEventFile)
         };
         File.WriteAllText(GetPath(librarySessionPath), JsonSerializer.Serialize(normalized, JsonOptions));
     }

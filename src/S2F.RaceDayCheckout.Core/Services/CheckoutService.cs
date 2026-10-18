@@ -427,8 +427,8 @@ public sealed class CheckoutService
     }
 
     /// <summary>
-    /// Announcer checkout: no lock, no RunScore, no heartbeat upload.
-    /// Copies the assigned .event and DB's into Active and leaves the app open.
+    /// Announcer T&amp;S checkout: no lock, no RunScore, no heartbeat upload.
+    /// Copies the chosen non-primary .event and the full DB's tree into Active.
     /// </summary>
     private async Task<CheckoutResult> CheckoutAnnouncerAsync(
         CheckoutRequest request,
@@ -437,22 +437,35 @@ public sealed class CheckoutService
         CancellationToken cancellationToken)
     {
         var roles = SessionRoleStore.TryLoad(request.Pack.Path);
-        var announcer = SessionRoleStore.NormalizeFileName(roles?.AnnouncerEventFile)
-                        ?? SessionRoleStore.NormalizeFileName(request.Pack.AnnouncerEventFile)
-                        ?? SessionRoleStore.NormalizeFileName(request.PrimaryEventFileOverride);
+        var eventNames = EventFileSelector.ListEventFiles(request.Pack.Path);
+        var secondaries = SecondaryEventSelector.ListSecondaries(eventNames, roles?.PrimaryEventFile);
+        // UI pick first; else sole secondary; else legacy sidecar announcer field.
+        var picked = SessionRoleStore.NormalizeFileName(request.PrimaryEventFileOverride);
+        string? announcer = null;
+        if (picked is not null
+            && (secondaries.Contains(picked, StringComparer.OrdinalIgnoreCase)
+                || File.Exists(Path.Combine(request.Pack.Path, picked))))
+            announcer = picked;
+        else if (secondaries.Count == 1)
+            announcer = secondaries[0];
+        else
+            announcer = SessionRoleStore.NormalizeFileName(roles?.AnnouncerEventFile)
+                        ?? SessionRoleStore.NormalizeFileName(request.Pack.AnnouncerEventFile);
+
         if (string.IsNullOrWhiteSpace(announcer))
         {
             return new CheckoutResult
             {
                 Success = false,
-                Message = "No announcer file assigned for this race. Ask setup (Admin)."
+                Message = "No non-primary Timing & Scoring .event file for this race. "
+                          + "Setup can Save As extra files into the race folder."
             };
         }
 
         var useGraph = _cloud.IsAvailable;
         if (useGraph && !request.SkipGraphDownload)
         {
-            statusProgress?.Report("Downloading announcer files…");
+            statusProgress?.Report("Downloading Announcer T&S files…");
             CloudSyncResult pull;
             try
             {
@@ -471,13 +484,9 @@ public sealed class CheckoutService
                 pull = new CloudSyncResult
                 {
                     Success = false,
-                    Message = "Download timed out on cellular. Using announcer files already on this laptop."
+                    Message = "Download timed out on cellular. Using Announcer T&S files already on this laptop."
                 };
             }
-
-            // Sidecar may have arrived with a previous roles fetch; re-read after the slim pull.
-            announcer = SessionRoleStore.NormalizeFileName(SessionRoleStore.TryLoad(request.Pack.Path)?.AnnouncerEventFile)
-                         ?? announcer;
 
             if (!pull.Success && !File.Exists(Path.Combine(request.Pack.Path, announcer)))
             {
@@ -495,7 +504,7 @@ public sealed class CheckoutService
             return new CheckoutResult
             {
                 Success = false,
-                Message = $"Announcer file not found: {announcer}. Ask setup (Admin)."
+                Message = $"T&S file not found: {announcer}."
             };
         }
 
@@ -669,13 +678,9 @@ public sealed class CheckoutService
         if (!Directory.Exists(activeRunScore))
             return new CheckinResult { Success = false, Message = $"Active RUNSCORE missing: {activeRunScore}" };
 
-        // Pick up a .event Save As'd mid-checkout (Templates → bare T&S → Save As into Active).
-        var primaryEvent = VendorLauncher.ResolvePrimaryEventFile(active) ?? active.PrimaryEventFile;
-        var activeEvent = string.IsNullOrWhiteSpace(primaryEvent)
-            ? null
-            : Path.Combine(active.ActivePath, primaryEvent);
-        if (activeEvent is not null && !File.Exists(activeEvent))
-            activeEvent = null;
+        // Pick up .event files Save As'd mid-checkout (Templates → bare T&S → Save As into Active).
+        // Copy every Active *.event to Library (primary + announcer/video secondaries).
+        var activeEventNames = EventFileSelector.ListEventFiles(active.ActivePath);
 
         // Diff Active vs Library BEFORE finish:copy — download/checkout timestamps must not
         // drive Graph upload (that was uploading ~100 unchanged RUNSCORE files).
@@ -690,21 +695,22 @@ public sealed class CheckoutService
         Directory.CreateDirectory(backupDest);
         if (Directory.Exists(libraryRunScore))
             await _copy.CopyDirectoryAsync(libraryRunScore, Path.Combine(backupDest, PathService.RunScoreFolderName), progress, cancellationToken);
-        if (activeEvent is not null)
+        foreach (var eventName in activeEventNames)
         {
-            var libraryEventPrior = Path.Combine(active.LibrarySessionPath, Path.GetFileName(activeEvent));
+            var libraryEventPrior = Path.Combine(active.LibrarySessionPath, eventName);
             if (File.Exists(libraryEventPrior))
-                File.Copy(libraryEventPrior, Path.Combine(backupDest, Path.GetFileName(activeEvent)), overwrite: true);
+                File.Copy(libraryEventPrior, Path.Combine(backupDest, eventName), overwrite: true);
         }
 
         statusProgress?.Report("finish:copy");
         // Full replace into Library (local). Graph upload uses uploadRelativePaths from the
         // pre-copy Active-vs-Library diff — not these rewritten timestamps.
         await _copy.CopyDirectoryAsync(activeRunScore, libraryRunScore, progress, cancellationToken);
-        if (activeEvent is not null)
+        foreach (var eventName in activeEventNames)
         {
-            var libraryEvent = Path.Combine(active.LibrarySessionPath, Path.GetFileName(activeEvent));
-            File.Copy(activeEvent, libraryEvent, overwrite: true);
+            var activeEventPath = Path.Combine(active.ActivePath, eventName);
+            var libraryEvent = Path.Combine(active.LibrarySessionPath, eventName);
+            File.Copy(activeEventPath, libraryEvent, overwrite: true);
         }
 
         // Clear mid-race autosave ASAP (before the sync wait). Waiting first kept

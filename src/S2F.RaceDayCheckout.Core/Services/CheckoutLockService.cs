@@ -218,12 +218,13 @@ public sealed class CheckoutLockService
         var path = _paths.GetLockPath(libraryEventPath);
 
         var json = JsonSerializer.Serialize(lockInfo, JsonOptions);
-        const int attempts = 8;
+        const int attempts = 12;
         for (var i = 0; i < attempts; i++)
         {
             try
             {
-                using var fs = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None);
+                // FileShare.Read — OneDrive / Graph may have the file open briefly after upload.
+                using var fs = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.Read);
                 using var writer = new StreamWriter(fs);
                 writer.Write(json);
                 TryDeleteLegacyLockFiles(libraryEventPath);
@@ -231,7 +232,12 @@ public sealed class CheckoutLockService
             }
             catch (IOException) when (i < attempts - 1)
             {
-                Thread.Sleep(50 * (i + 1));
+                Thread.Sleep(80 * (i + 1));
+            }
+            catch (IOException)
+            {
+                // Last attempt — don't fail Finish/checkout solely on lock write (race files already saved).
+                return;
             }
         }
     }
@@ -250,17 +256,25 @@ public sealed class CheckoutLockService
         }
 
         var line = JsonSerializer.Serialize(entry) + Environment.NewLine;
-        for (var i = 0; i < 5; i++)
+        const int attempts = 12;
+        for (var i = 0; i < attempts; i++)
         {
             try
             {
-                File.AppendAllText(path, line);
+                using var fs = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
+                using var writer = new StreamWriter(fs);
+                writer.Write(line);
                 TryDeleteQuiet(legacy);
                 return;
             }
-            catch (IOException) when (i < 4)
+            catch (IOException) when (i < attempts - 1)
             {
-                Thread.Sleep(40 * (i + 1));
+                Thread.Sleep(80 * (i + 1));
+            }
+            catch (IOException)
+            {
+                // History is audit-only — never fail Finish because OneDrive briefly locks this file.
+                return;
             }
         }
     }

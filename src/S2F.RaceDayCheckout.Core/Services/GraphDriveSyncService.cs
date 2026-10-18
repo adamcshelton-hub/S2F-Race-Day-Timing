@@ -33,7 +33,7 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
         CancellationToken cancellationToken = default)
     {
         if (!_tokens.IsSignedIn)
-            return new CloudSyncResult { Success = false, Message = "Sign in to OneDrive first (Admin)." };
+            return new CloudSyncResult { Success = false, Message = "Sign in to OneDrive first." };
 
         using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         budget.CancelAfter(GraphSyncPolicy.OfficeListBudget);
@@ -106,7 +106,7 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
         string? protectSessionPath = null)
     {
         if (!_tokens.IsSignedIn)
-            return new CloudSyncResult { Success = false, Message = "Sign in to OneDrive first (Admin)." };
+            return new CloudSyncResult { Success = false, Message = "Sign in to OneDrive first." };
 
         if (string.IsNullOrWhiteSpace(officeName)
             || !PathService.AllowedOfficeFolders.Contains(officeName, StringComparer.OrdinalIgnoreCase))
@@ -179,7 +179,7 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
         CancellationToken cancellationToken = default)
     {
         if (!_tokens.IsSignedIn)
-            return new CloudSyncResult { Success = false, Message = "Sign in to OneDrive first (Admin)." };
+            return new CloudSyncResult { Success = false, Message = "Sign in to OneDrive first." };
 
         using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         budget.CancelAfter(probeSessionLeaves
@@ -893,7 +893,7 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
     {
         var token = await _tokens.GetAccessTokenAsync(cancellationToken).ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(token))
-            throw new InvalidOperationException("No Graph access token. Sign in from Admin.");
+            throw new InvalidOperationException("No Graph access token. Sign in to OneDrive.");
         return token;
     }
 

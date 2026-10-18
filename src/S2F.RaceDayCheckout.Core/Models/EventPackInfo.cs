@@ -26,9 +26,18 @@ public sealed class EventPackInfo
 
     public IReadOnlyList<string> EventFiles { get; init; } = Array.Empty<string>();
     public string? PrimaryEventFile { get; set; }
-    /// <summary>Set from <c>s2f_session.json</c> when ops assigned an announcer file. Null for most races.</summary>
+    /// <summary>Legacy sidecar field — not used for Announcer T&amp;S list membership.</summary>
     public string? AnnouncerEventFile { get; set; }
+    /// <summary>Non-primary .event names (announcer / video / callouts). Set when Announcer T&amp;S probes the session.</summary>
+    public IReadOnlyList<string> SecondaryEventFiles { get; set; } = Array.Empty<string>();
     public CheckoutLock? Lock { get; set; }
+
+    public string? SecondaryEventSummary =>
+        SecondaryEventFiles.Count == 0
+            ? null
+            : SecondaryEventFiles.Count == 1
+                ? SecondaryEventFiles[0]
+                : $"{SecondaryEventFiles.Count} other .event files";
 
     /// <summary>True when this row is a Past Races (or similar) folder to open, not a checkoutable session.</summary>
     public bool IsNavigationFolder { get; init; }

@@ -11,6 +11,11 @@ public sealed class EventBuildRequest
     public required string RaceName { get; init; }
     public required string RaceDate { get; init; }
     public required string ResultsId { get; init; }
+    /// <summary>
+    /// When set (race group), create under <c>Office\{ParentFolderName}\{child}</c>.
+    /// Parent folder name should already include the year (e.g. <c>2026 - LRM Weekend</c>).
+    /// </summary>
+    public string? ParentFolderName { get; init; }
 }
 
 public sealed class EventBuildResult
@@ -19,7 +24,11 @@ public sealed class EventBuildResult
     public string Message { get; init; } = string.Empty;
     public string? Office { get; init; }
     public string? SessionPath { get; init; }
+    /// <summary>Leaf folder name only (e.g. Sunday or 2026 - Pumpkin Run).</summary>
     public string? SessionFolderName { get; init; }
+    /// <summary>Path relative to office (leaf, or Parent\leaf for a race group).</summary>
+    public string? RelativePath { get; init; }
+    public string? ParentFolderName { get; init; }
     public string? EntriesIniPath { get; init; }
     /// <summary>True when the copied pack has no MyLaps .event (common for Templates).</summary>
     public bool MissingEventFile { get; init; }
@@ -139,21 +148,43 @@ public sealed class EventBuilderService
         if (raceName.Length == 0)
             return Fail("Race name is required.");
 
+        string? parentFolder = null;
+        if (!string.IsNullOrWhiteSpace(request.ParentFolderName))
+        {
+            parentFolder = SanitizeFolderSegment(request.ParentFolderName.Trim());
+            if (parentFolder.Length == 0)
+                return Fail("Parent folder name is required for a race group.");
+        }
+
         string folderName;
         try
         {
-            folderName = EntriesIniService.BuildSessionFolderName(raceName, request.RaceDate);
+            // Under a parent: leaf is just the race name (Sunday, AM 5K, …). Flat: yyyy - RaceName.
+            folderName = parentFolder is null
+                ? EntriesIniService.BuildSessionFolderName(raceName, request.RaceDate)
+                : SanitizeFolderSegment(raceName);
         }
         catch (Exception ex)
         {
             return Fail(ex.Message);
         }
 
+        if (folderName.Length == 0)
+            return Fail("Race name is required.");
+
         var officePath = Path.Combine(request.LibraryRoot, request.Office);
         Directory.CreateDirectory(officePath);
-        var dest = Path.Combine(officePath, folderName);
+        var parentPath = parentFolder is null ? officePath : Path.Combine(officePath, parentFolder);
+        if (parentFolder is not null)
+            Directory.CreateDirectory(parentPath);
+
+        var dest = Path.Combine(parentPath, folderName);
         if (Directory.Exists(dest))
             return Fail("Destination already exists:\n" + dest);
+
+        var relativePath = parentFolder is null
+            ? folderName
+            : Path.Combine(parentFolder, folderName);
 
         try
         {
@@ -188,7 +219,8 @@ public sealed class EventBuilderService
             return Fail("Copied pack, but couldn't update Entries.ini:\n" + ex.Message + "\n\n" + dest);
         }
 
-        Directory.CreateDirectory(Path.Combine(dest, SharedFolderLinkService.DbsFolderName));
+        // OneDrive / Graph omit empty folders — seed DB's so the folder lands in the cloud pack.
+        EnsureDbsFolderSeeded(dest);
 
         // .event files are MyLaps ZIP databases — an empty stub fails with "zip file is empty".
         // Templates usually have RUNSCORE only; do not invent a fake .event.
@@ -199,7 +231,7 @@ public sealed class EventBuilderService
         // Staff already know the mid-week flow — only point at where the .event should land.
         var message = missingEvent
             ? $"Save Timing & Scoring as \"{suggestedEvent}\" into the Active folder."
-            : $"Created {folderName}.";
+            : $"Created {relativePath}.";
 
         return new EventBuildResult
         {
@@ -207,12 +239,45 @@ public sealed class EventBuilderService
             Office = request.Office,
             SessionPath = dest,
             SessionFolderName = folderName,
+            RelativePath = relativePath,
+            ParentFolderName = parentFolder,
             EntriesIniPath = iniPath,
             MissingEventFile = missingEvent,
             PrimaryEventFile = primaryEvent,
             SuggestedEventFileName = suggestedEvent,
             Message = message
         };
+    }
+
+    private static string SanitizeFolderSegment(string name)
+    {
+        var s = name.Trim();
+        foreach (var c in Path.GetInvalidFileNameChars())
+            s = s.Replace(c, '-');
+        return s.Trim().TrimEnd('.', ' ');
+    }
+
+    /// <summary>
+    /// Ensures <c>DB's</c> exists with at least one small file so Graph/OneDrive create the folder.
+    /// Skips seeding when the Template / Past Race already copied exports into DB's.
+    /// </summary>
+    internal static void EnsureDbsFolderSeeded(string sessionPath)
+    {
+        var dbs = Path.Combine(sessionPath, SharedFolderLinkService.DbsFolderName);
+        Directory.CreateDirectory(dbs);
+        try
+        {
+            if (Directory.EnumerateFileSystemEntries(dbs).Any())
+                return;
+        }
+        catch
+        {
+            // still write seed
+        }
+
+        File.WriteAllText(
+            Path.Combine(dbs, "Exports land here.txt"),
+            "RunScore and Timing & Scoring CSV / database exports go in this folder.\r\n");
     }
 
     private static EventBuildResult Fail(string message) =>

@@ -13,7 +13,7 @@ Windows app for race-day timing: check out **RUNSCORE + primary MyLaps `.event`*
 
 Admin → **New event…** copies a Template or prior-year pack, sets folder name from race name + date, and writes `race name` / `race date` / `%resultsid%` into `RUNSCORE\Entries.ini`.
 
-Admin settings: **triple-click the header**, enter PIN.
+Admin settings: tap **Admin** (top-right), enter PIN.
 
 ## Install (timers)
 

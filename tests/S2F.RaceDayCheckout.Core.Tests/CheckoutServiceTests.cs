@@ -586,8 +586,7 @@ public class CheckoutServiceTests
         File.WriteAllText(Path.Combine(packPath, "DB's", "exports", "race.csv"), "nested");
         SessionRoleStore.Save(packPath, new SessionRoles
         {
-            PrimaryEventFile = "Sample Event.event",
-            AnnouncerEventFile = "Sample Event-announcer.event"
+            PrimaryEventFile = "Sample Event.event"
         });
 
         var raceDay = Path.Combine(Path.GetTempPath(), "s2f-rd-" + Guid.NewGuid().ToString("N"));
@@ -610,7 +609,8 @@ public class CheckoutServiceTests
             Pack = PackInfo(packPath, "Memphis", "2026 - Sample Event"),
             Settings = settings,
             HolderName = "Announcer",
-            Role = CheckoutRole.Announcer
+            Role = CheckoutRole.Announcer,
+            PrimaryEventFileOverride = "Sample Event-announcer.event"
         });
 
         Assert.True(result.Success, result.Message);
@@ -658,7 +658,7 @@ public class CheckoutServiceTests
         File.WriteAllText(Path.Combine(packPath, "Sample Event-announcer.event"), "announcer-event");
         SessionRoleStore.Save(packPath, new SessionRoles
         {
-            AnnouncerEventFile = "Sample Event-announcer.event"
+            PrimaryEventFile = "Sample Event.event"
         });
 
         var raceDay = Path.Combine(Path.GetTempPath(), "s2f-rd-" + Guid.NewGuid().ToString("N"));
@@ -675,7 +675,8 @@ public class CheckoutServiceTests
             Pack = PackInfo(packPath, "Memphis", "2026 - Sample Event"),
             Settings = settings,
             HolderName = "Announcer",
-            Role = CheckoutRole.Announcer
+            Role = CheckoutRole.Announcer,
+            PrimaryEventFileOverride = "Sample Event-announcer.event"
         });
         Assert.True(checkout.Success, checkout.Message);
 

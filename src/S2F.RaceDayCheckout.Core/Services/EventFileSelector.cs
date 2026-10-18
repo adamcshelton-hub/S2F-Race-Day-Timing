@@ -37,7 +37,9 @@ public static class EventFileSelector
         var name = Path.GetFileNameWithoutExtension(fileName);
         return name.Contains("-S2F-", StringComparison.OrdinalIgnoreCase)
                || name.Contains("_S2F_", StringComparison.OrdinalIgnoreCase)
-               || name.Contains("announcer", StringComparison.OrdinalIgnoreCase);
+               || name.Contains("announcer", StringComparison.OrdinalIgnoreCase)
+               || name.Contains("video", StringComparison.OrdinalIgnoreCase)
+               || name.Contains("display", StringComparison.OrdinalIgnoreCase);
     }
 
     public static IReadOnlyList<string> ListEventFiles(string sessionPath)

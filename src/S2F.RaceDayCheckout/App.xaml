@@ -104,17 +104,19 @@
       <Setter Property="BorderThickness" Value="0"/>
       <Setter Property="Padding" Value="0"/>
       <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Disabled"/>
+      <!-- Pixel scroll — item-based jump feels too fast with tall card rows. -->
+      <Setter Property="ScrollViewer.CanContentScroll" Value="False"/>
       <Setter Property="ItemContainerStyle">
         <Setter.Value>
           <Style TargetType="ListBoxItem">
             <Setter Property="Padding" Value="0"/>
-            <Setter Property="Margin" Value="0,0,0,6"/>
+            <Setter Property="Margin" Value="0,0,0,4"/>
             <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
             <Setter Property="Template">
               <Setter.Value>
                 <ControlTemplate TargetType="ListBoxItem">
                   <Border x:Name="Bd" Background="{StaticResource CardBrush}" CornerRadius="6"
-                          BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Padding="14,9">
+                          BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Padding="12,7">
                     <ContentPresenter/>
                   </Border>
                   <ControlTemplate.Triggers>

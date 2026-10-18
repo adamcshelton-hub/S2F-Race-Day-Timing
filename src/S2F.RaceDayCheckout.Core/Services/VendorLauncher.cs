@@ -141,7 +141,7 @@ public sealed class VendorLauncher
                 {
                     Success = false,
                     Message = "Timing & Scoring path is not set.\n\n"
-                              + "Set it in Admin (triple-click the logo), then try Open Timing & Scoring again."
+                              + "Set it in Admin (top-right), then try Open Timing & Scoring again."
                 };
             }
 
@@ -193,7 +193,29 @@ public sealed class VendorLauncher
     public static string FormatSaveAsFolderGuide(ActiveCheckout active) =>
         FormatSaveAsFolderGuide(active.ActivePath, SuggestEventFileName(active));
 
-    public static string FormatSaveAsFolderGuide(string activePath, string suggestedEventFileName)
+    public static string FormatSaveAsFolderGuide(string activePath, string suggestedEventFileName) =>
+        BuildSaveAsFolderGuide(
+            activePath,
+            suggestedEventFileName,
+            "No Timing & Scoring .event yet (common for Templates).",
+            "Checkout anyway — after you build in T&S, Save As here",
+            "(T&S often opens Documents — don't leave it there):");
+
+    /// <summary>
+    /// Same folder map as checkout, worded for the Active screen (stays under Finish).
+    /// </summary>
+    public static string FormatActiveSaveAsReminder(ActiveCheckout active) =>
+        BuildSaveAsFolderGuide(
+            active.ActivePath,
+            SuggestEventFileName(active),
+            "Save the Timing & Scoring .event here (not Documents).",
+            "Save announcer / video .event files into this same folder.",
+            "T&S often opens Documents — don't leave it there.");
+
+    private static string BuildSaveAsFolderGuide(
+        string activePath,
+        string suggestedEventFileName,
+        params string[] introLines)
     {
         var suggested = string.IsNullOrWhiteSpace(suggestedEventFileName)
             ? "Race.event"
@@ -205,17 +227,13 @@ public sealed class VendorLauncher
             .Split(new[] { '\\', '/' }, StringSplitOptions.RemoveEmptyEntries)
             .ToList();
 
-        var lines = new List<string>
-        {
-            "No Timing & Scoring .event yet (common for Templates).",
-            "Checkout anyway — after you build in T&S, Save As here",
-            "(T&S often opens Documents — don't leave it there):",
-            "",
-            "In the Save dialog (left side):",
-            "  click This PC  —  not Documents",
-            "",
-            "Then open folders in this order:"
-        };
+        var lines = new List<string>();
+        lines.AddRange(introLines);
+        lines.Add("");
+        lines.Add("In the Save dialog (left side):");
+        lines.Add("  click This PC  —  not Documents");
+        lines.Add("");
+        lines.Add("Then open folders in this order:");
 
         var indent = "  ";
         lines.Add(indent + "This PC");

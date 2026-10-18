@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.CompilerServices;
+using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Threading;
@@ -23,9 +24,38 @@ public enum WizardStep
 
 public enum AdminSection
 {
-    Settings,
-    Events
+    SetupNewEvent,
+    EditCurrentEvent,
+    Settings
 }
+
+/// <summary>Lazy Admin → Edit Current Event flow (office → event → assign). Cellular: one tree at a time.</summary>
+public enum AdminEventsSubStep
+{
+    Office,
+    Session,
+    Assign
+}
+
+/// <summary>Lazy Admin → Setup New Event (layout → office → [parent] → copy-from → source → details).</summary>
+public enum AdminNewEventSubStep
+{
+    Layout,
+    Office,
+    Parent,
+    SourceKind,
+    Source,
+    Details,
+    /// <summary>After creating a leaf in a Race Group — choose checkout vs add another.</summary>
+    GroupCreated
+}
+
+public sealed record NewEventSourceItem(string Display, string Path, bool IsFolder = false);
+
+public sealed record NewEventSourceKindOption(string Display, bool UseTemplates);
+
+/// <summary>One Race (flat) vs Race Group (top-level folder with one leaf per event).</summary>
+public sealed record NewEventLayoutOption(string Display, bool IsRaceGroup, string? Detail = null);
 
 public sealed class MainViewModel : INotifyPropertyChanged
 {
@@ -43,11 +73,15 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private readonly AutosaveMirrorService _mirror;
     private readonly GraphAuthService _graphAuth;
     private readonly ICloudLibrarySync _cloud;
+    private readonly EventBuilderService _eventBuilder = new();
     private readonly DispatcherTimer _heartbeatTimer;
     private readonly DispatcherTimer _mirrorTimer;
     private readonly SemaphoreSlim _heartbeatUploadGate = new(1, 1);
     /// <summary>Offices / Past Races paths already Graph-indexed this run (cellular: don't re-walk).</summary>
     private readonly HashSet<string> _graphIndexedOffices = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>Merged local+remote *.event names per session path (Announcer T&S secondary probe).</summary>
+    private readonly Dictionary<string, IReadOnlyList<string>> _probedEventNames =
+        new(StringComparer.OrdinalIgnoreCase);
 
     private AppSettings _settings;
     private WizardStep _step = WizardStep.Office;
@@ -62,10 +96,39 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private bool _sessionPackPulled;
     private ActiveCheckout? _active;
     private CheckoutRole _checkoutRole = CheckoutRole.Timing;
-    private AdminSection _adminSection = AdminSection.Settings;
+    private AdminSection _adminSection = AdminSection.SetupNewEvent;
+    private AdminEventsSubStep _adminEventsSubStep = AdminEventsSubStep.Office;
+    private AdminNewEventSubStep _adminNewEventSubStep = AdminNewEventSubStep.Layout;
+    /// <summary>PIN unlock expiry — setup staff stay in Admin across Finish without re-entering PIN.</summary>
+    private DateTimeOffset? _adminUnlockedUntil;
+    private static readonly TimeSpan AdminUnlockDuration = TimeSpan.FromHours(8);
+    private string? _adminOffice;
+    /// <summary>Under Admin → Edit Current Event → Past Races only (bucket / year). Separate from race-day browse.</summary>
+    private string _adminPastRacesRelative = string.Empty;
     private EventPackInfo? _adminSession;
     private string? _selectedTimingFile;
-    private string? _selectedAnnouncerChoice;
+    private string _adminListFilter = string.Empty;
+    private readonly List<string> _adminOfficeSource = new();
+    private readonly List<EventPackInfo> _adminSessionSource = new();
+    private string _raceDayListFilter = string.Empty;
+    private bool _newEventIsRaceGroup;
+    private string? _newEventOffice;
+    private string _newEventParentName = string.Empty;
+    private int _newEventParentYear = DateTime.Today.Year;
+    /// <summary>Resolved parent folder under the office (e.g. 2026 - LRM Weekend).</summary>
+    private string? _newEventParentFolder;
+    /// <summary>Leaf just created under the Race Group (for success UI / checkout label).</summary>
+    private string _lastCreatedRaceName = string.Empty;
+    /// <summary>0 = Templates, 1 = Past Races.</summary>
+    private int _newEventSourceKind;
+    private NewEventSourceItem? _newEventSource;
+    private string _newEventPastRelative = string.Empty;
+    private string _newEventRaceName = string.Empty;
+    private DateTime? _newEventRaceDateValue = DateTime.Today;
+    private string _newEventResultsId = string.Empty;
+    private string _newEventPreview = string.Empty;
+    private readonly List<string> _newEventOfficeSource = new();
+    private readonly List<NewEventSourceItem> _newEventSourceSource = new();
     private bool _busy;
     private bool _busyNeedsAcknowledge;
     private string _busyTitle = string.Empty;
@@ -82,12 +145,27 @@ public sealed class MainViewModel : INotifyPropertyChanged
         _mirror = new AutosaveMirrorService(_copy, _activeStore, _cloud, () => _settings);
 
         Offices = new ObservableCollection<string>();
+        VisibleOffices = new ObservableCollection<string>();
         Sessions = new ObservableCollection<EventPackInfo>();
+        VisibleSessions = new ObservableCollection<EventPackInfo>();
         EventFiles = new ObservableCollection<string>();
         AdminOffices = new ObservableCollection<string>();
         AdminSessions = new ObservableCollection<EventPackInfo>();
         AdminEventFiles = new ObservableCollection<string>();
-        AdminAnnouncerChoices = new ObservableCollection<string>();
+        NewEventOffices = new ObservableCollection<string>();
+        NewEventSources = new ObservableCollection<NewEventSourceItem>();
+        NewEventSourceKinds = new ObservableCollection<NewEventSourceKindOption>
+        {
+            new("Templates Folder", UseTemplates: true),
+            new("Past Races (This Office)", UseTemplates: false)
+        };
+        NewEventLayouts = new ObservableCollection<NewEventLayoutOption>
+        {
+            new("One Race", IsRaceGroup: false,
+                Detail: "A single race folder on disk."),
+            new("Race Group — Multiple Events in Series or Multi-Day Event", IsRaceGroup: true,
+                Detail: "Sets up a top-level folder with individual event folders for each race in the group.")
+        };
 
         _heartbeatTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(Math.Max(30, _settings.HeartbeatSeconds)) };
         _heartbeatTimer.Tick += (_, _) => Heartbeat();
@@ -99,22 +177,107 @@ public sealed class MainViewModel : INotifyPropertyChanged
         };
 
         EnsureLocalRoots(); // office name folders under C:\S2F\Library — no Graph
+        LoadAdminUnlock();
         ReloadFromDisk();
         _heartbeatTimer.Start();
         _mirrorTimer.Start();
     }
 
+    private bool IsAdminUnlocked =>
+        _adminUnlockedUntil is { } until && until > DateTimeOffset.UtcNow;
+
+    private static string AdminUnlockStorePath =>
+        Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "S2FRaceDayCheckout",
+            "admin-unlock.json");
+
+    private void GrantAdminUnlock()
+    {
+        _adminUnlockedUntil = DateTimeOffset.UtcNow.Add(AdminUnlockDuration);
+        try
+        {
+            var dir = Path.GetDirectoryName(AdminUnlockStorePath);
+            if (!string.IsNullOrEmpty(dir))
+                Directory.CreateDirectory(dir);
+            File.WriteAllText(
+                AdminUnlockStorePath,
+                System.Text.Json.JsonSerializer.Serialize(new AdminUnlockState
+                {
+                    UntilUtc = _adminUnlockedUntil.Value
+                }));
+        }
+        catch
+        {
+            // In-memory unlock still works this run.
+        }
+    }
+
+    private void LoadAdminUnlock()
+    {
+        try
+        {
+            if (!File.Exists(AdminUnlockStorePath))
+                return;
+            var state = System.Text.Json.JsonSerializer.Deserialize<AdminUnlockState>(
+                File.ReadAllText(AdminUnlockStorePath));
+            if (state?.UntilUtc is { } until && until > DateTimeOffset.UtcNow)
+                _adminUnlockedUntil = until;
+            else
+                TryDeleteAdminUnlockFile();
+        }
+        catch
+        {
+            _adminUnlockedUntil = null;
+        }
+    }
+
+    private static void TryDeleteAdminUnlockFile()
+    {
+        try
+        {
+            if (File.Exists(AdminUnlockStorePath))
+                File.Delete(AdminUnlockStorePath);
+        }
+        catch
+        {
+            // ignore
+        }
+    }
+
+    private sealed class AdminUnlockState
+    {
+        public DateTimeOffset UntilUtc { get; set; }
+    }
+
+    private void EnterAdminSetup(string? statusMessage = null)
+    {
+        Step = WizardStep.Admin;
+        _adminSection = AdminSection.SetupNewEvent;
+        _adminEventsSubStep = AdminEventsSubStep.Office;
+        InitNewEventForm();
+        NotifyAdminSection();
+        NotifyGraphStatus();
+        if (!string.IsNullOrWhiteSpace(statusMessage))
+            Status = statusMessage;
+    }
+
     public event PropertyChangedEventHandler? PropertyChanged;
 
     public ObservableCollection<string> Offices { get; }
+    /// <summary>Office list after race-day search filter (UI).</summary>
+    public ObservableCollection<string> VisibleOffices { get; }
     public ObservableCollection<EventPackInfo> Sessions { get; }
+    /// <summary>Session / Past Races list after race-day search filter (UI).</summary>
+    public ObservableCollection<EventPackInfo> VisibleSessions { get; }
     public ObservableCollection<string> EventFiles { get; }
     public ObservableCollection<string> AdminOffices { get; }
     public ObservableCollection<EventPackInfo> AdminSessions { get; }
     public ObservableCollection<string> AdminEventFiles { get; }
-    public ObservableCollection<string> AdminAnnouncerChoices { get; }
-
-    public const string NoAnnouncerLabel = "(none)";
+    public ObservableCollection<string> NewEventOffices { get; }
+    public ObservableCollection<NewEventSourceItem> NewEventSources { get; }
+    public ObservableCollection<NewEventSourceKindOption> NewEventSourceKinds { get; }
+    public ObservableCollection<NewEventLayoutOption> NewEventLayouts { get; }
 
     public WizardStep Step
     {
@@ -136,11 +299,31 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 OnPropertyChanged(nameof(ShowCheckForUpdates));
                 OnPropertyChanged(nameof(IsTimingActive));
                 OnPropertyChanged(nameof(IsAnnouncerActive));
+                NotifyActiveSaveAsGuide();
+                OnPropertyChanged(nameof(IsAdminSetupNewEvent));
+                OnPropertyChanged(nameof(IsAdminEditCurrentEvent));
                 OnPropertyChanged(nameof(IsAdminSettings));
-                OnPropertyChanged(nameof(IsAdminEvents));
+                OnPropertyChanged(nameof(IsAdminNewEventLayout));
+                OnPropertyChanged(nameof(IsAdminNewEventOffice));
+                OnPropertyChanged(nameof(IsAdminNewEventParent));
+                OnPropertyChanged(nameof(IsAdminNewEventSourceKind));
+                OnPropertyChanged(nameof(IsAdminNewEventSource));
+                OnPropertyChanged(nameof(IsAdminNewEventDetails));
+                OnPropertyChanged(nameof(IsAdminNewEventGroupCreated));
+                OnPropertyChanged(nameof(IsNewEventRaceGroup));
+                OnPropertyChanged(nameof(IsAdminEventsOffice));
+                OnPropertyChanged(nameof(IsAdminEventsSession));
+                OnPropertyChanged(nameof(IsAdminEventsAssign));
+                OnPropertyChanged(nameof(ShowAdminListFilter));
+                OnPropertyChanged(nameof(ShowAddRaceToGroup));
+                OnPropertyChanged(nameof(ShowAdminHeaderLink));
+                OnPropertyChanged(nameof(ShowGraphReadyInline));
+                OnPropertyChanged(nameof(ShowGraphSignInBanner));
                 OnPropertyChanged(nameof(EmptySessionsTitle));
                 OnPropertyChanged(nameof(EmptySessionsBody));
                 OnPropertyChanged(nameof(ShowSessionLock));
+                OnPropertyChanged(nameof(ShowRaceDayListFilter));
+                OnPropertyChanged(nameof(RaceDayListFilterHint));
             }
         }
     }
@@ -172,44 +355,93 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     public string StepTitle => Step switch
     {
-        WizardStep.Office => "Choose your office",
-        WizardStep.Session => IsPastRacesBrowse ? "Browse Past Races" : "Choose your event",
-        WizardStep.EventFile => "Which timing file?",
+        WizardStep.Office => "Choose Your Office",
+        WizardStep.Session => IsPastRacesBrowse ? "Browse Past Races" : "Choose Your Event",
+        WizardStep.EventFile => "Which Timing File?",
         // Event name is the hero — don't repeat it in the card below.
-        WizardStep.Active => Active?.DisplayName ?? "Ready for race day",
-        WizardStep.Admin => "Admin settings",
+        WizardStep.Active => Active?.DisplayName ?? "Ready for Race Day",
+        WizardStep.Admin => _adminSection switch
+        {
+            AdminSection.SetupNewEvent => "Setup New Event",
+            AdminSection.EditCurrentEvent => "Edit Current Event",
+            _ => "Admin Settings"
+        },
         _ => "S2F Race Day"
     };
 
     public string StepSubtitle => Step switch
     {
         WizardStep.Office => IsAnnouncerRole
-            ? "Announcer — double-click your office. Only assigned announcer races are listed."
-            : "Timing — double-click your office to continue.",
+            ? "Announcer T&S Laptop — double-click your office. Races with extra T&S .event files are listed."
+            : "Main Timing Laptop — double-click your office to continue.",
         WizardStep.Session => IsPastRacesBrowse
             ? $"{PastRacesBreadcrumb} — open a folder, or double-click a race."
             : IsAnnouncerRole
                 ? SelectedOffice is null
-                    ? "Races with an announcer file assigned."
-                    : $"Office: {SelectedOffice} — announcer races only."
+                    ? "Races that have a non-primary T&S .event (announcer, video, …)."
+                    : $"Office: {SelectedOffice} — races with a non-primary T&S .event."
                 : SelectedOffice is null
                     ? "Double-click today's race."
                     : $"Office: {SelectedOffice} — double-click today's race.",
         WizardStep.EventFile => SelectedSession is null
-            ? "Double-click the main timing file."
-            : $"{SelectedSession.DisplayName} — double-click the main timing file.",
+            ? (IsAnnouncerRole ? "Double-click the T&S file for this laptop." : "Double-click the main timing file.")
+            : IsAnnouncerRole
+                ? $"{SelectedSession.DisplayName} — pick which T&S .event this laptop uses."
+                : $"{SelectedSession.DisplayName} — double-click the main timing file.",
         WizardStep.Active => Active is null
             ? ""
             : Active.Role == CheckoutRole.Announcer
-                ? $"{Active.Office} · Announcer — keep this app open"
+                ? $"{Active.Office} · Announcer T&S — keep this app open"
                 : $"{Active.Office} · Keep this app open while racing (live backup)",
-        WizardStep.Admin => _adminSection == AdminSection.Events
-            ? "Create a race or assign Timing and Announcer files."
-            : "For setup staff only — not needed on race morning.",
+        WizardStep.Admin => _adminSection switch
+        {
+            AdminSection.SetupNewEvent => _adminNewEventSubStep switch
+            {
+                AdminNewEventSubStep.Layout =>
+                    "One Race is a single folder. A Race Group is for series or multi-day events — one top-level folder with a folder per race.",
+                AdminNewEventSubStep.Office => _newEventIsRaceGroup
+                    ? "Choose which office to build this Race Group in."
+                    : "Choose which office to build this Event in.",
+                AdminNewEventSubStep.Parent => "Name the Race Group and set its year (Year - Name on disk).",
+                AdminNewEventSubStep.SourceKind => "Copy from a Template, or from a past race in this office.",
+                AdminNewEventSubStep.Source => _newEventSourceKind <= 0
+                    ? "Double-click the Template to copy."
+                    : "Open a year folder, or double-click a past race to copy.",
+                AdminNewEventSubStep.Details => _newEventIsRaceGroup
+                    ? "Enter this race’s name and date, then Create. You can add another race under the same Race Group after."
+                    : "Enter race name and date, then Create event.",
+                AdminNewEventSubStep.GroupCreated =>
+                    "Use Checkout to setup RunScore / T&S for this event, or add another race under the same Race Group.",
+                _ => "Set up a new race pack."
+            },
+            AdminSection.EditCurrentEvent => _adminEventsSubStep switch
+            {
+                AdminEventsSubStep.Office => "Pick an office to mark the main timing .event.",
+                AdminEventsSubStep.Session => _adminOffice is null
+                    ? "Pick the event to configure."
+                    : $"Office: {_adminOffice} — pick the event to configure.",
+                AdminEventsSubStep.Assign => _adminSession is null
+                    ? "Mark the main timing .event, then Save."
+                    : AdminEventFiles.Count == 0
+                        ? $"{_adminSession.DisplayName} — Launch Timing & Scoring, Save As, then Refresh Event Files."
+                        : IsAdminSessionRaceGroupLeaf
+                            ? $"{_adminSession.DisplayName} — mark main timing, or add another race to this Race Group."
+                            : $"{_adminSession.DisplayName} — mark the main timing .event, then Save.",
+                _ => "Mark the main timing .event for a race."
+            },
+            _ => "For setup staff only — not needed on race morning."
+        },
         _ => ""
     };
 
+    public string EventFileStepHint =>
+        IsAnnouncerRole
+            ? "This race has more than one non-primary T&S file. Double-click the one this Announcer T&S laptop should open (announcer, video display, special callout, …)."
+            : "More than one Timing & Scoring file was found. Double-click the main timing file for this race.";
+
     public bool ShowBack => Step is WizardStep.Session or WizardStep.EventFile or WizardStep.Admin;
+
+    public bool ShowAdminHeaderLink => Step != WizardStep.Admin;
 
     public bool ShowRolePicker => !HasActive && Step is WizardStep.Office or WizardStep.Session;
 
@@ -218,17 +450,178 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public bool ShowSessionLock => IsTimingRole;
     public bool IsTimingActive => IsActiveStep && Active is { Role: not CheckoutRole.Announcer };
     public bool IsAnnouncerActive => IsActiveStep && Active?.Role == CheckoutRole.Announcer;
+    public bool IsAdminSetupNewEvent => IsAdminStep && _adminSection == AdminSection.SetupNewEvent;
+    public bool IsAdminEditCurrentEvent => IsAdminStep && _adminSection == AdminSection.EditCurrentEvent;
     public bool IsAdminSettings => IsAdminStep && _adminSection == AdminSection.Settings;
-    public bool IsAdminEvents => IsAdminStep && _adminSection == AdminSection.Events;
+    public bool IsAdminNewEventLayout => IsAdminSetupNewEvent && _adminNewEventSubStep == AdminNewEventSubStep.Layout;
+    public bool IsAdminNewEventOffice => IsAdminSetupNewEvent && _adminNewEventSubStep == AdminNewEventSubStep.Office;
+    public bool IsAdminNewEventParent => IsAdminSetupNewEvent && _adminNewEventSubStep == AdminNewEventSubStep.Parent;
+    public bool IsAdminNewEventSourceKind => IsAdminSetupNewEvent && _adminNewEventSubStep == AdminNewEventSubStep.SourceKind;
+    public bool IsAdminNewEventSource => IsAdminSetupNewEvent && _adminNewEventSubStep == AdminNewEventSubStep.Source;
+    public bool IsAdminNewEventDetails => IsAdminSetupNewEvent && _adminNewEventSubStep == AdminNewEventSubStep.Details;
+    public bool IsAdminNewEventGroupCreated =>
+        IsAdminSetupNewEvent && _adminNewEventSubStep == AdminNewEventSubStep.GroupCreated;
+    public bool IsNewEventRaceGroup => _newEventIsRaceGroup;
+
+    /// <summary>Success step after creating a Race Group leaf — checkout or add another.</summary>
+    public bool ShowNewEventGroupCheckout => IsAdminNewEventGroupCreated && SelectedSession is not null;
+
+    public string NewEventGroupCreatedHeadline =>
+        string.IsNullOrWhiteSpace(_lastCreatedRaceName)
+            ? "Race Created"
+            : $"Created {_lastCreatedRaceName}";
+
+    public string NewEventGroupCreatedDetail =>
+        string.IsNullOrWhiteSpace(_newEventParentFolder)
+            ? "This race is in Library under the Race Group."
+            : string.IsNullOrWhiteSpace(_newEventOffice)
+                ? $"Under Race Group {_newEventParentFolder}."
+                : $"Under {_newEventOffice} / {_newEventParentFolder}.";
+
+    public string NewEventCheckoutLastLabel =>
+        string.IsNullOrWhiteSpace(_lastCreatedRaceName)
+            ? "Checkout This Race"
+            : "Checkout " + _lastCreatedRaceName;
+
+    /// <summary>Edit Current Event — selected session is a leaf under a Race Group folder.</summary>
+    public bool IsAdminSessionRaceGroupLeaf =>
+        _adminSession is not null
+        && !string.Equals(_adminSession.ParentEvent, _adminSession.SessionName, StringComparison.OrdinalIgnoreCase);
+
+    public bool ShowAddRaceToGroup => IsAdminEventsAssign && IsAdminSessionRaceGroupLeaf;
+
+    /// <summary>
+    /// Edit Current Event assign with no .event yet — Launch T&amp;S + same Save As map as checkout setup.
+    /// </summary>
+    public bool ShowAdminTsSetup => IsAdminEventsAssign && AdminEventFiles.Count == 0;
+
+    public bool ShowAdminSaveAssignment => IsAdminEventsAssign && AdminEventFiles.Count > 0;
+
+    public string AdminSaveAsFolderGuide
+    {
+        get
+        {
+            if (_adminSession is null)
+                return string.Empty;
+
+            var activePath = AdminSessionIsActive()
+                ? Active!.ActivePath
+                : _paths.GetActivePath(_settings, _adminSession.Office, _adminSession.RelativePath);
+            var suggested = VendorLauncher.SuggestEventFileNameFromRaceName(_adminSession.SessionName);
+            return VendorLauncher.FormatSaveAsFolderGuide(activePath, suggested);
+        }
+    }
+
+    public bool IsAdminEventsOffice => IsAdminEditCurrentEvent && _adminEventsSubStep == AdminEventsSubStep.Office;
+    public bool IsAdminEventsSession => IsAdminEditCurrentEvent && _adminEventsSubStep == AdminEventsSubStep.Session;
+    public bool IsAdminEventsAssign => IsAdminEditCurrentEvent && _adminEventsSubStep == AdminEventsSubStep.Assign;
+    public bool ShowAdminListFilter =>
+        IsAdminEventsOffice || IsAdminEventsSession
+        || IsAdminNewEventOffice || IsAdminNewEventSource;
+
+    public string AdminListFilter
+    {
+        get => _adminListFilter;
+        set
+        {
+            if (!Set(ref _adminListFilter, value ?? string.Empty))
+                return;
+            ApplyAdminListFilter();
+        }
+    }
+
+    public string AdminListFilterHint =>
+        IsAdminNewEventOffice || IsAdminEventsOffice
+            ? "Search Offices…"
+            : "Search This Folder…";
+
+    public bool ShowRaceDayListFilter => IsOfficeStep || IsSessionStep;
+
+    public string RaceDayListFilter
+    {
+        get => _raceDayListFilter;
+        set
+        {
+            if (!Set(ref _raceDayListFilter, value ?? string.Empty))
+                return;
+            ApplyRaceDayListFilter();
+        }
+    }
+
+    public string RaceDayListFilterHint =>
+        IsOfficeStep ? "Search Offices…" : "Search This Folder…";
+
+    private bool IsAdminPastRacesBrowse =>
+        string.Equals(_adminOffice, EventBuilderService.PastRacesFolderName, StringComparison.OrdinalIgnoreCase);
+
+    private string AdminPastRacesBreadcrumb
+    {
+        get
+        {
+            if (!IsAdminPastRacesBrowse)
+                return string.Empty;
+            if (string.IsNullOrEmpty(_adminPastRacesRelative))
+                return EventBuilderService.PastRacesFolderName;
+            return EventBuilderService.PastRacesFolderName + " / "
+                   + _adminPastRacesRelative.Replace("/", " / ", StringComparison.Ordinal)
+                       .Replace("\\", " / ", StringComparison.Ordinal);
+        }
+    }
+
+    public string AdminEventsBreadcrumb =>
+        _adminEventsSubStep switch
+        {
+            AdminEventsSubStep.Office => "Step 1 — Choose Office",
+            AdminEventsSubStep.Session => IsAdminPastRacesBrowse
+                ? $"Step 2 — {AdminPastRacesBreadcrumb} (Open a Folder, or Pick a Race)"
+                : string.IsNullOrEmpty(_adminOffice)
+                    ? "Step 2 — Choose Event"
+                    : $"Step 2 — {_adminOffice}",
+            AdminEventsSubStep.Assign => _adminSession is null
+                ? "Step 3 — Mark Main Timing .event"
+                : $"Step 3 — {_adminOffice} / {_adminSession.DisplayName} — Save, or Choose Another Event to Start Over",
+            _ => string.Empty
+        };
+
+    public string AdminNewEventBreadcrumb =>
+        _adminNewEventSubStep switch
+        {
+            AdminNewEventSubStep.Layout => "Step 1 — One Race or Race Group",
+            AdminNewEventSubStep.Office => _newEventIsRaceGroup
+                ? "Step 2 — Choose Office for This Race Group"
+                : "Step 2 — Choose Office for This Event",
+            AdminNewEventSubStep.Parent => "Step 3 — Race Group Name",
+            AdminNewEventSubStep.SourceKind => string.IsNullOrEmpty(_newEventOffice)
+                ? "Copy From"
+                : _newEventIsRaceGroup && !string.IsNullOrEmpty(_newEventParentFolder)
+                    ? $"{_newEventOffice} / {_newEventParentFolder} — Copy From"
+                    : $"{_newEventOffice} — Copy From",
+            AdminNewEventSubStep.Source => _newEventSourceKind <= 0
+                ? "Choose Template"
+                : string.IsNullOrEmpty(_newEventPastRelative)
+                    ? $"Past Races / {_newEventOffice}"
+                    : $"Past Races / {_newEventOffice} / "
+                      + _newEventPastRelative.Replace("/", " / ", StringComparison.Ordinal)
+                          .Replace("\\", " / ", StringComparison.Ordinal),
+            AdminNewEventSubStep.Details => _newEventSource is null
+                ? "Race Details"
+                : _newEventIsRaceGroup && !string.IsNullOrEmpty(_newEventParentFolder)
+                    ? $"Copy {_newEventSource.Display} → {_newEventOffice} / {_newEventParentFolder}"
+                    : $"Copy {_newEventSource.Display} → {_newEventOffice}",
+            AdminNewEventSubStep.GroupCreated => string.IsNullOrEmpty(_newEventParentFolder)
+                ? "Race Created — What’s Next?"
+                : $"{_newEventOffice} / {_newEventParentFolder} — Race Created",
+            _ => string.Empty
+        };
 
     public string EmptySessionsTitle =>
         IsAnnouncerRole && !IsPastRacesBrowse
-            ? "No announcer races assigned"
+            ? "No Announcer T&S races here"
             : "No events loaded for this office";
 
     public string EmptySessionsBody =>
         IsAnnouncerRole && !IsPastRacesBrowse
-            ? "No announcer races assigned — ask setup (Admin)."
+            ? "No races with a non-primary T&S .event yet. Setup can Save As extra .event files into the race folder, and mark the main timing file under Admin → Edit Current Event."
             : "Nothing listed for this folder yet (empty on OneDrive, or the list timed out). Go Back, or Refresh events.";
 
     /// <summary>Timers can check for updates without opening Admin (office or Active).</summary>
@@ -284,11 +677,29 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 OnPropertyChanged(nameof(ShowRolePicker));
                 OnPropertyChanged(nameof(IsTimingActive));
                 OnPropertyChanged(nameof(IsAnnouncerActive));
+                NotifyActiveSaveAsGuide();
             }
         }
     }
 
     public bool HasActive => Active is not null;
+
+    /// <summary>
+    /// Timing Active with no .event in the Active folder yet — keep Save As folder map under Finish.
+    /// </summary>
+    public bool ShowActiveSaveAsGuide =>
+        IsTimingActive
+        && Active is not null
+        && EventFileSelector.ListEventFiles(Active.ActivePath).Count == 0;
+
+    public string ActiveSaveAsFolderGuide =>
+        Active is null ? string.Empty : VendorLauncher.FormatActiveSaveAsReminder(Active);
+
+    private void NotifyActiveSaveAsGuide()
+    {
+        OnPropertyChanged(nameof(ShowActiveSaveAsGuide));
+        OnPropertyChanged(nameof(ActiveSaveAsFolderGuide));
+    }
 
     public bool Busy
     {
@@ -510,15 +921,25 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public string GraphAccountStatus =>
         _graphAuth.IsSignedIn
             ? $"Signed in as {_graphAuth.AccountEmail ?? "OneDrive"}"
-            : "Not signed in — checkout uses the local Library folder (OneDrive Desktop if present).";
+            : "Not signed in — race files come from OneDrive.";
 
     /// <summary>Landing-page OneDrive check — plain language for timers.</summary>
     public string GraphReadyLabel => IsGraphSignedIn ? "OneDrive: ready" : "OneDrive: not signed in";
 
     public string GraphLandingStatus =>
         IsGraphSignedIn
-            ? $"Signed in as {_graphAuth.AccountEmail ?? "OneDrive"}. Cloud sync is set up for this laptop."
-            : "Ask setup to sign in under Admin (triple-click the logo). Until then, this laptop uses the local library only.";
+            ? $"Signed in as {_graphAuth.AccountEmail ?? "OneDrive"}. This laptop can download and sync race files."
+            : "Sign in so this laptop can download race files. Without OneDrive, events cannot be loaded for checkout.";
+
+    /// <summary>Compact account line for the inline ready chip (office step, signed in).</summary>
+    public string GraphReadyInlineDetail =>
+        $"Signed in as {_graphAuth.AccountEmail ?? "OneDrive"}";
+
+    /// <summary>Signed-in chip beside role toggle — does not push the office list down.</summary>
+    public bool ShowGraphReadyInline => IsOfficeStep && IsGraphSignedIn;
+
+    /// <summary>Full-width sign-in banner — only when signed out, so staff cannot miss it.</summary>
+    public bool ShowGraphSignInBanner => IsOfficeStep && !IsGraphSignedIn;
 
     public System.Windows.Media.Brush GraphReadyBannerBackground =>
         IsGraphSignedIn
@@ -537,7 +958,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         {
             Step = WizardStep.Active;
             Status = Active.Role == CheckoutRole.Announcer
-                ? "Announcer files loaded — tap Done when you're finished."
+                ? "Announcer T&S files loaded — tap Done when you're finished."
                 : "Checked out — finish before starting another event.";
             return;
         }
@@ -575,7 +996,117 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
 
         if (Step == WizardStep.Session)
+        {
             _pastRacesRelative = string.Empty;
+            ClearRaceDayListFilter();
+        }
+
+        if (Step == WizardStep.Admin && _adminSection == AdminSection.SetupNewEvent)
+        {
+            if (_adminNewEventSubStep == AdminNewEventSubStep.GroupCreated)
+            {
+                // Stay on success — Back returns to layout to start a different pack.
+                InitNewEventForm();
+                NotifyAdminSection();
+                return;
+            }
+
+            if (_adminNewEventSubStep == AdminNewEventSubStep.Details)
+            {
+                _adminNewEventSubStep = AdminNewEventSubStep.Source;
+                ClearAdminListFilter();
+                ApplyAdminListFilter();
+                NotifyAdminSection();
+                return;
+            }
+
+            if (_adminNewEventSubStep == AdminNewEventSubStep.Source)
+            {
+                if (_newEventSourceKind > 0 && !string.IsNullOrEmpty(_newEventPastRelative))
+                {
+                    _ = PopNewEventPastFolderAsync();
+                    return;
+                }
+
+                _newEventSource = null;
+                _newEventPastRelative = string.Empty;
+                NewEventSources.Clear();
+                _newEventSourceSource.Clear();
+                _adminNewEventSubStep = AdminNewEventSubStep.SourceKind;
+                ClearAdminListFilter();
+                NotifyAdminSection();
+                return;
+            }
+
+            if (_adminNewEventSubStep == AdminNewEventSubStep.SourceKind)
+            {
+                if (_newEventIsRaceGroup
+                    && !string.IsNullOrEmpty(_lastCreatedRaceName)
+                    && SelectedSession is not null)
+                {
+                    _adminNewEventSubStep = AdminNewEventSubStep.GroupCreated;
+                    ClearAdminListFilter();
+                    NotifyAdminSection();
+                    return;
+                }
+
+                _adminNewEventSubStep = _newEventIsRaceGroup
+                    ? AdminNewEventSubStep.Parent
+                    : AdminNewEventSubStep.Office;
+                ClearAdminListFilter();
+                ApplyAdminListFilter();
+                NotifyAdminSection();
+                return;
+            }
+
+            if (_adminNewEventSubStep == AdminNewEventSubStep.Parent)
+            {
+                _adminNewEventSubStep = AdminNewEventSubStep.Office;
+                ClearAdminListFilter();
+                ApplyAdminListFilter();
+                NotifyAdminSection();
+                return;
+            }
+
+            if (_adminNewEventSubStep == AdminNewEventSubStep.Office)
+            {
+                _adminNewEventSubStep = AdminNewEventSubStep.Layout;
+                ClearAdminListFilter();
+                NotifyAdminSection();
+                return;
+            }
+        }
+
+        if (Step == WizardStep.Admin && _adminSection == AdminSection.EditCurrentEvent)
+        {
+            if (_adminEventsSubStep == AdminEventsSubStep.Assign)
+            {
+                ResetAdminAssignUi();
+                _adminEventsSubStep = AdminEventsSubStep.Session;
+                NotifyAdminSection();
+                return;
+            }
+
+            if (_adminEventsSubStep == AdminEventsSubStep.Session)
+            {
+                if (IsAdminPastRacesBrowse && !string.IsNullOrEmpty(_adminPastRacesRelative))
+                {
+                    _ = PopAdminPastRacesFolderAsync();
+                    return;
+                }
+
+                AdminSessions.Clear();
+                _adminSessionSource.Clear();
+                _adminOffice = null;
+                _adminPastRacesRelative = string.Empty;
+                _adminListFilter = string.Empty;
+                OnPropertyChanged(nameof(AdminListFilter));
+                _adminEventsSubStep = AdminEventsSubStep.Office;
+                ApplyAdminListFilter();
+                NotifyAdminSection();
+                return;
+            }
+        }
 
         Step = Step switch
         {
@@ -597,6 +1128,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
         SelectedOffice = office;
         _pastRacesRelative = string.Empty;
+        ClearRaceDayListFilter();
         OnPropertyChanged(nameof(IsPastRacesBrowse));
         OnPropertyChanged(nameof(PastRacesBreadcrumb));
         OnPropertyChanged(nameof(StepTitle));
@@ -604,7 +1136,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
         if (IsPastRacesBrowse)
         {
-            await RefreshPastRacesLevelAsync(force: true).ConfigureAwait(true);
+            // force:false — reuse this-run Graph cache (shared with Admin Past Races).
+            await RefreshPastRacesLevelAsync(force: false).ConfigureAwait(true);
             await PreparePastRacesListAsync().ConfigureAwait(true);
         }
         else
@@ -768,7 +1301,17 @@ public sealed class MainViewModel : INotifyPropertyChanged
             return;
         if (EventFiles.Count > 0 && string.IsNullOrWhiteSpace(SelectedEventFile))
         {
-            Alert("Choose a file", "Select the timing file for this race.");
+            Alert(
+                "Choose a file",
+                IsAnnouncerRole
+                    ? "Select the T&S .event file for this Announcer T&S laptop."
+                    : "Select the timing file for this race.");
+            return;
+        }
+
+        if (IsAnnouncerRole)
+        {
+            _ = DownloadAndCheckoutAnnouncerAsync(SelectedEventFile!);
             return;
         }
 
@@ -918,6 +1461,10 @@ public sealed class MainViewModel : INotifyPropertyChanged
             return;
         }
 
+        // Optional: confirm main timing .event when files are present. Missing .event does not block Finish.
+        if (!await ConfirmPrimaryEventBeforeFinishAsync().ConfigureAwait(true))
+            return;
+
         SetBusy(
             closingApp ? "Closing — saving your race" : "Saving your race",
             "Please wait…\nDo not shut down this laptop yet.");
@@ -1017,15 +1564,28 @@ public sealed class MainViewModel : INotifyPropertyChanged
             SelectedSession = null;
             SelectedEventFile = null;
             LoadOffices();
-            if (Offices.Count == 1)
+
+            var returnToAdmin = IsAdminUnlocked;
+            if (returnToAdmin)
+            {
+                EnterAdminSetup("Finish complete — ready for the next setup.");
+            }
+            else if (Offices.Count == 1)
+            {
                 await SelectOfficeAsync(Offices[0]);
+                Status = string.Empty;
+            }
             else
+            {
                 Step = WizardStep.Office;
-            Status = string.Empty;
+                Status = string.Empty;
+            }
 
             var doneBody = result.AwaitingOneDriveConfirm
                 ? "Your race is saved.\n\nCheck the OneDrive cloud icon in the taskbar — when it looks finished, you can shut down this laptop."
-                : "Your race is saved.\n\nSafe to shut down this laptop.";
+                : "Your race is saved.";
+            if (!returnToAdmin && !result.AwaitingOneDriveConfirm)
+                doneBody += "\n\nSafe to shut down this laptop.";
             if (!result.AutosaveCleared)
             {
                 doneBody +=
@@ -1034,7 +1594,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
             }
 
             // Same branded overlay — OK to dismiss. No second Windows dialog.
-            await ShowBusyResultAsync("All done", doneBody);
+            await ShowBusyResultAsync("Done", doneBody);
         }
         catch (Exception ex)
         {
@@ -1079,7 +1639,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private async Task<bool> SaveAndAllowCloseAsync()
     {
         await FinishAsync(closingApp: true);
-        // FinishAsync already shows the branded "All done" overlay.
+        // FinishAsync already shows the branded "Done" overlay.
         return _checkout.GetActive() is null;
     }
 
@@ -1107,6 +1667,119 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 : "RunScore opening…";
     }
 
+    /// <summary>
+    /// Before Finish: warn if no .event (Continue Edit vs Finish); if files exist and primary
+    /// unset, offer to mark main timing. Missing .event does not hard-block Finish.
+    /// </summary>
+    private async Task<bool> ConfirmPrimaryEventBeforeFinishAsync()
+    {
+        if (Active is null)
+            return false;
+
+        var files = EventFileSelector.ListEventFiles(Active.ActivePath);
+        var assignedOnDisk = !string.IsNullOrWhiteSpace(Active.PrimaryEventFile)
+            && File.Exists(Path.Combine(Active.ActivePath, Active.PrimaryEventFile));
+        var sidecar = SessionRoleStore.TryLoad(Active.LibrarySessionPath)?.PrimaryEventFile;
+        var sidecarOnDisk = !string.IsNullOrWhiteSpace(sidecar)
+            && File.Exists(Path.Combine(Active.ActivePath, sidecar!));
+
+        // Normal race day — primary already known.
+        if (assignedOnDisk || sidecarOnDisk)
+        {
+            var primary = assignedOnDisk ? Active.PrimaryEventFile! : sidecar!;
+            if (!assignedOnDisk)
+                ApplyActivePrimaryEvent(primary);
+            await PersistPrimaryAssignmentAsync(primary).ConfigureAwait(true);
+            return true;
+        }
+
+        // No .event yet — show guidance; staff may Finish anyway or stay and Save As.
+        if (files.Count == 0)
+            return TimerDialog.ConfirmFinishWithoutTimingFile(OwnerWindow, Active.ActivePath);
+
+        var suggested = !string.IsNullOrWhiteSpace(Active.PrimaryEventFile)
+            ? Active.PrimaryEventFile
+            : EventFileSelector.ChoosePrimary(files);
+        var picked = TimerDialog.PickPrimaryEventFile(
+            OwnerWindow,
+            Active.ActivePath,
+            files,
+            suggested);
+        // Cancel skips assignment but still allows Finish.
+        if (!string.IsNullOrWhiteSpace(picked))
+        {
+            ApplyActivePrimaryEvent(picked);
+            await PersistPrimaryAssignmentAsync(picked).ConfigureAwait(true);
+            NotifyActiveSaveAsGuide();
+        }
+
+        return true;
+    }
+
+    private async Task PersistPrimaryAssignmentAsync(string primaryEventFile)
+    {
+        EnsureSessionPrimarySaved(primaryEventFile);
+        if (Active is null || !_cloud.IsAvailable)
+            return;
+
+        try
+        {
+            await _cloud.UploadSessionRolesAsync(
+                Active.LibrarySessionPath,
+                _settings.LibraryRoot,
+                _settings.GraphDriveRoot).ConfigureAwait(true);
+        }
+        catch
+        {
+            // Local assignment is enough for this Finish; Admin can re-save later.
+        }
+    }
+
+    private void ApplyActivePrimaryEvent(string primaryEventFile)
+    {
+        if (Active is null)
+            return;
+
+        var name = Path.GetFileName(primaryEventFile.Trim());
+        Active = new ActiveCheckout
+        {
+            Office = Active.Office,
+            ParentEvent = Active.ParentEvent,
+            SessionName = Active.SessionName,
+            RelativePath = Active.RelativePath,
+            LibrarySessionPath = Active.LibrarySessionPath,
+            ActivePath = Active.ActivePath,
+            BackupPath = Active.BackupPath,
+            AutosavePath = Active.AutosavePath,
+            DbsPath = Active.DbsPath,
+            PrimaryEventFile = name,
+            Role = Active.Role,
+            ScopedPaths = Active.ScopedPaths.Contains(name, StringComparer.OrdinalIgnoreCase)
+                ? Active.ScopedPaths
+                : Active.ScopedPaths.Append(name).ToList(),
+            CheckedOutAt = Active.CheckedOutAt
+        };
+        _activeStore.Save(Active);
+    }
+
+    private void EnsureSessionPrimarySaved(string primaryEventFile)
+    {
+        if (Active is null || string.IsNullOrWhiteSpace(Active.LibrarySessionPath))
+            return;
+
+        var name = Path.GetFileName(primaryEventFile.Trim());
+        try
+        {
+            SessionRoleStore.Save(
+                Active.LibrarySessionPath,
+                new SessionRoles { PrimaryEventFile = name });
+        }
+        catch (Exception ex)
+        {
+            Status = "Could not save main timing assignment: " + ex.Message;
+        }
+    }
+
     public void LaunchTimingAndScoring()
     {
         if (Active is null) return;
@@ -1114,30 +1787,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
         // Timing may pick up a Save As. Announcer stays on the assigned file.
         if (Active.Role != CheckoutRole.Announcer)
         {
-        var discovered = VendorLauncher.ResolvePrimaryEventFile(Active);
-        if (!string.IsNullOrWhiteSpace(discovered)
-            && !string.Equals(Active.PrimaryEventFile, discovered, StringComparison.OrdinalIgnoreCase))
-        {
-            Active = new ActiveCheckout
+            var discovered = VendorLauncher.ResolvePrimaryEventFile(Active);
+            if (!string.IsNullOrWhiteSpace(discovered)
+                && !string.Equals(Active.PrimaryEventFile, discovered, StringComparison.OrdinalIgnoreCase))
             {
-                Office = Active.Office,
-                ParentEvent = Active.ParentEvent,
-                SessionName = Active.SessionName,
-                RelativePath = Active.RelativePath,
-                LibrarySessionPath = Active.LibrarySessionPath,
-                ActivePath = Active.ActivePath,
-                BackupPath = Active.BackupPath,
-                AutosavePath = Active.AutosavePath,
-                DbsPath = Active.DbsPath,
-                PrimaryEventFile = discovered,
-                Role = Active.Role,
-                ScopedPaths = Active.ScopedPaths.Contains(discovered, StringComparer.OrdinalIgnoreCase)
-                    ? Active.ScopedPaths
-                    : Active.ScopedPaths.Append(discovered).ToList(),
-                CheckedOutAt = Active.CheckedOutAt
-            };
-            _activeStore.Save(Active);
-        }
+                ApplyActivePrimaryEvent(discovered);
+            }
         }
 
         var result = _launcher.LaunchTimingAndScoring(Active, _settings);
@@ -1147,8 +1802,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
             return;
         }
 
-        // Folder map was already shown at checkout — don't cover the T&S splash with another dialog.
-        Status = "Timing & Scoring opening…";
+        // Folder map stays under Finish — don't cover the T&S splash with another dialog.
+        NotifyActiveSaveAsGuide();
+        Status = ShowActiveSaveAsGuide
+            ? "Timing & Scoring opening… Save As path is below Finish."
+            : "Timing & Scoring opening…";
     }
 
     public void OpenWorkingFolder()
@@ -1156,23 +1814,26 @@ public sealed class MainViewModel : INotifyPropertyChanged
         if (Active is null || !Directory.Exists(Active.ActivePath))
             return;
         Process.Start(new ProcessStartInfo { FileName = Active.ActivePath, UseShellExecute = true });
+        NotifyActiveSaveAsGuide();
     }
 
     public void TryOpenAdmin()
     {
-        var pin = PromptPin("Enter admin PIN to open settings:");
-        if (pin is null)
-            return;
-        if (!string.Equals(pin, AppSettings.DefaultAdminPin, StringComparison.Ordinal))
+        if (!IsAdminUnlocked)
         {
-            Alert("Admin", "Incorrect PIN.");
-            return;
+            var pin = PromptPin("Enter admin PIN to open settings:");
+            if (pin is null)
+                return;
+            if (!string.Equals(pin, AppSettings.DefaultAdminPin, StringComparison.Ordinal))
+            {
+                Alert("Admin", "Incorrect PIN.");
+                return;
+            }
+
+            GrantAdminUnlock();
         }
 
-        Step = WizardStep.Admin;
-        _adminSection = AdminSection.Settings;
-        NotifyAdminSection();
-        NotifyGraphStatus();
+        EnterAdminSetup();
     }
 
     public void SaveAdminSettings()
@@ -1307,8 +1968,13 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
     }
 
-    private string PastRacesIndexKey =>
-        EventBuilderService.PastRacesFolderName + ":" + _pastRacesRelative.Replace('\\', '/');
+    /// <summary>
+    /// Shared Timing / Admin Past Races Graph cache key for one relative path under Past Races.
+    /// </summary>
+    private static string PastRacesCacheKey(string relativeUnderPastRaces) =>
+        EventBuilderService.PastRacesFolderName + ":" + relativeUnderPastRaces.Replace('\\', '/');
+
+    private string PastRacesIndexKey => PastRacesCacheKey(_pastRacesRelative);
 
     private async Task EnterPastRacesFolderAsync(EventPackInfo folder)
     {
@@ -1318,10 +1984,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
         _pastRacesRelative = string.IsNullOrEmpty(_pastRacesRelative)
             ? folder.SessionName
             : _pastRacesRelative.TrimEnd('/', '\\') + "/" + folder.SessionName;
+        ClearRaceDayListFilter();
         OnPropertyChanged(nameof(PastRacesBreadcrumb));
         OnPropertyChanged(nameof(StepSubtitle));
 
-        await RefreshPastRacesLevelAsync(force: true).ConfigureAwait(true);
+        await RefreshPastRacesLevelAsync(force: false).ConfigureAwait(true);
         await PreparePastRacesListAsync().ConfigureAwait(true);
     }
 
@@ -1330,6 +1997,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         var rel = _pastRacesRelative.Replace('\\', '/').Trim('/');
         var slash = rel.LastIndexOf('/');
         _pastRacesRelative = slash < 0 ? string.Empty : rel[..slash];
+        ClearRaceDayListFilter();
         OnPropertyChanged(nameof(PastRacesBreadcrumb));
         OnPropertyChanged(nameof(StepSubtitle));
 
@@ -1341,19 +2009,23 @@ public sealed class MainViewModel : INotifyPropertyChanged
     /// One children list under the current Past Races path. Probe RUNSCORE only at year depth
     /// (Past Races / office bucket / year → race leaves).
     /// </summary>
-    private async Task RefreshPastRacesLevelAsync(bool force)
+    private Task RefreshPastRacesLevelAsync(bool force) =>
+        RefreshPastRacesLevelAtAsync(_pastRacesRelative, PastRacesIndexKey, force);
+
+    /// <param name="relativeUnderPastRaces">e.g. empty, <c>Memphis Past Races</c>, or <c>Memphis Past Races/2026</c>.</param>
+    private async Task RefreshPastRacesLevelAtAsync(string relativeUnderPastRaces, string cacheKey, bool force)
     {
-        if (!_cloud.IsAvailable || HasActive)
+        if (!_cloud.IsAvailable)
             return;
-        if (!force && _graphIndexedOffices.Contains(PastRacesIndexKey))
+        if (!force && _graphIndexedOffices.Contains(cacheKey))
             return;
 
-        var relative = string.IsNullOrEmpty(_pastRacesRelative)
+        var relative = string.IsNullOrEmpty(relativeUnderPastRaces)
             ? EventBuilderService.PastRacesFolderName
-            : EventBuilderService.PastRacesFolderName + "/" + _pastRacesRelative.Replace('\\', '/');
-        var depth = string.IsNullOrEmpty(_pastRacesRelative)
+            : EventBuilderService.PastRacesFolderName + "/" + relativeUnderPastRaces.Replace('\\', '/');
+        var depth = string.IsNullOrEmpty(relativeUnderPastRaces)
             ? 0
-            : _pastRacesRelative.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries).Length;
+            : relativeUnderPastRaces.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries).Length;
         // depth 0 = buckets, 1 = years, 2+ = race folders (probe session leaves)
         var probeLeaves = depth >= 2;
 
@@ -1371,7 +2043,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
             if (!result.Success)
                 Alert("OneDrive", result.Message);
             else
-                _graphIndexedOffices.Add(PastRacesIndexKey);
+                _graphIndexedOffices.Add(cacheKey);
         }
         catch (Exception ex)
         {
@@ -1393,11 +2065,19 @@ public sealed class MainViewModel : INotifyPropertyChanged
         foreach (var entry in _scanner.ListBrowserEntries(
                      _settings.LibraryRoot, EventBuilderService.PastRacesFolderName, folder))
         {
-            if (IsAnnouncerRole && !entry.IsNavigationFolder && string.IsNullOrWhiteSpace(entry.AnnouncerEventFile))
+            if (entry.IsNavigationFolder)
+            {
+                Sessions.Add(entry);
+                continue;
+            }
+
+            EnrichWithSecondaries(entry);
+            if (IsAnnouncerRole && entry.SecondaryEventFiles.Count == 0)
                 continue;
             Sessions.Add(entry);
         }
 
+        ApplyRaceDayListFilter();
         OnPropertyChanged(nameof(HasSessions));
         OnPropertyChanged(nameof(ShowEmptySessions));
         OnPropertyChanged(nameof(EmptySessionsTitle));
@@ -1406,17 +2086,14 @@ public sealed class MainViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(StepSubtitle));
     }
 
-    private static string RolesCacheKey(string scope) => "roles:" + scope;
+    private static string EventNamesCacheKey(string scope) => "events:" + scope;
 
     private async Task LoadLiveOfficeSessionsAsync(string office)
     {
+        var sessions = _scanner.ListSessions(_settings.LibraryRoot, office);
         if (IsAnnouncerRole)
-        {
-            var paths = _scanner.ListSessions(_settings.LibraryRoot, office)
-                .Select(s => s.Path)
-                .ToList();
-            await DownloadAnnouncerRolesAsync(paths, RolesCacheKey(office)).ConfigureAwait(true);
-        }
+            await ProbeSessionEventNamesAsync(sessions.Select(s => s.Path).ToList(), EventNamesCacheKey(office))
+                .ConfigureAwait(true);
 
         LoadSessions(office);
     }
@@ -1429,45 +2106,101 @@ public sealed class MainViewModel : INotifyPropertyChanged
             if (!string.IsNullOrEmpty(_pastRacesRelative))
                 folder = Path.Combine(folder, _pastRacesRelative.Replace('/', Path.DirectorySeparatorChar));
             var paths = _scanner.FindSessionLeavesShallow(folder).ToList();
-            await DownloadAnnouncerRolesAsync(paths, RolesCacheKey(PastRacesIndexKey)).ConfigureAwait(true);
+            await ProbeSessionEventNamesAsync(paths, EventNamesCacheKey(PastRacesIndexKey)).ConfigureAwait(true);
         }
 
         LoadPastRacesBrowser();
     }
 
     /// <summary>
-    /// One small JSON per session already listed locally. Parallel inside Graph.
-    /// A timeout keeps whatever landed — race day still shows local assignments.
+    /// Merge local + remote *.event names for listed sessions (Announcer T&S secondary filter).
+    /// One office / Past Races level only — parallel Graph children lists, OfficeSessionsBudget.
     /// </summary>
-    private async Task DownloadAnnouncerRolesAsync(IReadOnlyList<string> sessionPaths, string cacheKey)
+    private async Task ProbeSessionEventNamesAsync(IReadOnlyList<string> sessionPaths, string cacheKey)
     {
-        if (!IsAnnouncerRole || !_cloud.IsAvailable || sessionPaths.Count == 0)
+        if (!IsAnnouncerRole || sessionPaths.Count == 0)
+            return;
+
+        foreach (var path in sessionPaths)
+            _probedEventNames[path] = EventFileSelector.ListEventFiles(path);
+
+        if (!_cloud.IsAvailable)
             return;
         if (_graphIndexedOffices.Contains(cacheKey))
             return;
 
-        SetBusy("Checking announcer assignments", "Looking up which races have an announcer file…");
+        SetBusy("Checking T&S files", "Looking up which races have extra Timing & Scoring files…");
         try
         {
-            var result = await _cloud.DownloadSessionRolesAsync(
-                sessionPaths,
-                _settings.LibraryRoot,
-                _settings.GraphDriveRoot,
-                new Progress<string>(s =>
-                    ProgressText = string.IsNullOrWhiteSpace(s) ? "Please wait…" : s)).ConfigureAwait(true);
-            Status = result.Message;
-            if (result.Success)
-                _graphIndexedOffices.Add(cacheKey);
+            using var budget = new CancellationTokenSource(GraphSyncPolicy.OfficeSessionsBudget);
+            var gate = new SemaphoreSlim(GraphSyncPolicy.DownloadParallelism);
+            var done = 0;
+            var total = sessionPaths.Count;
+            var tasks = sessionPaths.Select(async path =>
+            {
+                await gate.WaitAsync(budget.Token).ConfigureAwait(false);
+                try
+                {
+                    budget.Token.ThrowIfCancellationRequested();
+                    var remote = await _cloud.ListRemoteEventFileNamesAsync(
+                        path, _settings.LibraryRoot, _settings.GraphDriveRoot, budget.Token)
+                        .ConfigureAwait(false);
+                    var merged = new HashSet<string>(
+                        _probedEventNames.TryGetValue(path, out var local) ? local : Array.Empty<string>(),
+                        StringComparer.OrdinalIgnoreCase);
+                    foreach (var name in remote)
+                        merged.Add(name);
+                    _probedEventNames[path] = merged
+                        .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch
+                {
+                    // Keep local names for this session.
+                }
+                finally
+                {
+                    gate.Release();
+                    var n = Interlocked.Increment(ref done);
+                    ProgressText = $"Checked {n} of {total}…";
+                }
+            });
+
+            await Task.WhenAll(tasks).ConfigureAwait(true);
+            _graphIndexedOffices.Add(cacheKey);
+            Status = "Extra T&S .event files checked.";
+        }
+        catch (OperationCanceledException)
+        {
+            Status = "T&S file check timed out — showing what we already know on this laptop.";
         }
         catch (Exception ex)
         {
-            Status = "Announcer assignment check skipped: " + ex.Message;
+            Status = "T&S file check skipped: " + ex.Message;
         }
         finally
         {
             if (Busy && !BusyNeedsAcknowledge)
                 ClearBusy();
         }
+    }
+
+    private void EnrichWithSecondaries(EventPackInfo session)
+    {
+        var names = _probedEventNames.TryGetValue(session.Path, out var probed)
+            ? probed
+            : session.EventFiles;
+        if (names.Count == 0)
+            names = EventFileSelector.ListEventFiles(session.Path);
+
+        var sidecarPrimary = SessionRoleStore.TryLoad(session.Path)?.PrimaryEventFile;
+        session.PrimaryEventFile = SecondaryEventSelector.ResolvePrimary(names, sidecarPrimary)
+                                   ?? session.PrimaryEventFile;
+        session.SecondaryEventFiles = SecondaryEventSelector.ListSecondaries(names, sidecarPrimary);
     }
 
     public async Task SetCheckoutRoleAsync(CheckoutRole role)
@@ -1494,42 +2227,59 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     private async Task SelectAnnouncerSessionAsync(EventPackInfo session)
     {
-        var announcer = SessionRoleStore.NormalizeFileName(
-            SessionRoleStore.TryLoad(session.Path)?.AnnouncerEventFile ?? session.AnnouncerEventFile);
-        if (string.IsNullOrWhiteSpace(announcer))
+        EnrichWithSecondaries(session);
+        var secondaries = session.SecondaryEventFiles;
+        if (secondaries.Count == 0)
         {
-            Alert("No announcer file", "No announcer file is assigned for this race. Ask setup (Admin).");
+            Alert(
+                "No other T&S file",
+                "This race has no non-primary Timing & Scoring .event file. "
+                + "Setup can Save As extra files (announcer, video display, …) into the race folder.");
             return;
         }
 
         SelectedSession = session;
         _sessionPackPulled = false;
-        SelectedEventFile = announcer;
         EventFiles.Clear();
-        EventFiles.Add(announcer);
+        foreach (var name in secondaries)
+            EventFiles.Add(name);
 
+        if (secondaries.Count == 1)
+        {
+            SelectedEventFile = secondaries[0];
+            await DownloadAndCheckoutAnnouncerAsync(secondaries[0]).ConfigureAwait(true);
+            return;
+        }
+
+        SelectedEventFile = secondaries[0];
+        Step = WizardStep.EventFile;
+        OnPropertyChanged(nameof(StepSubtitle));
+        OnPropertyChanged(nameof(EventFileStepHint));
+    }
+
+    private async Task DownloadAndCheckoutAnnouncerAsync(string eventFile)
+    {
+        if (SelectedSession is null || string.IsNullOrWhiteSpace(eventFile))
+            return;
+
+        SelectedEventFile = eventFile;
         if (_cloud.IsAvailable)
         {
-            SetBusy("Downloading announcer files", "Getting the announcer file and DB's from OneDrive…");
+            SetBusy("Downloading Announcer T&S files", "Getting the .event file and DB's from OneDrive…");
             try
             {
                 var pull = await _cloud.DownloadSessionAsync(
-                    session.Path,
+                    SelectedSession.Path,
                     _settings.LibraryRoot,
                     _settings.GraphDriveRoot,
                     new Progress<string>(s =>
                         ProgressText = string.IsNullOrWhiteSpace(s) ? "Please wait…" : s),
-                    options: SessionDownloadOptions.ForAnnouncer(announcer)).ConfigureAwait(true);
+                    options: SessionDownloadOptions.ForAnnouncer(eventFile)).ConfigureAwait(true);
 
-                announcer = SessionRoleStore.NormalizeFileName(
-                                SessionRoleStore.TryLoad(session.Path)?.AnnouncerEventFile)
-                            ?? announcer;
-                SelectedEventFile = announcer;
-
-                if (!pull.Success && !File.Exists(Path.Combine(session.Path, announcer)))
+                if (!pull.Success && !File.Exists(Path.Combine(SelectedSession.Path, eventFile)))
                 {
                     await ShowBusyResultAsync(
-                        "Couldn't download announcer files",
+                        "Couldn't download Announcer T&S files",
                         pull.Message + "\n\nTry again when signal is better, or ask setup staff for help.");
                     return;
                 }
@@ -1537,18 +2287,18 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 _sessionPackPulled = true;
                 Status = pull.Success
                     ? pull.Message
-                    : "Download incomplete — using announcer files already on this laptop.";
+                    : "Download incomplete — using files already on this laptop.";
             }
             catch (OperationCanceledException)
             {
                 await ShowBusyResultAsync(
                     "Download timed out",
-                    "Announcer download timed out on cellular. Try again when signal is better.");
+                    "Announcer T&S download timed out on cellular. Try again when signal is better.");
                 return;
             }
             catch (Exception ex)
             {
-                await ShowBusyResultAsync("Couldn't download announcer files", ex.Message);
+                await ShowBusyResultAsync("Couldn't download Announcer T&S files", ex.Message);
                 return;
             }
             finally
@@ -1567,11 +2317,13 @@ public sealed class MainViewModel : INotifyPropertyChanged
             return;
 
         SyncDisplayNameFromMachine();
-        SetBusy("Loading announcer files", "Getting the announcer copy ready…");
+        SetBusy("Loading Announcer T&S files", "Getting this laptop's copy ready…");
         try
         {
             var progress = new Progress<CopyProgress>(p =>
-                ProgressText = p.FilesCopied > 0 ? $"Copying announcer files… ({p.FilesCopied})" : "Getting the announcer copy ready…");
+                ProgressText = p.FilesCopied > 0
+                    ? $"Copying files… ({p.FilesCopied})"
+                    : "Getting this laptop's copy ready…");
             var statusProgress = new Progress<string>(s => ProgressText = string.IsNullOrWhiteSpace(s) ? "Please wait…" : s);
             var result = await _checkout.CheckoutAsync(new CheckoutRequest
             {
@@ -1585,7 +2337,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
             if (!result.Success)
             {
-                await ShowBusyResultAsync("Couldn't load announcer files", result.Message);
+                await ShowBusyResultAsync("Couldn't load Announcer T&S files", result.Message);
                 return;
             }
 
@@ -1596,7 +2348,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
         catch (Exception ex)
         {
-            await ShowBusyResultAsync("Couldn't load announcer files", ex.Message);
+            await ShowBusyResultAsync("Couldn't load Announcer T&S files", ex.Message);
         }
         finally
         {
@@ -1610,7 +2362,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         if (Active?.Role != CheckoutRole.Announcer)
             return;
 
-        SetBusy("Clearing this laptop", "Removing the announcer copy. Nothing is uploaded.");
+        SetBusy("Clearing this laptop", "Removing the Announcer T&S copy. Nothing is uploaded.");
         try
         {
             var result = _checkout.DoneAnnouncer();
@@ -1650,24 +2402,463 @@ public sealed class MainViewModel : INotifyPropertyChanged
         return _checkout.GetActive() is null;
     }
 
-    public void ShowAdminSettings()
+    public void ShowAdminSetupNewEvent()
     {
-        _adminSection = AdminSection.Settings;
+        _adminSection = AdminSection.SetupNewEvent;
+        InitNewEventForm();
         NotifyAdminSection();
     }
 
-    public void ShowAdminEvents()
+    public string? NewEventOffice => _newEventOffice;
+    public NewEventSourceItem? NewEventSource => _newEventSource;
+
+    public string NewEventRaceName
     {
-        _adminSection = AdminSection.Events;
-        AdminOffices.Clear();
-        foreach (var name in Offices)
+        get => _newEventRaceName;
+        set
         {
-            if (name.Equals(EventBuilderService.PastRacesFolderName, StringComparison.OrdinalIgnoreCase)
-                || name.Equals(EventBuilderService.TemplatesFolderName, StringComparison.OrdinalIgnoreCase))
-                continue;
-            AdminOffices.Add(name);
+            if (!Set(ref _newEventRaceName, value ?? string.Empty))
+                return;
+            // Preview updates on LostFocus/Enter — not per keystroke (keeps typing snappy).
+            UpdateNewEventPreview();
+        }
+    }
+
+    /// <summary>Calendar selection → Entries.ini / folder year as MM/DD/YYYY.</summary>
+    public DateTime? NewEventRaceDateValue
+    {
+        get => _newEventRaceDateValue;
+        set
+        {
+            if (!Set(ref _newEventRaceDateValue, value))
+                return;
+            UpdateNewEventPreview();
+        }
+    }
+
+    /// <summary>Normalized date string for Entries.ini and folder naming.</summary>
+    public string NewEventRaceDate =>
+        _newEventRaceDateValue is { } dt
+            ? dt.ToString("MM/dd/yyyy", System.Globalization.CultureInfo.InvariantCulture)
+            : string.Empty;
+
+    public string NewEventResultsId
+    {
+        get => _newEventResultsId;
+        set => Set(ref _newEventResultsId, value ?? string.Empty);
+    }
+
+    public string NewEventPreview
+    {
+        get => _newEventPreview;
+        private set => Set(ref _newEventPreview, value);
+    }
+
+    private void InitNewEventForm()
+    {
+        EnsureLocalRoots();
+        LoadOffices();
+
+        _adminNewEventSubStep = AdminNewEventSubStep.Layout;
+        _newEventIsRaceGroup = false;
+        _newEventOffice = null;
+        _newEventParentName = string.Empty;
+        _newEventParentFolder = null;
+        _lastCreatedRaceName = string.Empty;
+        if (_newEventParentYear is < 2000 or > 2100)
+            _newEventParentYear = DateTime.Today.Year;
+        _newEventSource = null;
+        _newEventSourceKind = 0;
+        _newEventPastRelative = string.Empty;
+        _newEventRaceName = string.Empty;
+        _newEventResultsId = string.Empty;
+        _newEventRaceDateValue ??= DateTime.Today;
+        OnPropertyChanged(nameof(NewEventParentName));
+        OnPropertyChanged(nameof(NewEventParentYear));
+        OnPropertyChanged(nameof(NewEventParentFolderPreview));
+        OnPropertyChanged(nameof(NewEventRaceName));
+        OnPropertyChanged(nameof(NewEventRaceDateValue));
+        OnPropertyChanged(nameof(NewEventRaceDate));
+        OnPropertyChanged(nameof(NewEventResultsId));
+        OnPropertyChanged(nameof(IsNewEventRaceGroup));
+        NewEventSources.Clear();
+        _newEventSourceSource.Clear();
+        ClearAdminListFilter();
+
+        _newEventOfficeSource.Clear();
+        foreach (var office in EventBuilderService.DestinationOffices)
+        {
+            if (Offices.Any(o => o.Equals(office, StringComparison.OrdinalIgnoreCase))
+                || Directory.Exists(Path.Combine(_settings.LibraryRoot, office)))
+                _newEventOfficeSource.Add(office);
         }
 
+        if (_newEventOfficeSource.Count == 0)
+        {
+            foreach (var office in EventBuilderService.DestinationOffices)
+                _newEventOfficeSource.Add(office);
+        }
+
+        ApplyAdminListFilter();
+        UpdateNewEventPreview();
+    }
+
+    public async Task SelectNewEventLayoutAsync(NewEventLayoutOption? layout)
+    {
+        if (layout is null || !IsAdminSetupNewEvent)
+            return;
+
+        _newEventIsRaceGroup = layout.IsRaceGroup;
+        _newEventParentFolder = null;
+        OnPropertyChanged(nameof(IsNewEventRaceGroup));
+        ClearAdminListFilter();
+        _adminNewEventSubStep = AdminNewEventSubStep.Office;
+        ApplyAdminListFilter();
+        NotifyAdminSection();
+        UpdateNewEventPreview();
+        await Task.CompletedTask.ConfigureAwait(true);
+    }
+
+    public async Task SelectNewEventOfficeAsync(string? office)
+    {
+        if (string.IsNullOrWhiteSpace(office) || !IsAdminSetupNewEvent)
+            return;
+
+        _newEventOffice = office;
+        _newEventSource = null;
+        _newEventPastRelative = string.Empty;
+        NewEventSources.Clear();
+        _newEventSourceSource.Clear();
+        ClearAdminListFilter();
+        _adminNewEventSubStep = _newEventIsRaceGroup
+            ? AdminNewEventSubStep.Parent
+            : AdminNewEventSubStep.SourceKind;
+        OnPropertyChanged(nameof(NewEventOffice));
+        NotifyAdminSection();
+        UpdateNewEventPreview();
+        await Task.CompletedTask.ConfigureAwait(true);
+    }
+
+    public string NewEventParentName
+    {
+        get => _newEventParentName;
+        set
+        {
+            if (!Set(ref _newEventParentName, value ?? string.Empty))
+                return;
+            OnPropertyChanged(nameof(NewEventParentFolderPreview));
+            UpdateNewEventPreview();
+        }
+    }
+
+    /// <summary>Year prefix for the race-group parent folder (e.g. 2026 in "2026 - LRM Weekend").</summary>
+    public int NewEventParentYear
+    {
+        get => _newEventParentYear;
+        set
+        {
+            if (!Set(ref _newEventParentYear, value))
+                return;
+            OnPropertyChanged(nameof(NewEventParentFolderPreview));
+            UpdateNewEventPreview();
+        }
+    }
+
+    public string NewEventParentFolderPreview
+    {
+        get
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(_newEventParentName))
+                    return "Race Group folder: enter a name…";
+                if (_newEventParentYear is < 2000 or > 2100)
+                    return "Race Group folder: enter a 4-digit year.";
+                return "Race Group folder: "
+                       + EntriesIniService.BuildSessionFolderName(
+                           _newEventParentName.Trim(),
+                           "01/01/" + _newEventParentYear.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            }
+            catch (Exception ex)
+            {
+                return ex.Message;
+            }
+        }
+    }
+
+    public void ConfirmNewEventParent()
+    {
+        if (!IsAdminSetupNewEvent || !_newEventIsRaceGroup)
+            return;
+
+        if (string.IsNullOrWhiteSpace(_newEventParentName))
+        {
+            Alert("Race Group", "Enter a Race Group name (e.g. LRM Weekend).");
+            return;
+        }
+
+        if (_newEventParentYear is < 2000 or > 2100)
+        {
+            Alert("Race Group", "Enter a 4-digit year for the Race Group folder (e.g. 2026).");
+            return;
+        }
+
+        try
+        {
+            _newEventParentFolder = EntriesIniService.BuildSessionFolderName(
+                _newEventParentName.Trim(),
+                "01/01/" + _newEventParentYear.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        catch (Exception ex)
+        {
+            Alert("Race Group", ex.Message);
+            return;
+        }
+
+        ClearAdminListFilter();
+        _adminNewEventSubStep = AdminNewEventSubStep.SourceKind;
+        NotifyAdminSection();
+        UpdateNewEventPreview();
+    }
+
+    public async Task SelectNewEventSourceKindAsync(bool useTemplates)
+    {
+        if (!IsAdminSetupNewEvent || string.IsNullOrWhiteSpace(_newEventOffice))
+            return;
+
+        _newEventSourceKind = useTemplates ? 0 : 1;
+        _newEventSource = null;
+        _newEventPastRelative = string.Empty;
+        ClearAdminListFilter();
+        _adminNewEventSubStep = AdminNewEventSubStep.Source;
+        NotifyAdminSection();
+
+        if (useTemplates)
+        {
+            await EnsureTemplatesFromGraphIfNeededAsync().ConfigureAwait(true);
+            LoadNewEventTemplates();
+        }
+        else
+        {
+            await EnsureNewEventPastLevelFromGraphIfNeededAsync(force: false).ConfigureAwait(true);
+            LoadNewEventPastBrowser();
+        }
+
+        ApplyAdminListFilter();
+    }
+
+    public async Task SelectNewEventSourceAsync(NewEventSourceItem? item)
+    {
+        if (item is null || !IsAdminSetupNewEvent)
+            return;
+
+        if (item.IsFolder)
+        {
+            _newEventPastRelative = string.IsNullOrEmpty(_newEventPastRelative)
+                ? item.Display
+                : _newEventPastRelative.TrimEnd('/', '\\') + "/" + item.Display;
+            ClearAdminListFilter();
+            await EnsureNewEventPastLevelFromGraphIfNeededAsync(force: false).ConfigureAwait(true);
+            LoadNewEventPastBrowser();
+            ApplyAdminListFilter();
+            NotifyAdminSection();
+            return;
+        }
+
+        _newEventSource = item;
+        OnPropertyChanged(nameof(NewEventSource));
+        ClearAdminListFilter();
+        _adminNewEventSubStep = AdminNewEventSubStep.Details;
+        UpdateNewEventPreview();
+        NotifyAdminSection();
+    }
+
+    private async Task PopNewEventPastFolderAsync()
+    {
+        var rel = _newEventPastRelative.Replace('\\', '/').Trim('/');
+        var slash = rel.LastIndexOf('/');
+        _newEventPastRelative = slash < 0 ? string.Empty : rel[..slash];
+        ClearAdminListFilter();
+        await EnsureNewEventPastLevelFromGraphIfNeededAsync(force: false).ConfigureAwait(true);
+        LoadNewEventPastBrowser();
+        ApplyAdminListFilter();
+        NotifyAdminSection();
+    }
+
+    private const string TemplatesGraphCacheKey = "Templates";
+
+    private async Task EnsureTemplatesFromGraphIfNeededAsync()
+    {
+        if (!_cloud.IsAvailable)
+            return;
+        if (_graphIndexedOffices.Contains(TemplatesGraphCacheKey))
+            return;
+
+        try
+        {
+            Busy = true;
+            BusyTitle = "Loading Templates from OneDrive…";
+            var result = await _cloud.RefreshFolderChildrenAsync(
+                _settings.LibraryRoot,
+                _settings.GraphDriveRoot,
+                EventBuilderService.TemplatesFolderName,
+                probeSessionLeaves: true,
+                new Progress<string>(s => Status = s)).ConfigureAwait(true);
+            Status = result.Message;
+            if (result.Success)
+                _graphIndexedOffices.Add(TemplatesGraphCacheKey);
+            else if (!Directory.Exists(Path.Combine(_settings.LibraryRoot, EventBuilderService.TemplatesFolderName)))
+                Alert("OneDrive Templates", result.Message);
+        }
+        catch (Exception ex)
+        {
+            Alert("OneDrive Templates", ex.Message);
+        }
+        finally
+        {
+            Busy = false;
+        }
+    }
+
+    private string NewEventPastGraphCacheKey =>
+        "newevent:past:" + (_newEventOffice ?? "") + ":" + _newEventPastRelative.Replace('\\', '/');
+
+    private async Task EnsureNewEventPastLevelFromGraphIfNeededAsync(bool force)
+    {
+        if (!_cloud.IsAvailable || string.IsNullOrWhiteSpace(_newEventOffice))
+            return;
+
+        var cacheKey = NewEventPastGraphCacheKey;
+        if (!force && _graphIndexedOffices.Contains(cacheKey))
+            return;
+
+        var relative = string.IsNullOrEmpty(_newEventPastRelative)
+            ? EventBuilderService.PastRacesFolderName + "/" + _newEventOffice
+            : EventBuilderService.PastRacesFolderName + "/" + _newEventOffice + "/"
+              + _newEventPastRelative.Replace('\\', '/');
+        // Under Past Races/{office}: years first; inside a year, probe race session leaves.
+        var probeLeaves = !string.IsNullOrEmpty(_newEventPastRelative);
+
+        try
+        {
+            Busy = true;
+            BusyTitle = probeLeaves ? "Loading past races…" : "Loading years…";
+            var result = await _cloud.RefreshFolderChildrenAsync(
+                _settings.LibraryRoot,
+                _settings.GraphDriveRoot,
+                relative,
+                probeSessionLeaves: probeLeaves,
+                new Progress<string>(s => Status = s)).ConfigureAwait(true);
+            Status = result.Message;
+            if (result.Success)
+                _graphIndexedOffices.Add(cacheKey);
+        }
+        catch (Exception ex)
+        {
+            Alert("OneDrive Past Races", ex.Message);
+        }
+        finally
+        {
+            Busy = false;
+        }
+    }
+
+    private void LoadNewEventTemplates()
+    {
+        _newEventSourceSource.Clear();
+        foreach (var path in _eventBuilder.ListTemplateSessions(_settings.LibraryRoot))
+            _newEventSourceSource.Add(new NewEventSourceItem(Path.GetFileName(path), path));
+    }
+
+    private void LoadNewEventPastBrowser()
+    {
+        _newEventSourceSource.Clear();
+        if (string.IsNullOrWhiteSpace(_newEventOffice))
+            return;
+
+        var folder = Path.Combine(
+            _settings.LibraryRoot,
+            EventBuilderService.PastRacesFolderName,
+            _newEventOffice);
+        if (!string.IsNullOrEmpty(_newEventPastRelative))
+            folder = Path.Combine(folder, _newEventPastRelative.Replace('/', Path.DirectorySeparatorChar));
+
+        if (!Directory.Exists(folder))
+            return;
+
+        foreach (var dir in Directory.GetDirectories(folder)
+                     .OrderBy(d => Path.GetFileName(d), StringComparer.OrdinalIgnoreCase))
+        {
+            var name = Path.GetFileName(dir);
+            if (string.Equals(name, PathService.RunScoreFolderName, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(name, SharedFolderLinkService.DbsFolderName, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(name, "Pre-Race", StringComparison.OrdinalIgnoreCase)
+                || name.StartsWith("._", StringComparison.Ordinal)
+                || string.Equals(name, PathService.AutosaveFolderName, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            var isSession = _paths.IsSessionLeaf(dir)
+                            || Directory.Exists(Path.Combine(dir, PathService.RunScoreFolderName));
+            _newEventSourceSource.Add(new NewEventSourceItem(name, dir, IsFolder: !isSession));
+        }
+    }
+
+    private void UpdateNewEventPreview()
+    {
+        try
+        {
+            var office = _newEventOffice ?? "(office)";
+            var name = _newEventRaceName.Trim();
+            if (name.Length == 0)
+            {
+                NewEventPreview = _newEventIsRaceGroup && !string.IsNullOrEmpty(_newEventParentFolder)
+                    ? $"Will create under Race Group {_newEventParentFolder}: enter this race’s name…"
+                    : "Folder preview: enter a race name…";
+                return;
+            }
+
+            if (_newEventIsRaceGroup && !string.IsNullOrEmpty(_newEventParentFolder))
+            {
+                NewEventPreview =
+                    "Will create (Race Group race):\n"
+                    + Path.Combine(_settings.LibraryRoot, office, _newEventParentFolder, name);
+                return;
+            }
+
+            var folder = EntriesIniService.BuildSessionFolderName(name, NewEventRaceDate);
+            NewEventPreview =
+                "Will create (one race — not Past Races):\n"
+                + Path.Combine(_settings.LibraryRoot, office, folder);
+        }
+        catch (Exception ex)
+        {
+            NewEventPreview = ex.Message;
+        }
+    }
+
+    public void ShowAdminEditCurrentEvent()
+    {
+        _adminSection = AdminSection.EditCurrentEvent;
+        _adminEventsSubStep = AdminEventsSubStep.Office;
+        _adminOffice = null;
+        _adminPastRacesRelative = string.Empty;
+        ResetAdminAssignUi();
+        AdminSessions.Clear();
+        _adminSessionSource.Clear();
+        // Same office list as Timing / Announcer (AllowedOfficeFolders — no Other).
+        _adminOfficeSource.Clear();
+        foreach (var name in Offices)
+            _adminOfficeSource.Add(name);
+        _adminListFilter = string.Empty;
+        OnPropertyChanged(nameof(AdminListFilter));
+        ApplyAdminListFilter();
+
+        NotifyAdminSection();
+    }
+
+    public void ShowAdminSettings()
+    {
+        _adminSection = AdminSection.Settings;
         NotifyAdminSection();
     }
 
@@ -1677,60 +2868,240 @@ public sealed class MainViewModel : INotifyPropertyChanged
         set => Set(ref _selectedTimingFile, value);
     }
 
-    public string? SelectedAnnouncerChoice
-    {
-        get => _selectedAnnouncerChoice;
-        set => Set(ref _selectedAnnouncerChoice, value);
-    }
-
     public EventPackInfo? SelectedAdminSession => _adminSession;
 
     public async Task SelectAdminOfficeAsync(string? office)
     {
-        AdminSessions.Clear();
-        AdminEventFiles.Clear();
-        AdminAnnouncerChoices.Clear();
-        _adminSession = null;
-        SelectedTimingFile = null;
-        SelectedAnnouncerChoice = null;
-        if (string.IsNullOrWhiteSpace(office) || !IsAdminEvents)
+        if (string.IsNullOrWhiteSpace(office) || !IsAdminEditCurrentEvent)
             return;
 
-        if (!office.Equals(EventBuilderService.PastRacesFolderName, StringComparison.OrdinalIgnoreCase))
-            await EnsureOfficeSessionsFromGraphIfNeededAsync(office).ConfigureAwait(true);
+        ResetAdminAssignUi();
+        AdminSessions.Clear();
+        _adminSessionSource.Clear();
+        _adminOffice = office;
+        _adminPastRacesRelative = string.Empty;
+        _adminListFilter = string.Empty;
+        OnPropertyChanged(nameof(AdminListFilter));
+        // Sub-step before ApplyAdminListFilter so the session source fills AdminSessions.
+        _adminEventsSubStep = AdminEventsSubStep.Session;
+        NotifyAdminSection();
 
-        foreach (var session in _scanner.ListSessions(_settings.LibraryRoot, office))
-            AdminSessions.Add(session);
+        if (IsAdminPastRacesBrowse)
+        {
+            // Same nested browse + same this-run cache as race-day Past Races (no admin: key).
+            await RefreshPastRacesLevelAtAsync(
+                _adminPastRacesRelative,
+                PastRacesCacheKey(_adminPastRacesRelative),
+                force: false).ConfigureAwait(true);
+            LoadAdminPastRacesBrowser();
+        }
+        else
+        {
+            // Same EnsureOfficeSessions cache as Timing — skip Graph if that office was already indexed.
+            await EnsureOfficeSessionsFromGraphIfNeededAsync(office).ConfigureAwait(true);
+            foreach (var session in _scanner.ListSessions(_settings.LibraryRoot, office))
+                _adminSessionSource.Add(session);
+            ApplyAdminListFilter();
+        }
     }
 
-    public async Task LoadAdminEventFilesAsync(EventPackInfo? session)
+    public async Task SelectAdminSessionAsync(EventPackInfo? session)
+    {
+        if (session is null || !IsAdminEditCurrentEvent)
+            return;
+
+        if (session.IsNavigationFolder)
+        {
+            await EnterAdminPastRacesFolderAsync(session).ConfigureAwait(true);
+            return;
+        }
+
+        // Graph name list can take a few seconds — show busy so double-click feels accepted.
+        SetBusy(
+            "Loading event files",
+            $"Looking up Timing & Scoring files for {session.DisplayName}…");
+        try
+        {
+            await LoadAdminEventFilesAsync(session).ConfigureAwait(true);
+            if (!ReferenceEquals(_adminSession, session))
+                return;
+
+            _adminEventsSubStep = AdminEventsSubStep.Assign;
+            NotifyAdminSection();
+            Status = $"Ready to mark the main timing file for {session.DisplayName}.";
+        }
+        finally
+        {
+            if (Busy && !BusyNeedsAcknowledge)
+                ClearBusy();
+        }
+    }
+
+    private async Task EnterAdminPastRacesFolderAsync(EventPackInfo folder)
+    {
+        if (folder is null || !folder.IsNavigationFolder || !IsAdminPastRacesBrowse)
+            return;
+
+        _adminPastRacesRelative = string.IsNullOrEmpty(_adminPastRacesRelative)
+            ? folder.SessionName
+            : _adminPastRacesRelative.TrimEnd('/', '\\') + "/" + folder.SessionName;
+        ClearAdminListFilter();
+
+        await RefreshPastRacesLevelAtAsync(
+            _adminPastRacesRelative,
+            PastRacesCacheKey(_adminPastRacesRelative),
+            force: false).ConfigureAwait(true);
+        LoadAdminPastRacesBrowser();
+        NotifyAdminSection();
+    }
+
+    private async Task PopAdminPastRacesFolderAsync()
+    {
+        var rel = _adminPastRacesRelative.Replace('\\', '/').Trim('/');
+        var slash = rel.LastIndexOf('/');
+        _adminPastRacesRelative = slash < 0 ? string.Empty : rel[..slash];
+        ClearAdminListFilter();
+
+        await RefreshPastRacesLevelAtAsync(
+            _adminPastRacesRelative,
+            PastRacesCacheKey(_adminPastRacesRelative),
+            force: false).ConfigureAwait(true);
+        LoadAdminPastRacesBrowser();
+        NotifyAdminSection();
+    }
+
+    private void LoadAdminPastRacesBrowser()
+    {
+        _adminSessionSource.Clear();
+        var folder = Path.Combine(_settings.LibraryRoot, EventBuilderService.PastRacesFolderName);
+        if (!string.IsNullOrEmpty(_adminPastRacesRelative))
+            folder = Path.Combine(folder, _adminPastRacesRelative.Replace('/', Path.DirectorySeparatorChar));
+
+        foreach (var entry in _scanner.ListBrowserEntries(
+                     _settings.LibraryRoot, EventBuilderService.PastRacesFolderName, folder))
+            _adminSessionSource.Add(entry);
+        ApplyAdminListFilter();
+    }
+
+    private void ApplyAdminListFilter()
+    {
+        var q = _adminListFilter.Trim();
+
+        if (IsAdminNewEventOffice)
+        {
+            NewEventOffices.Clear();
+            foreach (var name in _newEventOfficeSource)
+            {
+                if (q.Length == 0 || name.Contains(q, StringComparison.OrdinalIgnoreCase))
+                    NewEventOffices.Add(name);
+            }
+            return;
+        }
+
+        if (IsAdminNewEventSource)
+        {
+            NewEventSources.Clear();
+            foreach (var entry in _newEventSourceSource)
+            {
+                if (q.Length == 0 || entry.Display.Contains(q, StringComparison.OrdinalIgnoreCase))
+                    NewEventSources.Add(entry);
+            }
+            return;
+        }
+
+        if (!IsAdminEditCurrentEvent)
+            return;
+
+        if (_adminEventsSubStep == AdminEventsSubStep.Office)
+        {
+            AdminOffices.Clear();
+            foreach (var name in _adminOfficeSource)
+            {
+                if (q.Length == 0 || name.Contains(q, StringComparison.OrdinalIgnoreCase))
+                    AdminOffices.Add(name);
+            }
+            return;
+        }
+
+        if (_adminEventsSubStep != AdminEventsSubStep.Session)
+            return;
+
+        AdminSessions.Clear();
+        foreach (var entry in _adminSessionSource)
+        {
+            if (q.Length == 0
+                || entry.DisplayName.Contains(q, StringComparison.OrdinalIgnoreCase)
+                || entry.SessionName.Contains(q, StringComparison.OrdinalIgnoreCase)
+                || (entry.ParentEvent?.Contains(q, StringComparison.OrdinalIgnoreCase) ?? false))
+                AdminSessions.Add(entry);
+        }
+    }
+
+    private void ClearAdminListFilter()
+    {
+        if (_adminListFilter.Length != 0)
+        {
+            _adminListFilter = string.Empty;
+            OnPropertyChanged(nameof(AdminListFilter));
+        }
+
+        ApplyAdminListFilter();
+    }
+
+    private async Task LoadAdminEventFilesAsync(EventPackInfo session)
     {
         _adminSession = session;
         OnPropertyChanged(nameof(SelectedAdminSession));
         AdminEventFiles.Clear();
-        AdminAnnouncerChoices.Clear();
         SelectedTimingFile = null;
-        SelectedAnnouncerChoice = null;
-        if (session is null)
-            return;
 
-        var names = new List<string>(EventFileSelector.ListEventFiles(session.Path));
-        if (_cloud.IsAvailable)
+        // Prefer Timing / Announcer disk + this-run probe; Graph only if we have not listed this session yet.
+        var names = new HashSet<string>(
+            EventFileSelector.ListEventFiles(session.Path),
+            StringComparer.OrdinalIgnoreCase);
+        // Mid-checkout Save As lands in Active first — include those so assign / Finish stay in sync.
+        if (Active is not null
+            && string.Equals(Active.LibrarySessionPath, session.Path, StringComparison.OrdinalIgnoreCase))
+        {
+            foreach (var name in EventFileSelector.ListEventFiles(Active.ActivePath))
+                names.Add(name);
+        }
+
+        var alreadyProbed = _probedEventNames.TryGetValue(session.Path, out var probed);
+        if (alreadyProbed)
+        {
+            foreach (var name in probed!)
+                names.Add(name);
+        }
+
+        var roles = SessionRoleStore.TryLoad(session.Path);
+        var needRemoteNames = !alreadyProbed;
+        var needRemoteRoles = roles is null;
+
+        if (_cloud.IsAvailable && (needRemoteNames || needRemoteRoles))
         {
             try
             {
-                var remote = await _cloud.ListRemoteEventFileNamesAsync(
-                    session.Path, _settings.LibraryRoot, _settings.GraphDriveRoot).ConfigureAwait(true);
-                foreach (var name in remote)
+                if (needRemoteNames)
                 {
-                    if (!names.Contains(name, StringComparer.OrdinalIgnoreCase))
+                    var remote = await _cloud.ListRemoteEventFileNamesAsync(
+                        session.Path, _settings.LibraryRoot, _settings.GraphDriveRoot).ConfigureAwait(true);
+                    foreach (var name in remote)
                         names.Add(name);
+                    _probedEventNames[session.Path] = names
+                        .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
+                        .ToList();
                 }
 
-                await _cloud.DownloadSessionRolesAsync(
-                    new[] { session.Path },
-                    _settings.LibraryRoot,
-                    _settings.GraphDriveRoot).ConfigureAwait(true);
+                // One session only — never prefetch sibling races for Admin assign.
+                if (needRemoteRoles)
+                {
+                    await _cloud.DownloadSessionRolesAsync(
+                        new[] { session.Path },
+                        _settings.LibraryRoot,
+                        _settings.GraphDriveRoot).ConfigureAwait(true);
+                    roles = SessionRoleStore.TryLoad(session.Path);
+                }
             }
             catch
             {
@@ -1741,47 +3112,129 @@ public sealed class MainViewModel : INotifyPropertyChanged
         if (!ReferenceEquals(_adminSession, session))
             return;
 
-        names.Sort(StringComparer.OrdinalIgnoreCase);
-        var roles = SessionRoleStore.TryLoad(session.Path);
-        if (!string.IsNullOrWhiteSpace(roles?.PrimaryEventFile)
-            && !names.Contains(roles.PrimaryEventFile, StringComparer.OrdinalIgnoreCase))
+        if (!string.IsNullOrWhiteSpace(roles?.PrimaryEventFile))
             names.Add(roles.PrimaryEventFile);
-        if (!string.IsNullOrWhiteSpace(roles?.AnnouncerEventFile)
-            && !names.Contains(roles.AnnouncerEventFile, StringComparer.OrdinalIgnoreCase))
-            names.Add(roles.AnnouncerEventFile);
 
-        AdminAnnouncerChoices.Add(NoAnnouncerLabel);
-        foreach (var name in names)
-        {
+        var sorted = names.OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToList();
+        foreach (var name in sorted)
             AdminEventFiles.Add(name);
-            AdminAnnouncerChoices.Add(name);
-        }
 
         SelectedTimingFile = roles?.PrimaryEventFile
-                             ?? (names.Count == 1 ? names[0] : null);
-        SelectedAnnouncerChoice = string.IsNullOrWhiteSpace(roles?.AnnouncerEventFile)
-            ? NoAnnouncerLabel
-            : roles.AnnouncerEventFile;
+                             ?? (sorted.Count == 1 ? sorted[0] : null);
+        NotifyAdminTsSetup();
+    }
+
+    private void ResetAdminAssignUi()
+    {
+        _adminSession = null;
+        OnPropertyChanged(nameof(SelectedAdminSession));
+        AdminEventFiles.Clear();
+        SelectedTimingFile = null;
+        NotifyAdminTsSetup();
+    }
+
+    /// <summary>
+    /// Edit Current Event — no .event yet: same Save As Active path as checkout, then Launch T&amp;S.
+    /// Checks out this race when needed so Save As lands where Finish will see it.
+    /// </summary>
+    public async Task LaunchAdminTimingAndScoringAsync()
+    {
+        if (_adminSession is null || !IsAdminEditCurrentEvent)
+            return;
+
+        if (HasActive && !AdminSessionIsActive())
+        {
+            Alert(
+                "Already Checked Out",
+                "Finish the current race before launching Timing & Scoring for another event.");
+            return;
+        }
+
+        if (!HasActive)
+        {
+            SelectedSession = _adminSession;
+            SelectedEventFile = string.Empty;
+            EventFiles.Clear();
+            _sessionPackPulled = SessionPackLooksUsable(_adminSession.Path);
+            _checkoutRole = CheckoutRole.Timing;
+            OnPropertyChanged(nameof(IsTimingRole));
+            OnPropertyChanged(nameof(IsAnnouncerRole));
+            await CheckoutAsync().ConfigureAwait(true);
+            if (Active is null)
+                return;
+            LaunchTimingAndScoring();
+            return;
+        }
+
+        LaunchTimingAndScoring();
+        await LoadAdminEventFilesAsync(_adminSession).ConfigureAwait(true);
+        if (IsAdminEventsAssign)
+            Status = ShowAdminTsSetup
+                ? "Timing & Scoring opening… Save As path is shown below. Tap Refresh Event Files after you save."
+                : $"Ready to mark the main timing file for {_adminSession.DisplayName}.";
+    }
+
+    public async Task RefreshAdminEventFilesAsync()
+    {
+        if (_adminSession is null || !IsAdminEventsAssign)
+            return;
+
+        SetBusy(
+            "Refreshing Event Files",
+            $"Looking up Timing & Scoring files for {_adminSession.DisplayName}…");
+        try
+        {
+            // Force a fresh Graph name probe when signed in (clear this-run cache for this session).
+            _probedEventNames.Remove(_adminSession.Path);
+            await LoadAdminEventFilesAsync(_adminSession).ConfigureAwait(true);
+            if (!IsAdminEventsAssign || _adminSession is null)
+                return;
+
+            Status = ShowAdminTsSetup
+                ? "No .event found yet — Save As into the Active folder, then Refresh Event Files."
+                : $"Ready to mark the main timing file for {_adminSession.DisplayName}.";
+        }
+        finally
+        {
+            if (Busy && !BusyNeedsAcknowledge)
+                ClearBusy();
+        }
+    }
+
+    /// <summary>Assign step → office list so staff can configure another race without Back×N.</summary>
+    public void ResetAdminEventsToStart()
+    {
+        if (!IsAdminEditCurrentEvent)
+            return;
+
+        ResetAdminAssignUi();
+        AdminSessions.Clear();
+        _adminSessionSource.Clear();
+        _adminOffice = null;
+        _adminPastRacesRelative = string.Empty;
+        ClearAdminListFilter();
+        _adminEventsSubStep = AdminEventsSubStep.Office;
+        ApplyAdminListFilter();
+        NotifyAdminSection();
+        Status = "Pick an office to configure another event. Back leaves Admin.";
     }
 
     public async Task SaveAdminEventRolesAsync()
     {
         if (_adminSession is null)
         {
-            Alert("Choose an event", "Pick an office and an event, then assign the Timing and Announcer files.");
+            Alert("Choose an event", "Pick an office and an event, then mark the main timing .event.");
             return;
         }
 
         var primary = string.IsNullOrWhiteSpace(SelectedTimingFile) ? null : SelectedTimingFile;
-        var announcer = string.IsNullOrWhiteSpace(SelectedAnnouncerChoice)
-                        || SelectedAnnouncerChoice == NoAnnouncerLabel
-            ? null
-            : SelectedAnnouncerChoice;
-        var roles = new SessionRoles
+        if (primary is null)
         {
-            PrimaryEventFile = primary,
-            AnnouncerEventFile = announcer
-        };
+            Alert("Assignment", "Choose the main timing .event file.");
+            return;
+        }
+
+        var roles = new SessionRoles { PrimaryEventFile = primary };
         var error = SessionRoleStore.Validate(roles);
         if (error is not null)
         {
@@ -1789,6 +3242,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
             return;
         }
 
+        var savedName = _adminSession.DisplayName;
         try
         {
             SessionRoleStore.Save(_adminSession.Path, roles);
@@ -1799,9 +3253,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
             return;
         }
 
+        const string nextHint = " Tap Choose another event to configure a different race, or Back to leave Admin.";
+
         if (!_cloud.IsAvailable)
         {
-            Status = "Assignment saved on this laptop. Sign in to OneDrive to sync it.";
+            Status = "Assignment saved on this laptop. Sign in to OneDrive to sync it." + nextHint;
             return;
         }
 
@@ -1814,17 +3270,20 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 _settings.GraphDriveRoot).ConfigureAwait(true);
             if (!upload.Success)
             {
-                await ShowBusyResultAsync("Saved on this laptop", upload.Message).ConfigureAwait(true);
+                await ShowBusyResultAsync(
+                    "Saved on this laptop",
+                    upload.Message + "\n\nUse Choose another event to configure a different race.").ConfigureAwait(true);
                 return;
             }
 
-            Status = upload.Message;
+            Status = $"Saved main timing for {savedName}. {upload.Message}" + nextHint;
         }
         catch (Exception ex)
         {
             await ShowBusyResultAsync(
                 "Saved on this laptop",
-                "The assignment is on this laptop, but OneDrive upload failed.\n\n" + ex.Message).ConfigureAwait(true);
+                "The assignment is on this laptop, but OneDrive upload failed.\n\n" + ex.Message
+                + "\n\nUse Choose another event to configure a different race.").ConfigureAwait(true);
         }
         finally
         {
@@ -1835,10 +3294,50 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     private void NotifyAdminSection()
     {
+        OnPropertyChanged(nameof(IsAdminSetupNewEvent));
+        OnPropertyChanged(nameof(IsAdminEditCurrentEvent));
         OnPropertyChanged(nameof(IsAdminSettings));
-        OnPropertyChanged(nameof(IsAdminEvents));
+        OnPropertyChanged(nameof(IsAdminNewEventLayout));
+        OnPropertyChanged(nameof(IsAdminNewEventOffice));
+        OnPropertyChanged(nameof(IsAdminNewEventParent));
+        OnPropertyChanged(nameof(IsAdminNewEventSourceKind));
+        OnPropertyChanged(nameof(IsAdminNewEventSource));
+        OnPropertyChanged(nameof(IsAdminNewEventDetails));
+        OnPropertyChanged(nameof(IsAdminNewEventGroupCreated));
+        OnPropertyChanged(nameof(IsNewEventRaceGroup));
+        OnPropertyChanged(nameof(ShowNewEventGroupCheckout));
+        OnPropertyChanged(nameof(NewEventGroupCreatedHeadline));
+        OnPropertyChanged(nameof(NewEventGroupCreatedDetail));
+        OnPropertyChanged(nameof(NewEventCheckoutLastLabel));
+        OnPropertyChanged(nameof(IsAdminEventsOffice));
+        OnPropertyChanged(nameof(IsAdminEventsSession));
+        OnPropertyChanged(nameof(IsAdminEventsAssign));
+        OnPropertyChanged(nameof(IsAdminSessionRaceGroupLeaf));
+        OnPropertyChanged(nameof(ShowAddRaceToGroup));
+        OnPropertyChanged(nameof(ShowAdminTsSetup));
+        OnPropertyChanged(nameof(ShowAdminSaveAssignment));
+        OnPropertyChanged(nameof(AdminSaveAsFolderGuide));
+        OnPropertyChanged(nameof(ShowAdminListFilter));
+        OnPropertyChanged(nameof(AdminListFilterHint));
+        OnPropertyChanged(nameof(AdminEventsBreadcrumb));
+        OnPropertyChanged(nameof(AdminNewEventBreadcrumb));
+        OnPropertyChanged(nameof(NewEventParentFolderPreview));
+        OnPropertyChanged(nameof(StepTitle));
         OnPropertyChanged(nameof(StepSubtitle));
+        OnPropertyChanged(nameof(ShowAdminHeaderLink));
     }
+
+    private void NotifyAdminTsSetup()
+    {
+        OnPropertyChanged(nameof(ShowAdminTsSetup));
+        OnPropertyChanged(nameof(ShowAdminSaveAssignment));
+        OnPropertyChanged(nameof(AdminSaveAsFolderGuide));
+    }
+
+    private bool AdminSessionIsActive() =>
+        Active is not null
+        && _adminSession is not null
+        && string.Equals(Active.LibrarySessionPath, _adminSession.Path, StringComparison.OrdinalIgnoreCase);
 
     private void NotifyGraphStatus()
     {
@@ -1846,6 +3345,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(GraphAccountStatus));
         OnPropertyChanged(nameof(GraphReadyLabel));
         OnPropertyChanged(nameof(GraphLandingStatus));
+        OnPropertyChanged(nameof(GraphReadyInlineDetail));
+        OnPropertyChanged(nameof(ShowGraphReadyInline));
+        OnPropertyChanged(nameof(ShowGraphSignInBanner));
         OnPropertyChanged(nameof(GraphReadyBannerBackground));
         OnPropertyChanged(nameof(GraphReadyBannerBorder));
     }
@@ -1922,7 +3424,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
     }
 
-    public void OpenNewEventBuilder()
+    public async Task CreateNewEventAsync()
     {
         if (HasActive)
         {
@@ -1930,20 +3432,104 @@ public sealed class MainViewModel : INotifyPropertyChanged
             return;
         }
 
-        EnsureLocalRoots();
-        LoadOffices();
-        var offices = Offices.Count > 0
-            ? Offices.ToList()
-            : PathService.AllowedOfficeFolders.ToList();
-
-        var owner = OwnerWindow;
-        var dlg = new S2F.RaceDayCheckout.NewEventWindow(_settings.LibraryRoot, offices);
-        if (owner is not null)
-            dlg.Owner = owner;
-
-        var ok = dlg.ShowDialog() == true;
-        if (!ok || dlg.Result is not { Success: true } result)
+        if (string.IsNullOrWhiteSpace(_newEventOffice))
+        {
+            Alert("New event", "Select an office.");
             return;
+        }
+
+        if (_newEventSource is null || string.IsNullOrWhiteSpace(_newEventSource.Path))
+        {
+            var hint = _newEventSourceKind <= 0
+                ? Path.Combine(_settings.LibraryRoot, EventBuilderService.TemplatesFolderName)
+                : Path.Combine(_settings.LibraryRoot, EventBuilderService.PastRacesFolderName, _newEventOffice);
+            Alert(
+                "New event",
+                "Select a Template or past race to copy.\n\nLooking under:\n" + hint);
+            return;
+        }
+
+        SetBusy("Creating event", "Downloading the source pack if needed, then copying…");
+        EventBuildResult result;
+        try
+        {
+            if (_cloud.IsAvailable)
+            {
+                ProgressText = "Downloading source from OneDrive…";
+                var pull = await _cloud.DownloadSessionAsync(
+                    _newEventSource.Path,
+                    _settings.LibraryRoot,
+                    _settings.GraphDriveRoot,
+                    new Progress<string>(s => ProgressText = s)).ConfigureAwait(true);
+                if (!pull.Success)
+                    Status = pull.Message;
+            }
+
+            if (!SessionPackLooksUsable(_newEventSource.Path))
+            {
+                if (Busy && !BusyNeedsAcknowledge)
+                    ClearBusy();
+                Alert(
+                    "New event",
+                    "The source pack has no race files yet (often an empty Template placeholder).\n\n"
+                    + "Sign in to OneDrive, wait for Templates to finish loading, then try again.\n\n"
+                    + _newEventSource.Path);
+                return;
+            }
+
+            ProgressText = "Building the new event folder in Library…";
+            if (_newEventIsRaceGroup && string.IsNullOrWhiteSpace(_newEventParentFolder))
+            {
+                if (Busy && !BusyNeedsAcknowledge)
+                    ClearBusy();
+                Alert("Race Group", "Set the Race Group name before creating a race.");
+                return;
+            }
+
+            result = await _eventBuilder.BuildAsync(new EventBuildRequest
+            {
+                LibraryRoot = _settings.LibraryRoot,
+                Office = _newEventOffice,
+                SourceSessionPath = _newEventSource.Path,
+                RaceName = _newEventRaceName,
+                RaceDate = NewEventRaceDate,
+                ResultsId = _newEventResultsId,
+                ParentFolderName = _newEventIsRaceGroup ? _newEventParentFolder : null
+            }).ConfigureAwait(true);
+
+            if (result.Success
+                && _cloud.IsAvailable
+                && !string.IsNullOrWhiteSpace(result.SessionPath))
+            {
+                // Publish RUNSCORE + DB's (seeded) so OneDrive gets the pack before checkout/Finish.
+                ProgressText = "Publishing new event to OneDrive…";
+                var publish = await _cloud.UploadSessionAsync(
+                    result.SessionPath,
+                    _settings.LibraryRoot,
+                    _settings.GraphDriveRoot,
+                    new Progress<string>(s => ProgressText = s)).ConfigureAwait(true);
+                if (!publish.Success)
+                    Status = "Event created locally; OneDrive publish incomplete: " + publish.Message;
+            }
+        }
+        catch (Exception ex)
+        {
+            if (Busy && !BusyNeedsAcknowledge)
+                ClearBusy();
+            Alert("New event", ex.Message);
+            return;
+        }
+        finally
+        {
+            if (Busy && !BusyNeedsAcknowledge)
+                ClearBusy();
+        }
+
+        if (!result.Success)
+        {
+            Alert("New event", result.Message);
+            return;
+        }
 
         if (string.IsNullOrWhiteSpace(result.SessionPath) || string.IsNullOrWhiteSpace(result.Office))
         {
@@ -1952,21 +3538,35 @@ public sealed class MainViewModel : INotifyPropertyChanged
             return;
         }
 
-        // Auto-checkout so mid-week staff land on Active and can open T&S / RunScore immediately.
+        if (!SessionPackLooksUsable(result.SessionPath))
+        {
+            Alert(
+                "New event",
+                "Library folder was created but looks empty:\n"
+                + result.SessionPath
+                + "\n\nSource copy did not bring race files. Fix the Template / Past Race pack, then try again.");
+            ReloadFromDisk();
+            return;
+        }
+
         SelectedOffice = result.Office;
         LoadSessions(result.Office);
+        var relative = result.RelativePath
+                       ?? result.SessionFolderName
+                       ?? Path.GetFileName(result.SessionPath);
         var pack = Sessions.FirstOrDefault(s =>
             string.Equals(s.Path, result.SessionPath, StringComparison.OrdinalIgnoreCase));
         if (pack is null)
         {
-            // Scanner race / OneDrive delay — fall back to a direct pack from the new folder.
             var eventFiles = EventFileSelector.ListEventFiles(result.SessionPath);
+            var leaf = result.SessionFolderName ?? Path.GetFileName(result.SessionPath);
+            var parent = result.ParentFolderName ?? leaf;
             pack = new EventPackInfo
             {
                 Office = result.Office,
-                ParentEvent = result.SessionFolderName ?? Path.GetFileName(result.SessionPath),
-                SessionName = result.SessionFolderName ?? Path.GetFileName(result.SessionPath),
-                RelativePath = result.SessionFolderName ?? Path.GetFileName(result.SessionPath),
+                ParentEvent = parent,
+                SessionName = leaf,
+                RelativePath = relative,
                 Path = result.SessionPath,
                 EventFiles = eventFiles,
                 PrimaryEventFile = result.PrimaryEventFile ?? EventFileSelector.ChoosePrimary(eventFiles)
@@ -1979,11 +3579,180 @@ public sealed class MainViewModel : INotifyPropertyChanged
             EventFiles.Add(f);
         SelectedEventFile = result.PrimaryEventFile ?? pack.PrimaryEventFile ?? string.Empty;
 
+        // Race Group: land on an explicit success step (checkout vs add another).
+        if (_newEventIsRaceGroup)
+        {
+            _lastCreatedRaceName = pack.SessionName;
+            Status = result.MissingEventFile
+                ? result.Message
+                : $"Created {relative}.";
+            _adminNewEventSubStep = AdminNewEventSubStep.GroupCreated;
+            UpdateNewEventPreview();
+            NotifyAdminSection();
+            OnPropertyChanged(nameof(NewEventGroupCreatedHeadline));
+            OnPropertyChanged(nameof(NewEventGroupCreatedDetail));
+            OnPropertyChanged(nameof(NewEventCheckoutLastLabel));
+            return;
+        }
+
         Status = result.MissingEventFile
             ? result.Message
-            : "New event checked out: " + result.SessionFolderName;
+            : "New event checked out: " + relative;
 
-        _ = CheckoutAfterNewEventAsync(result);
+        // Local Library pack is the source of truth — do not Graph-pull a session that isn't on OneDrive yet.
+        _sessionPackPulled = true;
+        await CheckoutAfterNewEventAsync(result).ConfigureAwait(true);
+    }
+
+    /// <summary>From the Race Group success step — copy another leaf under the same group.</summary>
+    public void AddAnotherRaceInGroup()
+    {
+        if (!IsAdminNewEventGroupCreated || string.IsNullOrWhiteSpace(_newEventParentFolder))
+            return;
+
+        PrepareAddAnotherRaceInGroup();
+    }
+
+    /// <summary>Clear leaf fields and open Copy From for the next race under the same Race Group.</summary>
+    private void PrepareAddAnotherRaceInGroup()
+    {
+        _newEventSource = null;
+        _newEventPastRelative = string.Empty;
+        _newEventRaceName = string.Empty;
+        _newEventResultsId = string.Empty;
+        _newEventRaceDateValue = DateTime.Today;
+        NewEventSources.Clear();
+        _newEventSourceSource.Clear();
+        OnPropertyChanged(nameof(NewEventSource));
+        OnPropertyChanged(nameof(NewEventRaceName));
+        OnPropertyChanged(nameof(NewEventRaceDateValue));
+        OnPropertyChanged(nameof(NewEventRaceDate));
+        OnPropertyChanged(nameof(NewEventResultsId));
+        ClearAdminListFilter();
+        _adminNewEventSubStep = AdminNewEventSubStep.SourceKind;
+        Status = string.IsNullOrWhiteSpace(_newEventParentFolder)
+            ? "Add another race under this Race Group."
+            : $"Add another race under {_newEventParentFolder}.";
+        UpdateNewEventPreview();
+        NotifyAdminSection();
+    }
+
+    /// <summary>
+    /// Edit Current Event → add a new leaf under the selected Race Group (skips layout / naming).
+    /// </summary>
+    public void BeginAddRaceToExistingGroup()
+    {
+        if (!ShowAddRaceToGroup || _adminSession is null)
+            return;
+
+        var office = _adminSession.Office;
+        var parent = _adminSession.ParentEvent;
+
+        _adminSection = AdminSection.SetupNewEvent;
+        EnsureLocalRoots();
+        LoadOffices();
+
+        _newEventIsRaceGroup = true;
+        _newEventOffice = office;
+        _newEventParentFolder = parent;
+        _newEventParentName = parent;
+        _lastCreatedRaceName = string.Empty;
+        SelectedSession = null;
+        OnPropertyChanged(nameof(IsNewEventRaceGroup));
+        OnPropertyChanged(nameof(NewEventOffice));
+
+        _newEventOfficeSource.Clear();
+        foreach (var o in EventBuilderService.DestinationOffices)
+            _newEventOfficeSource.Add(o);
+
+        PrepareAddAnotherRaceInGroup();
+        Status = $"Adding a race under {_newEventOffice} / {_newEventParentFolder}.";
+    }
+
+    /// <summary>Checkout the race just created under a Race Group.</summary>
+    public async Task CheckoutSelectedNewEventAsync()
+    {
+        if (SelectedSession is null || string.IsNullOrWhiteSpace(SelectedSession.Path))
+        {
+            Alert("Checkout", "Create a race in this group first.");
+            return;
+        }
+
+        if (HasActive)
+        {
+            Alert("Already checked out", "Finish the current race before checking out another.");
+            return;
+        }
+
+        _sessionPackPulled = true;
+        _checkoutRole = CheckoutRole.Timing;
+        OnPropertyChanged(nameof(IsTimingRole));
+        OnPropertyChanged(nameof(IsAnnouncerRole));
+
+        var missingEvent = EventFileSelector.ListEventFiles(SelectedSession.Path).Count == 0;
+        if (missingEvent)
+        {
+            var activePath = _paths.GetActivePath(
+                _settings, SelectedSession.Office, SelectedSession.RelativePath);
+            var suggested = VendorLauncher.SuggestEventFileNameFromRaceName(SelectedSession.SessionName);
+            if (!TimerDialog.ConfirmSaveAsGuide(
+                    OwnerWindow,
+                    "No T&S .event yet",
+                    VendorLauncher.FormatSaveAsFolderGuide(activePath, suggested)))
+            {
+                Status = "Checkout cancelled — you can still add another race under the Race Group.";
+                return;
+            }
+        }
+
+        await CheckoutAsync().ConfigureAwait(true);
+    }
+
+    /// <summary>
+    /// True when the session has more than an empty RUNSCORE placeholder (Graph probe-only).
+    /// Blank Entries.ini alone does not count — Build can invent that after copying nothing.
+    /// </summary>
+    private static bool SessionPackLooksUsable(string sessionPath)
+    {
+        if (string.IsNullOrWhiteSpace(sessionPath) || !Directory.Exists(sessionPath))
+            return false;
+
+        if (EventFileSelector.ListEventFiles(sessionPath).Count > 0)
+            return true;
+
+        var runScore = Path.Combine(sessionPath, PathService.RunScoreFolderName);
+        if (!Directory.Exists(runScore))
+            return false;
+
+        try
+        {
+            foreach (var file in Directory.EnumerateFiles(runScore, "*", SearchOption.AllDirectories))
+            {
+                var name = Path.GetFileName(file);
+                if (name.Equals("Entries.ini", StringComparison.OrdinalIgnoreCase))
+                {
+                    try
+                    {
+                        if (new FileInfo(file).Length > 32)
+                            return true;
+                    }
+                    catch
+                    {
+                        // treat as empty
+                    }
+
+                    continue;
+                }
+
+                return true;
+            }
+        }
+        catch
+        {
+            return false;
+        }
+
+        return false;
     }
 
     private async Task CheckoutAfterNewEventAsync(EventBuildResult build)
@@ -2024,6 +3793,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         Offices.Clear();
         foreach (var office in _scanner.ListOffices(_settings.LibraryRoot))
             Offices.Add(office.Name);
+        ApplyRaceDayListFilter();
     }
 
     private void LoadSessions(string office)
@@ -2031,14 +3801,53 @@ public sealed class MainViewModel : INotifyPropertyChanged
         Sessions.Clear();
         foreach (var session in _scanner.ListSessions(_settings.LibraryRoot, office))
         {
-            if (IsAnnouncerRole && string.IsNullOrWhiteSpace(session.AnnouncerEventFile))
+            EnrichWithSecondaries(session);
+            if (IsAnnouncerRole && session.SecondaryEventFiles.Count == 0)
                 continue;
             Sessions.Add(session);
         }
+        ApplyRaceDayListFilter();
         OnPropertyChanged(nameof(HasSessions));
         OnPropertyChanged(nameof(ShowEmptySessions));
         OnPropertyChanged(nameof(EmptySessionsTitle));
         OnPropertyChanged(nameof(EmptySessionsBody));
+    }
+
+    private void ApplyRaceDayListFilter()
+    {
+        var q = _raceDayListFilter.Trim();
+
+        VisibleOffices.Clear();
+        foreach (var name in Offices)
+        {
+            if (q.Length == 0 || name.Contains(q, StringComparison.OrdinalIgnoreCase))
+                VisibleOffices.Add(name);
+        }
+
+        VisibleSessions.Clear();
+        foreach (var entry in Sessions)
+        {
+            if (q.Length == 0
+                || entry.DisplayName.Contains(q, StringComparison.OrdinalIgnoreCase)
+                || entry.SessionName.Contains(q, StringComparison.OrdinalIgnoreCase)
+                || (entry.ParentEvent?.Contains(q, StringComparison.OrdinalIgnoreCase) ?? false)
+                || (entry.PrimaryEventFile?.Contains(q, StringComparison.OrdinalIgnoreCase) ?? false)
+                || (entry.SecondaryEventSummary?.Contains(q, StringComparison.OrdinalIgnoreCase) ?? false))
+                VisibleSessions.Add(entry);
+        }
+    }
+
+    private void ClearRaceDayListFilter()
+    {
+        if (_raceDayListFilter.Length == 0)
+        {
+            ApplyRaceDayListFilter();
+            return;
+        }
+
+        _raceDayListFilter = string.Empty;
+        OnPropertyChanged(nameof(RaceDayListFilter));
+        ApplyRaceDayListFilter();
     }
 
     /// <summary>Clear this-run Graph cache for the current office / Past Races folder and reload.</summary>
@@ -2050,14 +3859,16 @@ public sealed class MainViewModel : INotifyPropertyChanged
         if (IsPastRacesBrowse)
         {
             _graphIndexedOffices.Remove(PastRacesIndexKey);
-            _graphIndexedOffices.Remove(RolesCacheKey(PastRacesIndexKey));
+            _graphIndexedOffices.Remove(EventNamesCacheKey(PastRacesIndexKey));
+            _probedEventNames.Clear();
             await RefreshPastRacesLevelAsync(force: true).ConfigureAwait(true);
             await PreparePastRacesListAsync().ConfigureAwait(true);
             return;
         }
 
         _graphIndexedOffices.Remove(SelectedOffice);
-        _graphIndexedOffices.Remove(RolesCacheKey(SelectedOffice));
+        _graphIndexedOffices.Remove(EventNamesCacheKey(SelectedOffice));
+        _probedEventNames.Clear();
         await SelectOfficeAsync(SelectedOffice);
     }
 

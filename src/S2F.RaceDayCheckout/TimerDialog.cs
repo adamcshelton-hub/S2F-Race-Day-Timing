@@ -240,21 +240,21 @@ public static class TimerDialog
         Button? stay = null;
         Button? discard = null;
 
-        save = MakeButton("Save & close", "SaveButton", () =>
+        save = MakeButton("Save & Close", "SaveButton", () =>
         {
             result = TimerCloseChoice.SaveAndClose;
             window.DialogResult = true;
         });
-        stay = MakeButton("Keep working", "SecondaryButton", () =>
+        stay = MakeButton("Keep Working", "SecondaryButton", () =>
         {
             result = TimerCloseChoice.KeepWorking;
             window.DialogResult = false;
         });
-        discard = MakeButton("Close without saving", "DangerButton", () =>
+        discard = MakeButton("Close Without Saving", "DangerButton", () =>
         {
             if (!Confirm(window, "Are you sure?",
                     "Close without saving?\n\nOnly do this if setup staff told you to.",
-                    yesLabel: "Close without saving",
+                    yesLabel: "Close Without Saving",
                     noLabel: "Go back"))
                 return;
             result = TimerCloseChoice.CloseWithoutSaving;
@@ -274,6 +274,214 @@ public static class TimerDialog
     }
 
     /// <summary>
+    /// Soft warning when Active has no .event yet. Returns true to Finish anyway,
+    /// false to stay on Active (Continue Edit).
+    /// </summary>
+    public static bool ConfirmFinishWithoutTimingFile(Window? owner, string activePath)
+    {
+        var finishAnyway = false;
+        var window = CreateChromeLess(owner);
+        var stack = new StackPanel();
+
+        stack.Children.Add(new TextBlock
+        {
+            Text = "No Timing File Yet",
+            FontSize = 26,
+            FontWeight = FontWeights.Bold,
+            TextAlignment = TextAlignment.Center,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 0, 0, 14)
+        });
+
+        stack.Children.Add(new TextBlock
+        {
+            Text =
+                "No Timing & Scoring .event is in the Active folder yet (see T&S Save As Location under Finish). "
+                + "You can Continue Edit and Save As now, or Finish without it and add the file later.",
+            FontSize = 15,
+            Foreground = Brush("MutedBrush"),
+            TextAlignment = TextAlignment.Center,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 0, 0, 10)
+        });
+
+        stack.Children.Add(new TextBlock
+        {
+            Text = activePath,
+            FontFamily = new FontFamily("Consolas, Cascadia Mono, Courier New"),
+            FontSize = 12,
+            Foreground = Brush("MutedBrush"),
+            TextAlignment = TextAlignment.Center,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 0, 0, 14)
+        });
+
+        stack.Children.Add(new TextBlock
+        {
+            Text =
+                "Announcer / video files: Save As additional .event files into this same Active folder. "
+                + "On Finish you will mark the main timing file; other .event files are offered on Announcer T&S Laptop. "
+                + "You can also add them later under Admin → Edit Current Event.",
+            FontSize = 13,
+            Foreground = Brush("MutedBrush"),
+            TextAlignment = TextAlignment.Center,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 0, 0, 8)
+        });
+
+        var finish = MakeButton("Finish", "PrimaryButton", () =>
+        {
+            finishAnyway = true;
+            window.DialogResult = true;
+        });
+        finish.Margin = new Thickness(0, 12, 0, 0);
+        stack.Children.Add(finish);
+
+        var stay = MakeButton("Continue Edit", "SecondaryButton", () =>
+        {
+            finishAnyway = false;
+            window.DialogResult = false;
+        });
+        stay.Margin = new Thickness(0, 10, 0, 0);
+        stack.Children.Add(stay);
+
+        var card = new Border
+        {
+            Background = Brush("CardBrush"),
+            CornerRadius = new CornerRadius(12),
+            BorderBrush = Brush("AccentBrush"),
+            BorderThickness = new Thickness(3),
+            Padding = new Thickness(36, 32, 36, 32),
+            MinWidth = 480,
+            MaxWidth = 640,
+            Effect = new DropShadowEffect
+            {
+                BlurRadius = 24,
+                Opacity = 0.35,
+                ShadowDepth = 0,
+                Color = Colors.Black
+            },
+            Child = stack
+        };
+        window.Content = DimmedHost(card);
+        window.ShowDialog();
+        return finishAnyway;
+    }
+
+    /// <summary>
+    /// Finish step when .event files exist but primary is unset: pick the main timing file.
+    /// Returns null if cancelled (Finish still proceeds without assignment).
+    /// </summary>
+    public static string? PickPrimaryEventFile(
+        Window? owner,
+        string activePath,
+        IReadOnlyList<string> eventFiles,
+        string? suggestedFileName)
+    {
+        if (eventFiles.Count == 0)
+            return null;
+
+        string? picked = null;
+        var window = CreateChromeLess(owner);
+        var stack = new StackPanel();
+
+        stack.Children.Add(new TextBlock
+        {
+            Text = "Confirm Main Timing .event",
+            FontSize = 26,
+            FontWeight = FontWeights.Bold,
+            TextAlignment = TextAlignment.Center,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 0, 0, 14)
+        });
+
+        stack.Children.Add(new TextBlock
+        {
+            Text = "These Timing & Scoring files are in the Active folder. Choose which one is the main timing .event for this race.",
+            FontSize = 15,
+            Foreground = Brush("MutedBrush"),
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 0, 0, 10)
+        });
+
+        stack.Children.Add(new TextBlock
+        {
+            Text = activePath,
+            FontFamily = new FontFamily("Consolas, Cascadia Mono, Courier New"),
+            FontSize = 12,
+            Foreground = Brush("MutedBrush"),
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 0, 0, 14)
+        });
+
+        var combo = new ComboBox
+        {
+            ItemsSource = eventFiles,
+            SelectedItem = suggestedFileName is not null
+                           && eventFiles.Any(f => string.Equals(f, suggestedFileName, StringComparison.OrdinalIgnoreCase))
+                ? eventFiles.First(f => string.Equals(f, suggestedFileName, StringComparison.OrdinalIgnoreCase))
+                : eventFiles[0],
+            Padding = new Thickness(8, 6, 8, 6),
+            MinHeight = 36,
+            Margin = new Thickness(0, 0, 0, 14),
+            FontSize = 15
+        };
+        stack.Children.Add(combo);
+
+        stack.Children.Add(new TextBlock
+        {
+            Text =
+                "Announcer / video .event files: Save As extra .event files into this same Active folder in Timing & Scoring (before Finish). "
+                + "Anything that is not the main timing file is offered on Announcer T&S Laptop. "
+                + "You can also add them later, then mark main timing under Admin → Edit Current Event.",
+            FontSize = 13,
+            Foreground = Brush("MutedBrush"),
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 0, 0, 8)
+        });
+
+        var confirm = MakeButton("Confirm & Finish", "SaveButton", () =>
+        {
+            picked = combo.SelectedItem as string;
+            if (string.IsNullOrWhiteSpace(picked))
+                return;
+            window.DialogResult = true;
+        });
+        confirm.Margin = new Thickness(0, 12, 0, 0);
+        stack.Children.Add(confirm);
+
+        var cancel = MakeButton("Cancel", "SecondaryButton", () =>
+        {
+            picked = null;
+            window.DialogResult = false;
+        });
+        cancel.Margin = new Thickness(0, 10, 0, 0);
+        stack.Children.Add(cancel);
+
+        var card = new Border
+        {
+            Background = Brush("CardBrush"),
+            CornerRadius = new CornerRadius(12),
+            BorderBrush = Brush("AccentBrush"),
+            BorderThickness = new Thickness(3),
+            Padding = new Thickness(36, 32, 36, 32),
+            MinWidth = 480,
+            MaxWidth = 640,
+            Effect = new DropShadowEffect
+            {
+                BlurRadius = 24,
+                Opacity = 0.35,
+                ShadowDepth = 0,
+                Color = Colors.Black
+            },
+            Child = stack
+        };
+        window.Content = DimmedHost(card);
+        window.ShowDialog();
+        return string.IsNullOrWhiteSpace(picked) ? null : picked;
+    }
+
+    /// <summary>
     /// Announcer close: no Finish/upload. Leave Active so Timing &amp; Scoring keeps its files,
     /// or Done to clear this laptop only.
     /// </summary>
@@ -287,12 +495,12 @@ public static class TimerDialog
             result = TimerCloseChoice.DoneLocalOnly;
             window.DialogResult = true;
         });
-        var stay = MakeButton("Keep working", "SecondaryButton", () =>
+        var stay = MakeButton("Keep Working", "SecondaryButton", () =>
         {
             result = TimerCloseChoice.KeepWorking;
             window.DialogResult = false;
         });
-        var leave = MakeButton("Close app", "SecondaryButton", () =>
+        var leave = MakeButton("Close App", "SecondaryButton", () =>
         {
             result = TimerCloseChoice.CloseWithoutSaving;
             window.DialogResult = true;

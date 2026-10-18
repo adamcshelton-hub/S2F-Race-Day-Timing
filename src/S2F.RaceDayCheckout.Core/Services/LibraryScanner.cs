@@ -23,7 +23,7 @@ public sealed class LibraryScanner
             .Where(d => _paths.IsAllowedOfficeFolder(d.Name))
             .ToDictionary(d => d.Name, d => d, StringComparer.OrdinalIgnoreCase);
 
-        // Keep the canonical office order (Atlanta → … → Test Office), skip missing folders.
+        // Keep canonical order (live offices, then Past Races, then Test Office).
         return PathService.AllowedOfficeFolders
             .Where(name => found.ContainsKey(name))
             .Select(name =>
@@ -56,7 +56,7 @@ public sealed class LibraryScanner
 
         return results
             .OrderBy(e => e.Office, StringComparer.OrdinalIgnoreCase)
-            .ThenByDescending(e => e.ParentEvent, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(e => e.ParentEvent, StringComparer.OrdinalIgnoreCase)
             .ThenBy(e => e.SessionName, StringComparer.OrdinalIgnoreCase)
             .ToList();
     }
@@ -107,10 +107,18 @@ public sealed class LibraryScanner
             });
         }
 
+        // Year folders (2026, 2025, …) newest first; everything else A→Z.
         return results
-            .OrderByDescending(e => e.SessionName, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(e => LooksLikeYearFolder(e.SessionName) ? 0 : 1)
+            .ThenByDescending(e => LooksLikeYearFolder(e.SessionName) ? e.SessionName : "", StringComparer.OrdinalIgnoreCase)
+            .ThenBy(e => e.SessionName, StringComparer.OrdinalIgnoreCase)
             .ToList();
     }
+
+    private static bool LooksLikeYearFolder(string? name) =>
+        name is { Length: 4 }
+        && name[0] is >= '1' and <= '9'
+        && char.IsDigit(name[1]) && char.IsDigit(name[2]) && char.IsDigit(name[3]);
 
     /// <summary>Immediate child directories, skipping RUNSCORE / DB's / Pre-Race / ._ / _autosave.</summary>
     public static IReadOnlyList<string> ListImmediateChildFolders(string folderPath)
@@ -128,7 +136,7 @@ public sealed class LibraryScanner
                        && !name.StartsWith("._", StringComparison.Ordinal)
                        && !string.Equals(name, PathService.AutosaveFolderName, StringComparison.OrdinalIgnoreCase);
             })
-            .OrderByDescending(d => Path.GetFileName(d), StringComparer.OrdinalIgnoreCase)
+            .OrderBy(d => Path.GetFileName(d), StringComparer.OrdinalIgnoreCase)
             .ToList();
     }
 

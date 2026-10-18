@@ -35,12 +35,47 @@ public class EventBuilderServiceTests
             Assert.True(Directory.Exists(result.SessionPath));
             Assert.True(File.Exists(Path.Combine(result.SessionPath!, "RUNSCORE", "ENTRIES.FRM")));
             Assert.True(File.Exists(Path.Combine(result.SessionPath!, "Sample.event")));
+            // Template had empty DB's — seed file so OneDrive/Graph keep the folder.
+            Assert.True(File.Exists(Path.Combine(result.SessionPath!, "DB's", "Exports land here.txt")));
 
             var fields = EntriesIniService.Read(result.EntriesIniPath!);
             Assert.Equal("Le Bonheur Pumpkin Run", fields.RaceName);
             Assert.Equal("10/17/2026", fields.RaceDate);
             Assert.Equal("xxu6s5mps2mhjpnh", fields.ResultsId);
             Assert.Contains("[control]", File.ReadAllText(result.EntriesIniPath!), StringComparison.Ordinal);
+        }
+        finally
+        {
+            try { Directory.Delete(root, true); } catch { /* ignore */ }
+        }
+    }
+
+    [Fact]
+    public async Task BuildAsync_KeepsExistingDbsExports_WithoutSeed()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "s2f-dbs-" + Guid.NewGuid().ToString("N"));
+        var template = Path.Combine(root, "Templates", "NEW RACE Chip Start");
+        Directory.CreateDirectory(Path.Combine(template, "RUNSCORE"));
+        Directory.CreateDirectory(Path.Combine(template, "DB's"));
+        File.WriteAllText(Path.Combine(template, "RUNSCORE", "Entries.ini"), "race name................\n");
+        File.WriteAllText(Path.Combine(template, "RUNSCORE", "ENTRIES.FRM"), "frm");
+        File.WriteAllText(Path.Combine(template, "DB's", "template backupsave.csv"), "csv");
+
+        try
+        {
+            var result = await new EventBuilderService().BuildAsync(new EventBuildRequest
+            {
+                LibraryRoot = root,
+                Office = "Test Office",
+                SourceSessionPath = template,
+                RaceName = "With Exports",
+                RaceDate = "10/18/2026",
+                ResultsId = ""
+            });
+
+            Assert.True(result.Success, result.Message);
+            Assert.True(File.Exists(Path.Combine(result.SessionPath!, "DB's", "template backupsave.csv")));
+            Assert.False(File.Exists(Path.Combine(result.SessionPath!, "DB's", "Exports land here.txt")));
         }
         finally
         {
@@ -76,6 +111,44 @@ public class EventBuilderServiceTests
             Assert.Contains("Active", result.Message, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("Adam Test Duplicate.event", result.Message, StringComparison.OrdinalIgnoreCase);
             Assert.Equal("Test Office", result.Office);
+            Assert.True(Directory.Exists(Path.Combine(result.SessionPath!, "DB's")));
+            Assert.True(File.Exists(Path.Combine(result.SessionPath!, "DB's", "Exports land here.txt")));
+        }
+        finally
+        {
+            try { Directory.Delete(root, true); } catch { /* ignore */ }
+        }
+    }
+
+    [Fact]
+    public async Task BuildAsync_RaceGroup_CreatesLeafUnderParent()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "s2f-group-" + Guid.NewGuid().ToString("N"));
+        var template = Path.Combine(root, "Templates", "NEW RACE Chip Start");
+        Directory.CreateDirectory(Path.Combine(template, "RUNSCORE"));
+        File.WriteAllText(Path.Combine(template, "RUNSCORE", "Entries.ini"), "race name................\n");
+        File.WriteAllText(Path.Combine(template, "RUNSCORE", "ENTRIES.FRM"), "frm");
+
+        try
+        {
+            var result = await new EventBuilderService().BuildAsync(new EventBuildRequest
+            {
+                LibraryRoot = root,
+                Office = "Test Office",
+                SourceSessionPath = template,
+                RaceName = "Sunday AM",
+                RaceDate = "10/18/2026",
+                ResultsId = "abc",
+                ParentFolderName = "2026 - LRM Weekend"
+            });
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal("Sunday AM", result.SessionFolderName);
+            Assert.Equal("2026 - LRM Weekend", result.ParentFolderName);
+            Assert.Equal(Path.Combine("2026 - LRM Weekend", "Sunday AM"), result.RelativePath);
+            Assert.True(Directory.Exists(Path.Combine(root, "Test Office", "2026 - LRM Weekend", "Sunday AM", "RUNSCORE")));
+            Assert.True(File.Exists(Path.Combine(
+                root, "Test Office", "2026 - LRM Weekend", "Sunday AM", "DB's", "Exports land here.txt")));
         }
         finally
         {
