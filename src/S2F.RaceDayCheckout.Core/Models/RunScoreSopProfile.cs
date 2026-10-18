@@ -12,7 +12,8 @@ public sealed class RunScoreSopProfile
     public const string ExternalEditorName = "External Editor";
 
     /// <summary>
-    /// Default 64-bit Notepad++ install. The app setup writes this file when it is missing.
+    /// Notepad++ install path. x64 and ARM64 official setups both use this file.
+    /// The app installs the build that matches the PC (ARM64 on Parallels).
     /// Same path on every machine that used the official installer and left the default folder.
     /// </summary>
     public const string NotepadPlusPlusExePath = @"C:\Program Files\Notepad++\notepad++.exe";

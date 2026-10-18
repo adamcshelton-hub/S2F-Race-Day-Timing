@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Threading;
 using S2F.RaceDayCheckout.Core.Models;
@@ -10,13 +11,12 @@ namespace S2F.RaceDayCheckout.Services;
 
 /// <summary>
 /// Installs the official Notepad++ setup to <see cref="RunScoreSopProfile.NotepadPlusPlusExePath"/>
-/// when that file is missing. The installer is shipped beside the app as <c>redist/npp-setup.bin</c>
-/// (not an .exe, so Velopack code-signing does not rewrite the Notepad++ signature).
+/// when that file is missing or is the wrong CPU build. Installers ship as
+/// <c>redist/npp-setup-x64.bin</c> and <c>redist/npp-setup-arm64.bin</c>
+/// (not .exe, so Velopack code-signing does not rewrite the Notepad++ signature).
 /// </summary>
 public static class NotepadPlusPlusSetup
 {
-    public const string BundledInstallerFileName = "npp-setup.bin";
-
     /// <summary>
     /// Silent install. <c>/D=</c> must be last and unquoted — it forces Program Files even when
     /// an older Notepad++ registration points somewhere else. Do not pass
@@ -29,19 +29,55 @@ public static class NotepadPlusPlusSetup
         if (!OperatingSystem.IsWindows())
             return;
 
-        // Already installed — pin RunScore External Editor and keep it after Finish / app close.
-        if (File.Exists(RunScoreSopProfile.NotepadPlusPlusExePath))
+        // Match the PC, not this process. x64 Race Day on ARM Windows (Parallels) must
+        // still install ARM64 Notepad++. An existing x64 copy is replaced.
+        var os = RuntimeInformation.OSArchitecture;
+        var exePath = RunScoreSopProfile.NotepadPlusPlusExePath;
+        ushort? installed = null;
+        if (File.Exists(exePath))
         {
-            PinExternalEditor();
+            try
+            {
+                installed = NotepadPlusPlusArchitecture.ReadPeMachine(exePath);
+            }
+            catch
+            {
+                installed = null;
+            }
+
+            if (NotepadPlusPlusArchitecture.InstalledBuildMatches(installed, os))
+            {
+                PinExternalEditor();
+                return;
+            }
+        }
+
+        var bundled = FindBundledInstaller(os);
+        if (bundled is null)
+        {
+            if (installed is not null)
+            {
+                TimerDialog.Alert(
+                    owner,
+                    "Notepad++",
+                    "Notepad++ is the wrong build for this PC ("
+                    + ArchitectureLabel(installed.Value)
+                    + "). This PC needs the "
+                    + ArchitectureLabel(NotepadPlusPlusArchitecture.DesiredMachine(os))
+                    + " build.\n\n"
+                    + exePath);
+            }
+
             return;
         }
 
-        var bundled = FindBundledInstaller();
-        if (bundled is null)
-            return;
-
-        vm.BusyTitle = "Installing Notepad++";
-        vm.ProgressText = "Windows will ask for administrator permission. This happens once.";
+        var replacing = installed is not null;
+        vm.BusyTitle = replacing ? "Updating Notepad++" : "Installing Notepad++";
+        vm.ProgressText = replacing
+            ? "Replacing the " + ArchitectureLabel(installed!.Value) + " build with "
+              + ArchitectureLabel(NotepadPlusPlusArchitecture.DesiredMachine(os))
+              + ". Windows will ask for administrator permission."
+            : "Windows will ask for administrator permission. This happens once.";
         vm.Busy = true;
         try
         {
@@ -77,9 +113,13 @@ public static class NotepadPlusPlusSetup
         }
     }
 
-    internal static string? FindBundledInstaller()
+    private static string ArchitectureLabel(ushort machine) =>
+        machine == NotepadPlusPlusArchitecture.MachineArm64 ? "ARM64" : "x64";
+
+    internal static string? FindBundledInstaller(Architecture osArchitecture)
     {
-        foreach (var path in CandidateInstallerPaths())
+        var fileName = NotepadPlusPlusArchitecture.BundledInstallerFileName(osArchitecture);
+        foreach (var path in CandidateInstallerPaths(fileName))
         {
             if (File.Exists(path))
                 return path;
@@ -88,9 +128,9 @@ public static class NotepadPlusPlusSetup
         return null;
     }
 
-    internal static IEnumerable<string> CandidateInstallerPaths()
+    internal static IEnumerable<string> CandidateInstallerPaths(string fileName)
     {
-        var relative = Path.Combine("redist", BundledInstallerFileName);
+        var relative = Path.Combine("redist", fileName);
         var processDir = Path.GetDirectoryName(Environment.ProcessPath);
         if (!string.IsNullOrEmpty(processDir))
             yield return Path.Combine(processDir, relative);

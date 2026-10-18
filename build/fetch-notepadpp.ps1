@@ -1,5 +1,5 @@
-# Downloads the unmodified official Notepad++ installer for the Velopack pack.
-# The file is stored as npp-setup.bin so packaging code-sign does not rewrite it.
+# Downloads the unmodified official Notepad++ installers for the Velopack pack.
+# Stored as npp-setup-x64.bin and npp-setup-arm64.bin so packaging code-sign does not rewrite them.
 param(
     [string]$Rid,
     [string]$Destination,
@@ -23,27 +23,36 @@ $Installers = @{
 }
 
 if ($Destination) {
-    if (-not $Installers.ContainsKey($Rid)) { throw "-Rid must be win-x64 or win-arm64." }
-    $spec = $Installers[$Rid]
+    # Both builds ship in every package. An x64 app still runs on ARM Windows (Parallels)
+    # and must install ARM64 Notepad++, not the x64 editor bundled for timing laptops.
+    if ($Rid -and -not $Installers.ContainsKey($Rid)) { throw "-Rid must be win-x64 or win-arm64." }
     New-Item -ItemType Directory -Force -Path $Destination | Out-Null
-    $bin = Join-Path $Destination "npp-setup.bin"
-    $url = "$Base/$($spec.Name)"
-    Write-Host "Downloading $url"
-    Invoke-WebRequest -Uri $url -OutFile $bin
-    Unblock-File -Path $bin
-    $actual = (Get-FileHash -Path $bin -Algorithm SHA256).Hash.ToUpperInvariant()
-    if ($actual -ne $spec.Sha256) {
-        Remove-Item -Force $bin
-        throw "Notepad++ installer hash mismatch for $($spec.Name). Expected $($spec.Sha256), got $actual."
+    $fileNames = @{
+        "win-x64" = "npp-setup-x64.bin"
+        "win-arm64" = "npp-setup-arm64.bin"
+    }
+    foreach ($key in $fileNames.Keys) {
+        $spec = $Installers[$key]
+        $bin = Join-Path $Destination $fileNames[$key]
+        $url = "$Base/$($spec.Name)"
+        Write-Host "Downloading $url"
+        Invoke-WebRequest -Uri $url -OutFile $bin
+        Unblock-File -Path $bin
+        $actual = (Get-FileHash -Path $bin -Algorithm SHA256).Hash.ToUpperInvariant()
+        if ($actual -ne $spec.Sha256) {
+            Remove-Item -Force $bin
+            throw "Notepad++ installer hash mismatch for $($spec.Name). Expected $($spec.Sha256), got $actual."
+        }
+        Write-Host "Verified $($spec.Name) -> $bin"
     }
     $notice = @"
 Notepad++ $Version
-This folder contains the unmodified official Notepad++ installer (npp-setup.bin).
+This folder contains the unmodified official Notepad++ installers
+(npp-setup-x64.bin and npp-setup-arm64.bin).
 License: GNU GPL version 3. https://www.gnu.org/licenses/gpl-3.0.html
 Corresponding source: https://github.com/notepad-plus-plus/notepad-plus-plus/archive/refs/tags/$Tag.zip
 "@
     Set-Content -Path (Join-Path $Destination "notepad++-source.txt") -Value $notice -Encoding utf8
-    Write-Host "Verified $($spec.Name) -> $bin"
 }
 
 if ($SourceZip) {
