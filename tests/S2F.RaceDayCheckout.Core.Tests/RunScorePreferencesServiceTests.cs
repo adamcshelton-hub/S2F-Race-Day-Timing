@@ -79,7 +79,8 @@ public class RunScorePreferencesServiceTests
                 RunScorePreferencesService.WithTrailingSeparator(raceBackup),
                 store.TryGetString(RunScorePreferencesService.SaveEntriesDir));
 
-            var restore = svc.RestoreNativePrefs();
+            // No Notepad++ on this host — restore office alt folders only (do not pin External Editor).
+            var restore = svc.RestoreNativePrefs(fileExists: _ => false);
             Assert.True(restore.Success);
             Assert.Equal(@"C:\Office\Entries\", store.TryGetString(RunScorePreferencesService.SaveEntriesDir));
             Assert.Equal(@"C:\Office\Results\", store.TryGetString(RunScorePreferencesService.SaveResultsDir));
@@ -87,6 +88,80 @@ public class RunScorePreferencesServiceTests
         }
         finally
         {
+            Cleanup(sopPath, nativePath, backup, raceBackup, raceDay);
+        }
+    }
+
+    [Fact]
+    public void EnsureNotepadPlusPlusExternalEditor_WritesWhenExeExists()
+    {
+        var (svc, store, sopPath, backup, nativePath) = CreateSvc();
+        var fakeNpp = Path.Combine(Path.GetTempPath(), "s2f-npp-" + Guid.NewGuid().ToString("N") + ".exe");
+        try
+        {
+            File.WriteAllText(fakeNpp, "fake");
+            store.SetString(RunScoreSopProfile.ExternalEditorName, string.Empty);
+
+            var result = svc.EnsureNotepadPlusPlusExternalEditor(fakeNpp, File.Exists);
+            Assert.True(result.Success);
+            Assert.Equal(1, result.UpdatedCount);
+            Assert.Equal(fakeNpp, store.TryGetString(RunScoreSopProfile.ExternalEditorName));
+        }
+        finally
+        {
+            try { File.Delete(fakeNpp); } catch { }
+            Cleanup(sopPath, nativePath, backup);
+        }
+    }
+
+    [Fact]
+    public void EnsureNotepadPlusPlusExternalEditor_NoOpWhenMissing()
+    {
+        var (svc, store, sopPath, backup, nativePath) = CreateSvc();
+        try
+        {
+            store.SetString(RunScoreSopProfile.ExternalEditorName, string.Empty);
+            var result = svc.EnsureNotepadPlusPlusExternalEditor(
+                @"C:\Program Files\Notepad++\notepad++.exe",
+                _ => false);
+            Assert.True(result.Success);
+            Assert.Equal(0, result.UpdatedCount);
+            Assert.Equal(string.Empty, store.TryGetString(RunScoreSopProfile.ExternalEditorName));
+        }
+        finally
+        {
+            Cleanup(sopPath, nativePath, backup);
+        }
+    }
+
+    [Fact]
+    public void ApplySop_ThenRestore_KeepsNotepadPlusPlusExternalEditor()
+    {
+        var (svc, store, sopPath, backup, nativePath) = CreateSvc();
+        var raceDay = Path.Combine(Path.GetTempPath(), "s2f-rd-" + Guid.NewGuid().ToString("N"));
+        var raceBackup = Path.Combine(raceDay, PathService.BackupFolderName, "Memphis", "Event");
+        var fakeNpp = Path.Combine(Path.GetTempPath(), "s2f-npp-" + Guid.NewGuid().ToString("N") + ".exe");
+        try
+        {
+            File.WriteAllText(fakeNpp, "fake");
+            // Pre-race office: blank External Editor (Windows Notepad).
+            store.SetString(RunScoreSopProfile.ExternalEditorName, string.Empty);
+            store.SetString(RunScorePreferencesService.SaveEntriesDir, @"C:\Office\Entries\");
+            store.SetString(RunScorePreferencesService.SaveResultsDir, @"C:\Office\Results\");
+
+            Assert.True(svc.ApplySop(raceBackup, raceDay).Success);
+            Assert.Equal(
+                RunScoreSopProfile.NotepadPlusPlusExePath,
+                store.TryGetString(RunScoreSopProfile.ExternalEditorName));
+
+            var restore = svc.RestoreNativePrefs(fakeNpp, File.Exists);
+            Assert.True(restore.Success);
+            Assert.Equal(@"C:\Office\Entries\", store.TryGetString(RunScorePreferencesService.SaveEntriesDir));
+            Assert.Equal(fakeNpp, store.TryGetString(RunScoreSopProfile.ExternalEditorName));
+        }
+        finally
+        {
+            try { File.Delete(fakeNpp); } catch { }
             Cleanup(sopPath, nativePath, backup, raceBackup, raceDay);
         }
     }
@@ -106,7 +181,7 @@ public class RunScorePreferencesServiceTests
             Assert.True(svc.ApplySop(race1, raceDay).Success);
             Assert.True(svc.ApplySop(race2, raceDay).Success); // still race paths — must not snapshot
 
-            Assert.True(svc.RestoreNativePrefs().Success);
+            Assert.True(svc.RestoreNativePrefs(fileExists: _ => false).Success);
             Assert.Equal(@"D:\Native\", store.TryGetString(RunScorePreferencesService.SaveEntriesDir));
         }
         finally

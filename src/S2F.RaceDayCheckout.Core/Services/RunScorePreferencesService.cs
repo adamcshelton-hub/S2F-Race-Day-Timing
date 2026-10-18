@@ -23,6 +23,10 @@ public sealed class PreferenceApplyResult
 /// snapshot non-race alternate folders; <see cref="RestoreNativePrefs"/> puts them back on Finish
 /// so a native (non-app) RSServer launch does not keep the race Backup paths.
 /// </para>
+/// <para>
+/// External Editor → Notepad++ is machine policy when that exe exists: set on app start / install,
+/// re-applied after <see cref="RestoreNativePrefs"/> so Finish does not revert to Windows Notepad.
+/// </para>
 /// </summary>
 public sealed class RunScorePreferencesService
 {
@@ -186,8 +190,13 @@ public sealed class RunScorePreferencesService
     /// <summary>
     /// Restore office/native prefs captured before the last race-day SOP write.
     /// Call on Finish (and app start with no Active) so native RSServer does not keep race Backup paths.
+    /// When Notepad++ is installed, External Editor is pinned again afterward (not reverted to Notepad).
     /// </summary>
-    public PreferenceApplyResult RestoreNativePrefs()
+    /// <param name="notepadPlusPlusExePath">Override for tests; default Program Files path.</param>
+    /// <param name="fileExists">Override for tests; default <see cref="File.Exists(string)"/>.</param>
+    public PreferenceApplyResult RestoreNativePrefs(
+        string? notepadPlusPlusExePath = null,
+        Func<string, bool>? fileExists = null)
     {
         if (!_store.IsAvailable)
         {
@@ -201,10 +210,15 @@ public sealed class RunScorePreferencesService
         var snap = _nativeStore.Load();
         if (snap is null)
         {
+            var pinnedOnly = EnsureNotepadPlusPlusExternalEditor(notepadPlusPlusExePath, fileExists);
             return new PreferenceApplyResult
             {
                 Success = true,
-                Message = "No saved office RunScore prefs to restore."
+                UpdatedCount = pinnedOnly.UpdatedCount,
+                UpdatedNames = pinnedOnly.UpdatedNames,
+                Message = string.IsNullOrWhiteSpace(pinnedOnly.Message)
+                    ? "No saved office RunScore prefs to restore."
+                    : "No saved office RunScore prefs to restore. " + pinnedOnly.Message
             };
         }
 
@@ -229,6 +243,11 @@ public sealed class RunScorePreferencesService
 
             foreach (var (name, value) in snap.Strings)
             {
+                // Notepad++ External Editor is machine policy — don't restore a blank / Notepad snapshot.
+                if (IsExternalEditorName(name)
+                    && NotepadPlusPlusInstalled(notepadPlusPlusExePath, fileExists))
+                    continue;
+
                 var desired = value ?? string.Empty;
                 if (IsAlternateFolderPref(name))
                     desired = WithTrailingSeparator(desired);
@@ -250,15 +269,103 @@ public sealed class RunScorePreferencesService
             };
         }
 
+        var pin = EnsureNotepadPlusPlusExternalEditor(notepadPlusPlusExePath, fileExists);
+        if (pin.UpdatedCount > 0)
+        {
+            foreach (var name in pin.UpdatedNames)
+            {
+                if (!updated.Contains(name, StringComparer.OrdinalIgnoreCase))
+                    updated.Add(name);
+            }
+        }
+
+        var msg = updated.Count == 0
+            ? "Office RunScore prefs already restored."
+            : $"Restored {updated.Count} office RunScore preference(s) for native RSServer.";
+        if (!string.IsNullOrWhiteSpace(pin.Message) && pin.UpdatedCount > 0)
+            msg += " " + pin.Message;
+
         return new PreferenceApplyResult
         {
             Success = true,
             UpdatedCount = updated.Count,
             UpdatedNames = updated,
-            Message = updated.Count == 0
-                ? "Office RunScore prefs already restored."
-                : $"Restored {updated.Count} office RunScore preference(s) for native RSServer."
+            Message = msg
         };
+    }
+
+    /// <summary>
+    /// When Notepad++ is on disk at the SOP path, write RunScore External Editor to that path.
+    /// Survives Finish / app close. No-op if the exe is missing.
+    /// </summary>
+    public PreferenceApplyResult EnsureNotepadPlusPlusExternalEditor(
+        string? exePath = null,
+        Func<string, bool>? fileExists = null)
+    {
+        if (!_store.IsAvailable)
+        {
+            return new PreferenceApplyResult
+            {
+                Success = true,
+                Message = "External Editor pin skipped (not Windows)."
+            };
+        }
+
+        var path = string.IsNullOrWhiteSpace(exePath)
+            ? RunScoreSopProfile.NotepadPlusPlusExePath
+            : exePath.Trim();
+        var exists = fileExists ?? File.Exists;
+        if (!exists(path))
+        {
+            return new PreferenceApplyResult
+            {
+                Success = true,
+                Message = "Notepad++ not at expected path — External Editor unchanged."
+            };
+        }
+
+        try
+        {
+            var current = _store.TryGetString(RunScoreSopProfile.ExternalEditorName) ?? string.Empty;
+            if (string.Equals(NormalizePathish(current), NormalizePathish(path), StringComparison.OrdinalIgnoreCase))
+            {
+                return new PreferenceApplyResult
+                {
+                    Success = true,
+                    AlreadyMatchedCount = 1,
+                    Message = "RunScore External Editor already points at Notepad++."
+                };
+            }
+
+            _store.SetString(RunScoreSopProfile.ExternalEditorName, path);
+            return new PreferenceApplyResult
+            {
+                Success = true,
+                UpdatedCount = 1,
+                UpdatedNames = new[] { RunScoreSopProfile.ExternalEditorName },
+                Message = "RunScore External Editor set to Notepad++."
+            };
+        }
+        catch (Exception ex)
+        {
+            return new PreferenceApplyResult
+            {
+                Success = false,
+                Message = "Could not set RunScore External Editor: " + ex.Message
+            };
+        }
+    }
+
+    private static bool IsExternalEditorName(string name) =>
+        string.Equals(name, RunScoreSopProfile.ExternalEditorName, StringComparison.OrdinalIgnoreCase);
+
+    private static bool NotepadPlusPlusInstalled(string? exePath = null, Func<string, bool>? fileExists = null)
+    {
+        var path = string.IsNullOrWhiteSpace(exePath)
+            ? RunScoreSopProfile.NotepadPlusPlusExePath
+            : exePath.Trim();
+        var exists = fileExists ?? File.Exists;
+        return exists(path);
     }
 
     /// <summary>

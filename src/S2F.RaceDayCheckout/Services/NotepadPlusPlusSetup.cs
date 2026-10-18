@@ -3,6 +3,7 @@ using System.IO;
 using System.Windows;
 using System.Windows.Threading;
 using S2F.RaceDayCheckout.Core.Models;
+using S2F.RaceDayCheckout.Core.Services;
 using S2F.RaceDayCheckout.ViewModels;
 
 namespace S2F.RaceDayCheckout.Services;
@@ -27,8 +28,13 @@ public static class NotepadPlusPlusSetup
     {
         if (!OperatingSystem.IsWindows())
             return;
+
+        // Already installed — pin RunScore External Editor and keep it after Finish / app close.
         if (File.Exists(RunScoreSopProfile.NotepadPlusPlusExePath))
+        {
+            PinExternalEditor();
             return;
+        }
 
         var bundled = FindBundledInstaller();
         if (bundled is null)
@@ -48,11 +54,26 @@ public static class NotepadPlusPlusSetup
                     "Notepad++",
                     result.Message + "\n\nRunScore listing output expects:\n"
                     + RunScoreSopProfile.NotepadPlusPlusExePath);
+                return;
             }
+
+            PinExternalEditor();
         }
         finally
         {
             vm.Busy = false;
+        }
+    }
+
+    private static void PinExternalEditor()
+    {
+        try
+        {
+            new RunScorePreferencesService().EnsureNotepadPlusPlusExternalEditor();
+        }
+        catch
+        {
+            // Non-fatal — race-day ApplySop still writes External Editor while checked out.
         }
     }
 

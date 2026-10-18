@@ -102,6 +102,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
     /// <summary>PIN unlock expiry — setup staff stay in Admin across Finish without re-entering PIN.</summary>
     private DateTimeOffset? _adminUnlockedUntil;
     private static readonly TimeSpan AdminUnlockDuration = TimeSpan.FromHours(8);
+    /// <summary>
+    /// True when Active was checked out from Admin (Setup / Edit Launch T&amp;S). Finish returns to Admin
+    /// only then — not merely because the PIN is still unlocked from an earlier Admin visit.
+    /// </summary>
+    private bool _finishReturnsToAdmin;
     private string? _adminOffice;
     /// <summary>Under Admin → Edit Current Event → Past Races only (bucket / year). Separate from race-day browse.</summary>
     private string _adminPastRacesRelative = string.Empty;
@@ -956,6 +961,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
         Active = _checkout.GetActive();
         if (Active is not null)
         {
+            // Restart / same-machine reclaim — treat as race-day, not Admin setup checkout.
+            _finishReturnsToAdmin = false;
             Step = WizardStep.Active;
             Status = Active.Role == CheckoutRole.Announcer
                 ? "Announcer T&S files loaded — tap Done when you're finished."
@@ -1260,6 +1267,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
         if (SelectedSession is null)
             return;
 
+        _finishReturnsToAdmin = false;
+
         var assigned = SessionRoleStore.TryLoad(SelectedSession.Path)?.PrimaryEventFile;
         if (!string.IsNullOrWhiteSpace(assigned))
         {
@@ -1311,10 +1320,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
         if (IsAnnouncerRole)
         {
+            _finishReturnsToAdmin = false;
             _ = DownloadAndCheckoutAnnouncerAsync(SelectedEventFile!);
             return;
         }
 
+        _finishReturnsToAdmin = false;
         _ = CheckoutAsync();
     }
 
@@ -1565,7 +1576,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
             SelectedEventFile = null;
             LoadOffices();
 
-            var returnToAdmin = IsAdminUnlocked;
+            var returnToAdmin = _finishReturnsToAdmin;
+            _finishReturnsToAdmin = false;
             if (returnToAdmin)
             {
                 EnterAdminSetup("Finish complete — ready for the next setup.");
@@ -3157,6 +3169,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
             EventFiles.Clear();
             _sessionPackPulled = SessionPackLooksUsable(_adminSession.Path);
             _checkoutRole = CheckoutRole.Timing;
+            _finishReturnsToAdmin = true;
             OnPropertyChanged(nameof(IsTimingRole));
             OnPropertyChanged(nameof(IsAnnouncerRole));
             await CheckoutAsync().ConfigureAwait(true);
@@ -3686,6 +3699,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
         _sessionPackPulled = true;
         _checkoutRole = CheckoutRole.Timing;
+        _finishReturnsToAdmin = true;
         OnPropertyChanged(nameof(IsTimingRole));
         OnPropertyChanged(nameof(IsAnnouncerRole));
 
@@ -3700,6 +3714,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
                     "No T&S .event yet",
                     VendorLauncher.FormatSaveAsFolderGuide(activePath, suggested)))
             {
+                _finishReturnsToAdmin = false;
                 Status = "Checkout cancelled — you can still add another race under the Race Group.";
                 return;
             }
@@ -3783,6 +3798,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
 
         _checkoutRole = CheckoutRole.Timing;
+        _finishReturnsToAdmin = true;
         OnPropertyChanged(nameof(IsTimingRole));
         OnPropertyChanged(nameof(IsAnnouncerRole));
         await CheckoutAsync();
