@@ -21,6 +21,12 @@ public enum WizardStep
     Admin
 }
 
+public enum AdminSection
+{
+    Settings,
+    Events
+}
+
 public sealed class MainViewModel : INotifyPropertyChanged
 {
     private readonly SettingsStore _settingsStore = new();
@@ -55,6 +61,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
     /// <summary>True after SelectSession pulled this pack from Graph (Checkout skips second download).</summary>
     private bool _sessionPackPulled;
     private ActiveCheckout? _active;
+    private CheckoutRole _checkoutRole = CheckoutRole.Timing;
+    private AdminSection _adminSection = AdminSection.Settings;
+    private EventPackInfo? _adminSession;
+    private string? _selectedTimingFile;
+    private string? _selectedAnnouncerChoice;
     private bool _busy;
     private bool _busyNeedsAcknowledge;
     private string _busyTitle = string.Empty;
@@ -73,6 +84,10 @@ public sealed class MainViewModel : INotifyPropertyChanged
         Offices = new ObservableCollection<string>();
         Sessions = new ObservableCollection<EventPackInfo>();
         EventFiles = new ObservableCollection<string>();
+        AdminOffices = new ObservableCollection<string>();
+        AdminSessions = new ObservableCollection<EventPackInfo>();
+        AdminEventFiles = new ObservableCollection<string>();
+        AdminAnnouncerChoices = new ObservableCollection<string>();
 
         _heartbeatTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(Math.Max(30, _settings.HeartbeatSeconds)) };
         _heartbeatTimer.Tick += (_, _) => Heartbeat();
@@ -94,6 +109,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public ObservableCollection<string> Offices { get; }
     public ObservableCollection<EventPackInfo> Sessions { get; }
     public ObservableCollection<string> EventFiles { get; }
+    public ObservableCollection<string> AdminOffices { get; }
+    public ObservableCollection<EventPackInfo> AdminSessions { get; }
+    public ObservableCollection<string> AdminEventFiles { get; }
+    public ObservableCollection<string> AdminAnnouncerChoices { get; }
+
+    public const string NoAnnouncerLabel = "(none)";
 
     public WizardStep Step
     {
@@ -111,8 +132,15 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 OnPropertyChanged(nameof(StepTitle));
                 OnPropertyChanged(nameof(StepSubtitle));
                 OnPropertyChanged(nameof(ShowBack));
-                OnPropertyChanged(nameof(ShowNewEventLink));
+                OnPropertyChanged(nameof(ShowRolePicker));
                 OnPropertyChanged(nameof(ShowCheckForUpdates));
+                OnPropertyChanged(nameof(IsTimingActive));
+                OnPropertyChanged(nameof(IsAnnouncerActive));
+                OnPropertyChanged(nameof(IsAdminSettings));
+                OnPropertyChanged(nameof(IsAdminEvents));
+                OnPropertyChanged(nameof(EmptySessionsTitle));
+                OnPropertyChanged(nameof(EmptySessionsBody));
+                OnPropertyChanged(nameof(ShowSessionLock));
             }
         }
     }
@@ -155,26 +183,53 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     public string StepSubtitle => Step switch
     {
-        WizardStep.Office => "Double-click your office to continue.",
+        WizardStep.Office => IsAnnouncerRole
+            ? "Announcer — double-click your office. Only assigned announcer races are listed."
+            : "Timing — double-click your office to continue.",
         WizardStep.Session => IsPastRacesBrowse
             ? $"{PastRacesBreadcrumb} — open a folder, or double-click a race."
-            : SelectedOffice is null
-                ? "Double-click today's race."
-                : $"Office: {SelectedOffice} — double-click today's race.",
+            : IsAnnouncerRole
+                ? SelectedOffice is null
+                    ? "Races with an announcer file assigned."
+                    : $"Office: {SelectedOffice} — announcer races only."
+                : SelectedOffice is null
+                    ? "Double-click today's race."
+                    : $"Office: {SelectedOffice} — double-click today's race.",
         WizardStep.EventFile => SelectedSession is null
             ? "Double-click the main timing file."
             : $"{SelectedSession.DisplayName} — double-click the main timing file.",
         WizardStep.Active => Active is null
             ? ""
-            : $"{Active.Office} · Keep this app open while racing (live backup)",
-        WizardStep.Admin => "For setup staff only — not needed on race morning.",
+            : Active.Role == CheckoutRole.Announcer
+                ? $"{Active.Office} · Announcer — keep this app open"
+                : $"{Active.Office} · Keep this app open while racing (live backup)",
+        WizardStep.Admin => _adminSection == AdminSection.Events
+            ? "Create a race or assign Timing and Announcer files."
+            : "For setup staff only — not needed on race morning.",
         _ => ""
     };
 
     public bool ShowBack => Step is WizardStep.Session or WizardStep.EventFile or WizardStep.Admin;
 
-    /// <summary>Mid-week builder entry — office page only (hidden once checked out or deeper in the wizard).</summary>
-    public bool ShowNewEventLink => !HasActive && Step == WizardStep.Office;
+    public bool ShowRolePicker => !HasActive && Step is WizardStep.Office or WizardStep.Session;
+
+    public bool IsTimingRole => _checkoutRole == CheckoutRole.Timing;
+    public bool IsAnnouncerRole => _checkoutRole == CheckoutRole.Announcer;
+    public bool ShowSessionLock => IsTimingRole;
+    public bool IsTimingActive => IsActiveStep && Active is { Role: not CheckoutRole.Announcer };
+    public bool IsAnnouncerActive => IsActiveStep && Active?.Role == CheckoutRole.Announcer;
+    public bool IsAdminSettings => IsAdminStep && _adminSection == AdminSection.Settings;
+    public bool IsAdminEvents => IsAdminStep && _adminSection == AdminSection.Events;
+
+    public string EmptySessionsTitle =>
+        IsAnnouncerRole && !IsPastRacesBrowse
+            ? "No announcer races assigned"
+            : "No events loaded for this office";
+
+    public string EmptySessionsBody =>
+        IsAnnouncerRole && !IsPastRacesBrowse
+            ? "No announcer races assigned — ask setup (Admin)."
+            : "Nothing listed for this folder yet (empty on OneDrive, or the list timed out). Go Back, or Refresh events.";
 
     /// <summary>Timers can check for updates without opening Admin (office or Active).</summary>
     public bool ShowCheckForUpdates => Step is WizardStep.Office or WizardStep.Active;
@@ -226,7 +281,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 OnPropertyChanged(nameof(HasActive));
                 OnPropertyChanged(nameof(StepTitle));
                 OnPropertyChanged(nameof(StepSubtitle));
-                OnPropertyChanged(nameof(ShowNewEventLink));
+                OnPropertyChanged(nameof(ShowRolePicker));
+                OnPropertyChanged(nameof(IsTimingActive));
+                OnPropertyChanged(nameof(IsAnnouncerActive));
             }
         }
     }
@@ -298,6 +355,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         if (string.IsNullOrWhiteSpace(technical))
             return "Please wait…";
         if (technical.Contains("Downloading", StringComparison.OrdinalIgnoreCase)
+            || technical.Contains("announcer", StringComparison.OrdinalIgnoreCase)
             || technical.Contains("Opening", StringComparison.OrdinalIgnoreCase)
             || technical.Contains("Skipping", StringComparison.OrdinalIgnoreCase)
             || technical.Contains("Skipped", StringComparison.OrdinalIgnoreCase)
@@ -478,7 +536,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
         if (Active is not null)
         {
             Step = WizardStep.Active;
-            Status = "Checked out — finish before starting another event.";
+            Status = Active.Role == CheckoutRole.Announcer
+                ? "Announcer files loaded — tap Done when you're finished."
+                : "Checked out — finish before starting another event.";
             return;
         }
 
@@ -545,12 +605,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
         if (IsPastRacesBrowse)
         {
             await RefreshPastRacesLevelAsync(force: true).ConfigureAwait(true);
-            LoadPastRacesBrowser();
+            await PreparePastRacesListAsync().ConfigureAwait(true);
         }
         else
         {
             await EnsureOfficeSessionsFromGraphIfNeededAsync(office).ConfigureAwait(true);
-            LoadSessions(office);
+            await LoadLiveOfficeSessionsAsync(office).ConfigureAwait(true);
         }
 
         Step = WizardStep.Session;
@@ -570,6 +630,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
         if (session.IsNavigationFolder)
         {
             await EnterPastRacesFolderAsync(session).ConfigureAwait(true);
+            return;
+        }
+
+        if (IsAnnouncerRole)
+        {
+            await SelectAnnouncerSessionAsync(session).ConfigureAwait(true);
             return;
         }
 
@@ -661,6 +727,14 @@ public sealed class MainViewModel : INotifyPropertyChanged
         if (SelectedSession is null)
             return;
 
+        var assigned = SessionRoleStore.TryLoad(SelectedSession.Path)?.PrimaryEventFile;
+        if (!string.IsNullOrWhiteSpace(assigned))
+        {
+            SelectedEventFile = assigned;
+            await CheckoutAsync().ConfigureAwait(true);
+            return;
+        }
+
         if (EventFiles.Count == 0)
         {
             var activePath = _paths.GetActivePath(
@@ -705,6 +779,13 @@ public sealed class MainViewModel : INotifyPropertyChanged
     {
         if (SelectedSession is null)
             return;
+
+        if (IsAnnouncerRole)
+        {
+            await CheckoutAnnouncerFromUiAsync().ConfigureAwait(true);
+            return;
+        }
+
         // SelectedEventFile may be empty when checking out a Template with RUNSCORE only.
 
         SyncDisplayNameFromMachine();
@@ -830,6 +911,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
     {
         if (Active is null)
             return;
+
+        if (Active.Role == CheckoutRole.Announcer)
+        {
+            await DoneAnnouncerAsync().ConfigureAwait(true);
+            return;
+        }
 
         SetBusy(
             closingApp ? "Closing — saving your race" : "Saving your race",
@@ -964,8 +1051,20 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     public async Task<bool> ConfirmCloseAsync(Window? owner = null)
     {
-        if (_checkout.GetActive() is null)
+        if (_checkout.GetActive() is not { } active)
             return true;
+
+        if (active.Role == CheckoutRole.Announcer)
+        {
+            var announcerChoice = TimerDialog.AskCloseWhileAnnouncerActive(owner);
+            return announcerChoice switch
+            {
+                TimerCloseChoice.KeepWorking => false,
+                TimerCloseChoice.CloseWithoutSaving => true,
+                TimerCloseChoice.DoneLocalOnly => await DoneAndAllowCloseAsync().ConfigureAwait(true),
+                _ => false
+            };
+        }
 
         var choice = TimerDialog.AskCloseWhileActive(owner);
         return choice switch
@@ -1012,7 +1111,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
     {
         if (Active is null) return;
 
-        // If staff Save As'd a .event into Active, remember it for Finish / UI.
+        // Timing may pick up a Save As. Announcer stays on the assigned file.
+        if (Active.Role != CheckoutRole.Announcer)
+        {
         var discovered = VendorLauncher.ResolvePrimaryEventFile(Active);
         if (!string.IsNullOrWhiteSpace(discovered)
             && !string.Equals(Active.PrimaryEventFile, discovered, StringComparison.OrdinalIgnoreCase))
@@ -1029,12 +1130,14 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 AutosavePath = Active.AutosavePath,
                 DbsPath = Active.DbsPath,
                 PrimaryEventFile = discovered,
+                Role = Active.Role,
                 ScopedPaths = Active.ScopedPaths.Contains(discovered, StringComparer.OrdinalIgnoreCase)
                     ? Active.ScopedPaths
                     : Active.ScopedPaths.Append(discovered).ToList(),
                 CheckedOutAt = Active.CheckedOutAt
             };
             _activeStore.Save(Active);
+        }
         }
 
         var result = _launcher.LaunchTimingAndScoring(Active, _settings);
@@ -1067,6 +1170,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
 
         Step = WizardStep.Admin;
+        _adminSection = AdminSection.Settings;
+        NotifyAdminSection();
         NotifyGraphStatus();
     }
 
@@ -1217,7 +1322,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(StepSubtitle));
 
         await RefreshPastRacesLevelAsync(force: true).ConfigureAwait(true);
-        LoadPastRacesBrowser();
+        await PreparePastRacesListAsync().ConfigureAwait(true);
     }
 
     private async Task PopPastRacesFolderAsync()
@@ -1229,7 +1334,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(StepSubtitle));
 
         await RefreshPastRacesLevelAsync(force: false).ConfigureAwait(true);
-        LoadPastRacesBrowser();
+        await PreparePastRacesListAsync().ConfigureAwait(true);
     }
 
     /// <summary>
@@ -1287,11 +1392,451 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
         foreach (var entry in _scanner.ListBrowserEntries(
                      _settings.LibraryRoot, EventBuilderService.PastRacesFolderName, folder))
+        {
+            if (IsAnnouncerRole && !entry.IsNavigationFolder && string.IsNullOrWhiteSpace(entry.AnnouncerEventFile))
+                continue;
             Sessions.Add(entry);
+        }
 
         OnPropertyChanged(nameof(HasSessions));
         OnPropertyChanged(nameof(ShowEmptySessions));
+        OnPropertyChanged(nameof(EmptySessionsTitle));
+        OnPropertyChanged(nameof(EmptySessionsBody));
         OnPropertyChanged(nameof(PastRacesBreadcrumb));
+        OnPropertyChanged(nameof(StepSubtitle));
+    }
+
+    private static string RolesCacheKey(string scope) => "roles:" + scope;
+
+    private async Task LoadLiveOfficeSessionsAsync(string office)
+    {
+        if (IsAnnouncerRole)
+        {
+            var paths = _scanner.ListSessions(_settings.LibraryRoot, office)
+                .Select(s => s.Path)
+                .ToList();
+            await DownloadAnnouncerRolesAsync(paths, RolesCacheKey(office)).ConfigureAwait(true);
+        }
+
+        LoadSessions(office);
+    }
+
+    private async Task PreparePastRacesListAsync()
+    {
+        if (IsAnnouncerRole)
+        {
+            var folder = Path.Combine(_settings.LibraryRoot, EventBuilderService.PastRacesFolderName);
+            if (!string.IsNullOrEmpty(_pastRacesRelative))
+                folder = Path.Combine(folder, _pastRacesRelative.Replace('/', Path.DirectorySeparatorChar));
+            var paths = _scanner.FindSessionLeavesShallow(folder).ToList();
+            await DownloadAnnouncerRolesAsync(paths, RolesCacheKey(PastRacesIndexKey)).ConfigureAwait(true);
+        }
+
+        LoadPastRacesBrowser();
+    }
+
+    /// <summary>
+    /// One small JSON per session already listed locally. Parallel inside Graph.
+    /// A timeout keeps whatever landed — race day still shows local assignments.
+    /// </summary>
+    private async Task DownloadAnnouncerRolesAsync(IReadOnlyList<string> sessionPaths, string cacheKey)
+    {
+        if (!IsAnnouncerRole || !_cloud.IsAvailable || sessionPaths.Count == 0)
+            return;
+        if (_graphIndexedOffices.Contains(cacheKey))
+            return;
+
+        SetBusy("Checking announcer assignments", "Looking up which races have an announcer file…");
+        try
+        {
+            var result = await _cloud.DownloadSessionRolesAsync(
+                sessionPaths,
+                _settings.LibraryRoot,
+                _settings.GraphDriveRoot,
+                new Progress<string>(s =>
+                    ProgressText = string.IsNullOrWhiteSpace(s) ? "Please wait…" : s)).ConfigureAwait(true);
+            Status = result.Message;
+            if (result.Success)
+                _graphIndexedOffices.Add(cacheKey);
+        }
+        catch (Exception ex)
+        {
+            Status = "Announcer assignment check skipped: " + ex.Message;
+        }
+        finally
+        {
+            if (Busy && !BusyNeedsAcknowledge)
+                ClearBusy();
+        }
+    }
+
+    public async Task SetCheckoutRoleAsync(CheckoutRole role)
+    {
+        if (HasActive || _checkoutRole == role)
+            return;
+
+        _checkoutRole = role;
+        OnPropertyChanged(nameof(IsTimingRole));
+        OnPropertyChanged(nameof(IsAnnouncerRole));
+        OnPropertyChanged(nameof(ShowSessionLock));
+        OnPropertyChanged(nameof(StepSubtitle));
+        OnPropertyChanged(nameof(EmptySessionsTitle));
+        OnPropertyChanged(nameof(EmptySessionsBody));
+
+        if (Step != WizardStep.Session || string.IsNullOrWhiteSpace(SelectedOffice))
+            return;
+
+        if (IsPastRacesBrowse)
+            await PreparePastRacesListAsync().ConfigureAwait(true);
+        else
+            await LoadLiveOfficeSessionsAsync(SelectedOffice).ConfigureAwait(true);
+    }
+
+    private async Task SelectAnnouncerSessionAsync(EventPackInfo session)
+    {
+        var announcer = SessionRoleStore.NormalizeFileName(
+            SessionRoleStore.TryLoad(session.Path)?.AnnouncerEventFile ?? session.AnnouncerEventFile);
+        if (string.IsNullOrWhiteSpace(announcer))
+        {
+            Alert("No announcer file", "No announcer file is assigned for this race. Ask setup (Admin).");
+            return;
+        }
+
+        SelectedSession = session;
+        _sessionPackPulled = false;
+        SelectedEventFile = announcer;
+        EventFiles.Clear();
+        EventFiles.Add(announcer);
+
+        if (_cloud.IsAvailable)
+        {
+            SetBusy("Downloading announcer files", "Getting the announcer file and DB's from OneDrive…");
+            try
+            {
+                var pull = await _cloud.DownloadSessionAsync(
+                    session.Path,
+                    _settings.LibraryRoot,
+                    _settings.GraphDriveRoot,
+                    new Progress<string>(s =>
+                        ProgressText = string.IsNullOrWhiteSpace(s) ? "Please wait…" : s),
+                    options: SessionDownloadOptions.ForAnnouncer(announcer)).ConfigureAwait(true);
+
+                announcer = SessionRoleStore.NormalizeFileName(
+                                SessionRoleStore.TryLoad(session.Path)?.AnnouncerEventFile)
+                            ?? announcer;
+                SelectedEventFile = announcer;
+
+                if (!pull.Success && !File.Exists(Path.Combine(session.Path, announcer)))
+                {
+                    await ShowBusyResultAsync(
+                        "Couldn't download announcer files",
+                        pull.Message + "\n\nTry again when signal is better, or ask setup staff for help.");
+                    return;
+                }
+
+                _sessionPackPulled = true;
+                Status = pull.Success
+                    ? pull.Message
+                    : "Download incomplete — using announcer files already on this laptop.";
+            }
+            catch (OperationCanceledException)
+            {
+                await ShowBusyResultAsync(
+                    "Download timed out",
+                    "Announcer download timed out on cellular. Try again when signal is better.");
+                return;
+            }
+            catch (Exception ex)
+            {
+                await ShowBusyResultAsync("Couldn't download announcer files", ex.Message);
+                return;
+            }
+            finally
+            {
+                if (Busy && !BusyNeedsAcknowledge)
+                    ClearBusy();
+            }
+        }
+
+        await CheckoutAnnouncerFromUiAsync().ConfigureAwait(true);
+    }
+
+    private async Task CheckoutAnnouncerFromUiAsync()
+    {
+        if (SelectedSession is null)
+            return;
+
+        SyncDisplayNameFromMachine();
+        SetBusy("Loading announcer files", "Getting the announcer copy ready…");
+        try
+        {
+            var progress = new Progress<CopyProgress>(p =>
+                ProgressText = p.FilesCopied > 0 ? $"Copying announcer files… ({p.FilesCopied})" : "Getting the announcer copy ready…");
+            var statusProgress = new Progress<string>(s => ProgressText = string.IsNullOrWhiteSpace(s) ? "Please wait…" : s);
+            var result = await _checkout.CheckoutAsync(new CheckoutRequest
+            {
+                Pack = SelectedSession,
+                Settings = _settings,
+                HolderName = DisplayName.Trim(),
+                PrimaryEventFileOverride = SelectedEventFile,
+                Role = CheckoutRole.Announcer,
+                SkipGraphDownload = _sessionPackPulled
+            }, progress, statusProgress).ConfigureAwait(true);
+
+            if (!result.Success)
+            {
+                await ShowBusyResultAsync("Couldn't load announcer files", result.Message);
+                return;
+            }
+
+            Active = result.Active;
+            Step = WizardStep.Active;
+            Status = string.Empty;
+            ClearBusy();
+        }
+        catch (Exception ex)
+        {
+            await ShowBusyResultAsync("Couldn't load announcer files", ex.Message);
+        }
+        finally
+        {
+            if (Busy && !BusyNeedsAcknowledge)
+                ClearBusy();
+        }
+    }
+
+    public async Task DoneAnnouncerAsync()
+    {
+        if (Active?.Role != CheckoutRole.Announcer)
+            return;
+
+        SetBusy("Clearing this laptop", "Removing the announcer copy. Nothing is uploaded.");
+        try
+        {
+            var result = _checkout.DoneAnnouncer();
+            if (!result.Success)
+            {
+                await ShowBusyResultAsync(
+                    result.BlockingProcesses.Count > 0 ? "Still open" : "Couldn't clear announcer files",
+                    result.Message);
+                return;
+            }
+
+            Active = null;
+            SelectedSession = null;
+            SelectedEventFile = null;
+            LoadOffices();
+            if (Offices.Count == 1)
+                await SelectOfficeAsync(Offices[0]).ConfigureAwait(true);
+            else
+                Step = WizardStep.Office;
+            Status = string.Empty;
+            await ShowBusyResultAsync("Done", result.Message).ConfigureAwait(true);
+        }
+        catch (Exception ex)
+        {
+            await ShowBusyResultAsync("Couldn't clear announcer files", ex.Message);
+        }
+        finally
+        {
+            if (Busy && !BusyNeedsAcknowledge)
+                ClearBusy();
+        }
+    }
+
+    private async Task<bool> DoneAndAllowCloseAsync()
+    {
+        await DoneAnnouncerAsync().ConfigureAwait(true);
+        return _checkout.GetActive() is null;
+    }
+
+    public void ShowAdminSettings()
+    {
+        _adminSection = AdminSection.Settings;
+        NotifyAdminSection();
+    }
+
+    public void ShowAdminEvents()
+    {
+        _adminSection = AdminSection.Events;
+        AdminOffices.Clear();
+        foreach (var name in Offices)
+        {
+            if (name.Equals(EventBuilderService.PastRacesFolderName, StringComparison.OrdinalIgnoreCase)
+                || name.Equals(EventBuilderService.TemplatesFolderName, StringComparison.OrdinalIgnoreCase))
+                continue;
+            AdminOffices.Add(name);
+        }
+
+        NotifyAdminSection();
+    }
+
+    public string? SelectedTimingFile
+    {
+        get => _selectedTimingFile;
+        set => Set(ref _selectedTimingFile, value);
+    }
+
+    public string? SelectedAnnouncerChoice
+    {
+        get => _selectedAnnouncerChoice;
+        set => Set(ref _selectedAnnouncerChoice, value);
+    }
+
+    public EventPackInfo? SelectedAdminSession => _adminSession;
+
+    public async Task SelectAdminOfficeAsync(string? office)
+    {
+        AdminSessions.Clear();
+        AdminEventFiles.Clear();
+        AdminAnnouncerChoices.Clear();
+        _adminSession = null;
+        SelectedTimingFile = null;
+        SelectedAnnouncerChoice = null;
+        if (string.IsNullOrWhiteSpace(office) || !IsAdminEvents)
+            return;
+
+        if (!office.Equals(EventBuilderService.PastRacesFolderName, StringComparison.OrdinalIgnoreCase))
+            await EnsureOfficeSessionsFromGraphIfNeededAsync(office).ConfigureAwait(true);
+
+        foreach (var session in _scanner.ListSessions(_settings.LibraryRoot, office))
+            AdminSessions.Add(session);
+    }
+
+    public async Task LoadAdminEventFilesAsync(EventPackInfo? session)
+    {
+        _adminSession = session;
+        OnPropertyChanged(nameof(SelectedAdminSession));
+        AdminEventFiles.Clear();
+        AdminAnnouncerChoices.Clear();
+        SelectedTimingFile = null;
+        SelectedAnnouncerChoice = null;
+        if (session is null)
+            return;
+
+        var names = new List<string>(EventFileSelector.ListEventFiles(session.Path));
+        if (_cloud.IsAvailable)
+        {
+            try
+            {
+                var remote = await _cloud.ListRemoteEventFileNamesAsync(
+                    session.Path, _settings.LibraryRoot, _settings.GraphDriveRoot).ConfigureAwait(true);
+                foreach (var name in remote)
+                {
+                    if (!names.Contains(name, StringComparer.OrdinalIgnoreCase))
+                        names.Add(name);
+                }
+
+                await _cloud.DownloadSessionRolesAsync(
+                    new[] { session.Path },
+                    _settings.LibraryRoot,
+                    _settings.GraphDriveRoot).ConfigureAwait(true);
+            }
+            catch
+            {
+                // Local names and any sidecar already on disk are enough to assign.
+            }
+        }
+
+        if (!ReferenceEquals(_adminSession, session))
+            return;
+
+        names.Sort(StringComparer.OrdinalIgnoreCase);
+        var roles = SessionRoleStore.TryLoad(session.Path);
+        if (!string.IsNullOrWhiteSpace(roles?.PrimaryEventFile)
+            && !names.Contains(roles.PrimaryEventFile, StringComparer.OrdinalIgnoreCase))
+            names.Add(roles.PrimaryEventFile);
+        if (!string.IsNullOrWhiteSpace(roles?.AnnouncerEventFile)
+            && !names.Contains(roles.AnnouncerEventFile, StringComparer.OrdinalIgnoreCase))
+            names.Add(roles.AnnouncerEventFile);
+
+        AdminAnnouncerChoices.Add(NoAnnouncerLabel);
+        foreach (var name in names)
+        {
+            AdminEventFiles.Add(name);
+            AdminAnnouncerChoices.Add(name);
+        }
+
+        SelectedTimingFile = roles?.PrimaryEventFile
+                             ?? (names.Count == 1 ? names[0] : null);
+        SelectedAnnouncerChoice = string.IsNullOrWhiteSpace(roles?.AnnouncerEventFile)
+            ? NoAnnouncerLabel
+            : roles.AnnouncerEventFile;
+    }
+
+    public async Task SaveAdminEventRolesAsync()
+    {
+        if (_adminSession is null)
+        {
+            Alert("Choose an event", "Pick an office and an event, then assign the Timing and Announcer files.");
+            return;
+        }
+
+        var primary = string.IsNullOrWhiteSpace(SelectedTimingFile) ? null : SelectedTimingFile;
+        var announcer = string.IsNullOrWhiteSpace(SelectedAnnouncerChoice)
+                        || SelectedAnnouncerChoice == NoAnnouncerLabel
+            ? null
+            : SelectedAnnouncerChoice;
+        var roles = new SessionRoles
+        {
+            PrimaryEventFile = primary,
+            AnnouncerEventFile = announcer
+        };
+        var error = SessionRoleStore.Validate(roles);
+        if (error is not null)
+        {
+            Alert("Assignment", error);
+            return;
+        }
+
+        try
+        {
+            SessionRoleStore.Save(_adminSession.Path, roles);
+        }
+        catch (Exception ex)
+        {
+            Alert("Assignment", ex.Message);
+            return;
+        }
+
+        if (!_cloud.IsAvailable)
+        {
+            Status = "Assignment saved on this laptop. Sign in to OneDrive to sync it.";
+            return;
+        }
+
+        SetBusy("Saving assignment", "Uploading the event assignment…");
+        try
+        {
+            var upload = await _cloud.UploadSessionRolesAsync(
+                _adminSession.Path,
+                _settings.LibraryRoot,
+                _settings.GraphDriveRoot).ConfigureAwait(true);
+            if (!upload.Success)
+            {
+                await ShowBusyResultAsync("Saved on this laptop", upload.Message).ConfigureAwait(true);
+                return;
+            }
+
+            Status = upload.Message;
+        }
+        catch (Exception ex)
+        {
+            await ShowBusyResultAsync(
+                "Saved on this laptop",
+                "The assignment is on this laptop, but OneDrive upload failed.\n\n" + ex.Message).ConfigureAwait(true);
+        }
+        finally
+        {
+            if (Busy && !BusyNeedsAcknowledge)
+                ClearBusy();
+        }
+    }
+
+    private void NotifyAdminSection()
+    {
+        OnPropertyChanged(nameof(IsAdminSettings));
+        OnPropertyChanged(nameof(IsAdminEvents));
         OnPropertyChanged(nameof(StepSubtitle));
     }
 
@@ -1468,6 +2013,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
             }
         }
 
+        _checkoutRole = CheckoutRole.Timing;
+        OnPropertyChanged(nameof(IsTimingRole));
+        OnPropertyChanged(nameof(IsAnnouncerRole));
         await CheckoutAsync();
     }
 
@@ -1482,9 +2030,15 @@ public sealed class MainViewModel : INotifyPropertyChanged
     {
         Sessions.Clear();
         foreach (var session in _scanner.ListSessions(_settings.LibraryRoot, office))
+        {
+            if (IsAnnouncerRole && string.IsNullOrWhiteSpace(session.AnnouncerEventFile))
+                continue;
             Sessions.Add(session);
+        }
         OnPropertyChanged(nameof(HasSessions));
         OnPropertyChanged(nameof(ShowEmptySessions));
+        OnPropertyChanged(nameof(EmptySessionsTitle));
+        OnPropertyChanged(nameof(EmptySessionsBody));
     }
 
     /// <summary>Clear this-run Graph cache for the current office / Past Races folder and reload.</summary>
@@ -1496,12 +2050,14 @@ public sealed class MainViewModel : INotifyPropertyChanged
         if (IsPastRacesBrowse)
         {
             _graphIndexedOffices.Remove(PastRacesIndexKey);
+            _graphIndexedOffices.Remove(RolesCacheKey(PastRacesIndexKey));
             await RefreshPastRacesLevelAsync(force: true).ConfigureAwait(true);
-            LoadPastRacesBrowser();
+            await PreparePastRacesListAsync().ConfigureAwait(true);
             return;
         }
 
         _graphIndexedOffices.Remove(SelectedOffice);
+        _graphIndexedOffices.Remove(RolesCacheKey(SelectedOffice));
         await SelectOfficeAsync(SelectedOffice);
     }
 
@@ -1519,7 +2075,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private void Heartbeat()
     {
         var active = _activeStore.Load();
-        if (active is null) return;
+        if (active is null || active.Role == CheckoutRole.Announcer)
+            return;
         try { _locks.Heartbeat(active.LibrarySessionPath); }
         catch { /* ignore */ }
 

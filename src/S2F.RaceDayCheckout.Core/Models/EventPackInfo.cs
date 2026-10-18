@@ -26,6 +26,8 @@ public sealed class EventPackInfo
 
     public IReadOnlyList<string> EventFiles { get; init; } = Array.Empty<string>();
     public string? PrimaryEventFile { get; set; }
+    /// <summary>Set from <c>s2f_session.json</c> when ops assigned an announcer file. Null for most races.</summary>
+    public string? AnnouncerEventFile { get; set; }
     public CheckoutLock? Lock { get; set; }
 
     /// <summary>True when this row is a Past Races (or similar) folder to open, not a checkoutable session.</summary>
@@ -75,6 +77,8 @@ public sealed class ActiveCheckout
     public required string AutosavePath { get; init; }
     public required string DbsPath { get; init; }
     public required string PrimaryEventFile { get; init; }
+    /// <summary>Timing unless this Active checkout was an announcer slim pull. Restored from active.json.</summary>
+    public CheckoutRole Role { get; init; } = CheckoutRole.Timing;
     public IReadOnlyList<string> ScopedPaths { get; init; } = Array.Empty<string>();
     public DateTimeOffset CheckedOutAt { get; init; }
 

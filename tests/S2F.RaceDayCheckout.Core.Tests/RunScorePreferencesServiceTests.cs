@@ -227,6 +227,9 @@ public class RunScorePreferencesServiceTests
             prefs.Single(p => p.Name == RunScorePreferencesService.SaveEntriesDir).StringValue);
         Assert.Equal(@"C:\RaceDay\Backup\Memphis\Event\",
             prefs.Single(p => p.Name == RunScorePreferencesService.SaveResultsDir).StringValue);
+        Assert.Equal(
+            RunScoreSopProfile.NotepadPlusPlusExePath,
+            prefs.Single(p => p.Name == RunScoreSopProfile.ExternalEditorName).StringValue);
     }
 
     [Fact]

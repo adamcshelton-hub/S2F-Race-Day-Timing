@@ -274,7 +274,8 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
         string libraryRoot,
         string graphDriveRoot,
         IProgress<string>? status = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        SessionDownloadOptions? options = null)
     {
         if (!_tokens.IsSignedIn)
             return new CloudSyncResult { Success = true, Message = "Graph not signed in — using local library." };
@@ -290,10 +291,12 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
 
             // Graph does not support folder-as-ZIP on personal OneDrive (?format=zip is for Office→PDF).
             // Enumerate once, then download several files at a time.
-            status?.Report("Listing race files…");
+            var slim = options?.Role == CheckoutRole.Announcer;
+            status?.Report(slim ? "Listing announcer files…" : "Listing race files…");
             Directory.CreateDirectory(librarySessionPath);
             var jobs = new List<DownloadJob>();
-            await CollectDownloadJobsAsync(relative, librarySessionPath, jobs, budget.Token)
+            await CollectDownloadJobsAsync(
+                    relative, librarySessionPath, librarySessionPath, jobs, budget.Token, options)
                 .ConfigureAwait(false);
 
             var todo = jobs
@@ -372,6 +375,167 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
         catch (Exception ex)
         {
             return new CloudSyncResult { Success = false, Message = "Graph download failed: " + ex.Message };
+        }
+    }
+
+    public async Task<CloudSyncResult> DownloadSessionRolesAsync(
+        IReadOnlyList<string> librarySessionPaths,
+        string libraryRoot,
+        string graphDriveRoot,
+        IProgress<string>? status = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (!_tokens.IsSignedIn)
+            return new CloudSyncResult { Success = true, Message = "Graph not signed in." };
+
+        var sessions = librarySessionPaths
+            .Where(p => !string.IsNullOrWhiteSpace(p))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (sessions.Count == 0)
+            return new CloudSyncResult { Success = true, Message = "No events to check for announcer assignments." };
+
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        budget.CancelAfter(GraphSyncPolicy.OfficeSessionsBudget);
+
+        try
+        {
+            status?.Report("Checking announcer assignments…");
+            var downloaded = 0;
+            var seen = 0;
+            await using var gate = new AdaptiveTransferGate(
+                GraphSyncPolicy.DownloadParallelism,
+                GraphSyncPolicy.DownloadParallelismFloor);
+
+            var tasks = sessions.Select(async session =>
+            {
+                await using (await gate.AcquireAsync(budget.Token).ConfigureAwait(false))
+                {
+                    var relative = ToDriveRelative(session, libraryRoot, graphDriveRoot);
+                    if (relative is null)
+                        return;
+
+                    var cloud = JoinDrivePath(relative, PathService.AppMetaFolderName + "/" + SessionRoleStore.FileName);
+                    var local = SessionRoleStore.GetPath(session);
+                    try
+                    {
+                        if (await TryDownloadOptionalFileAsync(cloud, local, budget.Token).ConfigureAwait(false))
+                            Interlocked.Increment(ref downloaded);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
+                    catch
+                    {
+                        // One missing assignment must not fail the office list.
+                    }
+
+                    var n = Interlocked.Increment(ref seen);
+                    if (n == sessions.Count || n % 8 == 0)
+                        status?.Report($"Checking announcer assignments… {n}/{sessions.Count}");
+                }
+            });
+
+            await Task.WhenAll(tasks).ConfigureAwait(false);
+            return new CloudSyncResult
+            {
+                Success = true,
+                FilesTransferred = downloaded,
+                Message = downloaded > 0
+                    ? $"Announcer assignments updated ({downloaded})."
+                    : "No announcer assignments on OneDrive for these events."
+            };
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return new CloudSyncResult
+            {
+                Success = false,
+                Message = "Announcer assignment check timed out — showing assignments already on this laptop."
+            };
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            return new CloudSyncResult
+            {
+                Success = false,
+                Message = "Could not check announcer assignments: " + ex.Message
+            };
+        }
+    }
+
+    public async Task<IReadOnlyList<string>> ListRemoteEventFileNamesAsync(
+        string librarySessionPath,
+        string libraryRoot,
+        string graphDriveRoot,
+        CancellationToken cancellationToken = default)
+    {
+        if (!_tokens.IsSignedIn)
+            return Array.Empty<string>();
+
+        var relative = ToDriveRelative(librarySessionPath, libraryRoot, graphDriveRoot);
+        if (relative is null)
+            return Array.Empty<string>();
+
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        budget.CancelAfter(GraphSyncPolicy.OfficeListBudget);
+        try
+        {
+            var items = await ListChildItemsAsync(relative, budget.Token).ConfigureAwait(false);
+            return items
+                .Where(i => i.IsFile && !string.IsNullOrWhiteSpace(i.Name)
+                            && i.Name.EndsWith(".event", StringComparison.OrdinalIgnoreCase))
+                .Select(i => i.Name!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+        catch
+        {
+            return Array.Empty<string>();
+        }
+    }
+
+    public async Task<CloudSyncResult> UploadSessionRolesAsync(
+        string librarySessionPath,
+        string libraryRoot,
+        string graphDriveRoot,
+        CancellationToken cancellationToken = default)
+    {
+        if (!_tokens.IsSignedIn)
+            return new CloudSyncResult { Success = true, Message = "Saved on this laptop. Sign in to OneDrive to sync the assignment." };
+
+        var local = SessionRoleStore.GetPath(librarySessionPath);
+        if (!File.Exists(local))
+            return new CloudSyncResult { Success = false, Message = "No assignment file to upload." };
+
+        var relative = ToDriveRelative(librarySessionPath, libraryRoot, graphDriveRoot);
+        if (relative is null)
+            return new CloudSyncResult { Success = false, Message = "Session path is outside LibraryRoot." };
+
+        try
+        {
+            var cloud = JoinDrivePath(relative, PathService.AppMetaFolderName + "/" + SessionRoleStore.FileName);
+            await UploadFileAsync(local, cloud, cancellationToken).ConfigureAwait(false);
+            return new CloudSyncResult
+            {
+                Success = true,
+                FilesTransferred = 1,
+                Message = "Assignment saved to OneDrive."
+            };
+        }
+        catch (Exception ex)
+        {
+            return new CloudSyncResult
+            {
+                Success = false,
+                Message = "Saved on this laptop, but OneDrive upload failed: " + ex.Message
+            };
         }
     }
 
@@ -890,8 +1054,10 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
     private async Task CollectDownloadJobsAsync(
         string cloudPath,
         string localPath,
+        string sessionLocalRoot,
         List<DownloadJob> jobs,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        SessionDownloadOptions? options = null)
     {
         List<DriveChild> children;
         try
@@ -904,6 +1070,7 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
         }
 
         Directory.CreateDirectory(localPath);
+        var slim = options?.Role == CheckoutRole.Announcer;
         var underAppMeta = string.Equals(
             Path.GetFileName(localPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)),
             PathService.AppMetaFolderName,
@@ -917,19 +1084,32 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
 
             var childCloud = JoinDrivePath(cloudPath, item.Name);
             var childLocal = Path.Combine(localPath, item.Name);
+            var relative = Path.GetRelativePath(sessionLocalRoot, childLocal);
 
             if (item.IsFolder)
             {
-                if (GraphSyncPolicy.ShouldSkipFolder(item.Name))
-                    continue;
-                // ._checkin lock JSON only — Finish backup trees stay in the cloud until needed.
-                if (underAppMeta)
-                    continue;
-                await CollectDownloadJobsAsync(childCloud, childLocal, jobs, cancellationToken)
+                if (slim)
+                {
+                    if (!AnnouncerDownloadPolicy.ShouldRecurse(relative))
+                        continue;
+                }
+                else
+                {
+                    if (GraphSyncPolicy.ShouldSkipFolder(item.Name))
+                        continue;
+                    // ._checkin lock JSON only — Finish backup trees stay in the cloud until needed.
+                    if (underAppMeta)
+                        continue;
+                }
+
+                await CollectDownloadJobsAsync(
+                        childCloud, childLocal, sessionLocalRoot, jobs, cancellationToken, options)
                     .ConfigureAwait(false);
             }
             else if (item.IsFile)
             {
+                if (slim && !AnnouncerDownloadPolicy.ShouldIncludeFile(relative, options?.AnnouncerEventFile))
+                    continue;
                 jobs.Add(new DownloadJob(childCloud, childLocal, item.Name, item.Size));
             }
         }
@@ -981,6 +1161,42 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
         }
 
         throw last ?? new IOException("Download failed.");
+    }
+
+    /// <summary>GET one file. 404 returns false. Transient errors get one retry, then false.</summary>
+    private async Task<bool> TryDownloadOptionalFileAsync(
+        string cloudPath,
+        string localPath,
+        CancellationToken cancellationToken)
+    {
+        for (var attempt = 1; attempt <= 2; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                await DownloadFileOnceAsync(cloudPath, localPath, expectedSize: null, cancellationToken)
+                    .ConfigureAwait(false);
+                return true;
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+            {
+                return false;
+            }
+            catch (HttpRequestException ex) when (IsTransientGraphFailure(ex, out var retryAfter) && attempt < 2)
+            {
+                await Task.Delay(retryAfter ?? BackoffDelay(attempt), cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        return false;
     }
 
     private async Task DownloadFileOnceAsync(

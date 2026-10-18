@@ -62,7 +62,7 @@ public sealed class AutosaveMirrorService
                 return;
 
             var active = _activeStore.Load();
-            if (active is null)
+            if (active is null || active.Role == CheckoutRole.Announcer)
                 return;
 
             Directory.CreateDirectory(active.BackupPath);

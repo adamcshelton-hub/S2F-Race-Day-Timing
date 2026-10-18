@@ -12,6 +12,7 @@ public sealed class CheckoutRequest
     /// <summary>Admin PIN confirmed force take-over while the other lock still looks alive.</summary>
     public bool ConfirmForceTakeover { get; init; }
     public string? EmergencyReason { get; init; }
+    public CheckoutRole Role { get; init; } = CheckoutRole.Timing;
 
     /// <summary>
     /// UI already downloaded this session pack from Graph before checkout — skip a second pull (cellular).
@@ -94,15 +95,19 @@ public sealed class CheckoutService
         CancellationToken cancellationToken = default)
     {
         var existingActive = _activeStore.Load();
-        if (existingActive is not null
-            && !string.Equals(existingActive.LibrarySessionPath, request.Pack.Path, StringComparison.OrdinalIgnoreCase))
+        if (existingActive is not null)
         {
-            return new CheckoutResult
+            var sameSession = string.Equals(
+                existingActive.LibrarySessionPath, request.Pack.Path, StringComparison.OrdinalIgnoreCase);
+            if (!sameSession || existingActive.Role != request.Role)
             {
-                Success = false,
-                Message =
-                    $"This machine already has an Active checkout: {existingActive.DisplayName}. Finish & check in first."
-            };
+                var leave = existingActive.Role == CheckoutRole.Announcer ? "Tap Done" : "Finish & check in";
+                return new CheckoutResult
+                {
+                    Success = false,
+                    Message = $"This machine already has an Active checkout: {existingActive.DisplayName}. {leave} first."
+                };
+            }
         }
 
         if (string.IsNullOrWhiteSpace(request.HolderName))
@@ -114,14 +119,17 @@ public sealed class CheckoutService
             };
         }
 
+        if (request.Role == CheckoutRole.Announcer)
+            return await CheckoutAnnouncerAsync(request, progress, statusProgress, cancellationToken).ConfigureAwait(false);
+
         // .event is optional at checkout (Templates often have RUNSCORE only).
         // Staff can Open Timing & Scoring bare, Save As into Active, then Finish picks it up.
-        var primary = !string.IsNullOrWhiteSpace(request.PrimaryEventFileOverride)
+        var hintedPrimary = !string.IsNullOrWhiteSpace(request.PrimaryEventFileOverride)
             ? request.PrimaryEventFileOverride!
             : request.Pack.PrimaryEventFile
               ?? EventFileSelector.ChoosePrimary(request.Pack.EventFiles)
               ?? string.Empty;
-        // May be cleared/replaced after Graph download when the listed primary is missing.
+        // Sidecar primary wins once that file is on disk (after Graph download or a local pack).
 
         var useGraph = _cloud.IsAvailable;
 
@@ -204,19 +212,9 @@ public sealed class CheckoutService
                     Message = pull.Message
                 };
             }
+        }
 
-            // Prefer freshly downloaded primary .event if the pack listing was stale.
-            if (string.IsNullOrWhiteSpace(primary))
-            {
-                primary = EventFileSelector.ChoosePrimary(
-                    EventFileSelector.ListEventFiles(request.Pack.Path)) ?? string.Empty;
-            }
-        }
-        else if (useGraph && request.SkipGraphDownload && string.IsNullOrWhiteSpace(primary))
-        {
-            primary = EventFileSelector.ChoosePrimary(
-                EventFileSelector.ListEventFiles(request.Pack.Path)) ?? string.Empty;
-        }
+        var primary = ResolveTimingPrimary(request.Pack.Path, hintedPrimary);
 
         var libraryRunScore = Path.Combine(request.Pack.Path, PathService.RunScoreFolderName);
         if (!Directory.Exists(libraryRunScore))
@@ -362,6 +360,7 @@ public sealed class CheckoutService
             AutosavePath = autosavePath,
             DbsPath = request.Pack.DbsPath,
             PrimaryEventFile = primary,
+            Role = CheckoutRole.Timing,
             ScopedPaths = scoped,
             CheckedOutAt = DateTimeOffset.UtcNow
         };
@@ -427,6 +426,211 @@ public sealed class CheckoutService
         };
     }
 
+    /// <summary>
+    /// Announcer checkout: no lock, no RunScore, no heartbeat upload.
+    /// Copies the assigned .event and DB's into Active and leaves the app open.
+    /// </summary>
+    private async Task<CheckoutResult> CheckoutAnnouncerAsync(
+        CheckoutRequest request,
+        IProgress<CopyProgress>? progress,
+        IProgress<string>? statusProgress,
+        CancellationToken cancellationToken)
+    {
+        var roles = SessionRoleStore.TryLoad(request.Pack.Path);
+        var announcer = SessionRoleStore.NormalizeFileName(roles?.AnnouncerEventFile)
+                        ?? SessionRoleStore.NormalizeFileName(request.Pack.AnnouncerEventFile)
+                        ?? SessionRoleStore.NormalizeFileName(request.PrimaryEventFileOverride);
+        if (string.IsNullOrWhiteSpace(announcer))
+        {
+            return new CheckoutResult
+            {
+                Success = false,
+                Message = "No announcer file assigned for this race. Ask setup (Admin)."
+            };
+        }
+
+        var useGraph = _cloud.IsAvailable;
+        if (useGraph && !request.SkipGraphDownload)
+        {
+            statusProgress?.Report("Downloading announcer files…");
+            CloudSyncResult pull;
+            try
+            {
+                using var pullCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                pullCts.CancelAfter(GraphSyncPolicy.SessionDownloadBudget);
+                pull = await _cloud.DownloadSessionAsync(
+                    request.Pack.Path,
+                    request.Settings.LibraryRoot,
+                    request.Settings.GraphDriveRoot,
+                    statusProgress,
+                    pullCts.Token,
+                    SessionDownloadOptions.ForAnnouncer(announcer)).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                pull = new CloudSyncResult
+                {
+                    Success = false,
+                    Message = "Download timed out on cellular. Using announcer files already on this laptop."
+                };
+            }
+
+            // Sidecar may have arrived with a previous roles fetch; re-read after the slim pull.
+            announcer = SessionRoleStore.NormalizeFileName(SessionRoleStore.TryLoad(request.Pack.Path)?.AnnouncerEventFile)
+                         ?? announcer;
+
+            if (!pull.Success && !File.Exists(Path.Combine(request.Pack.Path, announcer)))
+            {
+                return new CheckoutResult
+                {
+                    Success = false,
+                    Message = pull.Message
+                };
+            }
+        }
+
+        var libraryEvent = Path.Combine(request.Pack.Path, announcer);
+        if (!File.Exists(libraryEvent))
+        {
+            return new CheckoutResult
+            {
+                Success = false,
+                Message = $"Announcer file not found: {announcer}. Ask setup (Admin)."
+            };
+        }
+
+        var activePath = _paths.GetActivePath(request.Settings, request.Pack.Office, request.Pack.RelativePath);
+        var backupPath = _paths.GetBackupPath(request.Settings, request.Pack.Office, request.Pack.RelativePath);
+        var autosavePath = _paths.GetAutosavePath(request.Pack.Path);
+        Directory.CreateDirectory(activePath);
+        File.Copy(libraryEvent, Path.Combine(activePath, announcer), overwrite: true);
+
+        statusProgress?.Report("Preparing local DB's folder…");
+        var dbsLink = _links.EnsureLocalDbsFolder(activePath, request.Pack.Path);
+        var libraryDbs = Path.Combine(request.Pack.Path, SharedFolderLinkService.DbsFolderName);
+        if (Directory.Exists(libraryDbs))
+        {
+            try
+            {
+                await _copy.CopyDirectoryAsync(
+                    libraryDbs,
+                    Path.Combine(activePath, SharedFolderLinkService.DbsFolderName),
+                    progress,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                dbsLink = new LinkResult { Success = false, Message = ex.Message };
+            }
+        }
+
+        var dbsNote = dbsLink.Success
+            ? " DB's exports are in the local race folder."
+            : $" DB's warning: {dbsLink.Message}";
+
+        var scoped = new List<string> { announcer, SharedFolderLinkService.DbsFolderName };
+        var active = new ActiveCheckout
+        {
+            Office = request.Pack.Office,
+            ParentEvent = request.Pack.ParentEvent,
+            SessionName = request.Pack.SessionName,
+            RelativePath = request.Pack.RelativePath,
+            LibrarySessionPath = request.Pack.Path,
+            ActivePath = activePath,
+            BackupPath = backupPath,
+            AutosavePath = autosavePath,
+            DbsPath = request.Pack.DbsPath,
+            PrimaryEventFile = announcer,
+            Role = CheckoutRole.Announcer,
+            ScopedPaths = scoped,
+            CheckedOutAt = DateTimeOffset.UtcNow
+        };
+        _activeStore.Save(active);
+
+        return new CheckoutResult
+        {
+            Success = true,
+            Active = active,
+            Message = "Announcer files are on this laptop. Open Timing & Scoring when you're ready. "
+                      + "Done removes them from this laptop only — nothing uploads."
+                      + dbsNote
+        };
+    }
+
+    /// <summary>
+    /// Announcer leave: delete the local Active tree and clear active.json.
+    /// Does not upload and does not release a timing lock.
+    /// </summary>
+    public CheckinResult DoneAnnouncer()
+    {
+        var active = _activeStore.Load();
+        if (active is null)
+            return new CheckinResult { Success = false, Message = "No Active checkout on this machine." };
+
+        if (active.Role != CheckoutRole.Announcer)
+        {
+            return new CheckinResult
+            {
+                Success = false,
+                Message = "This checkout is Timing. Use Finish so the race uploads."
+            };
+        }
+
+        var blocking = _processes.GetBlockingProcessNames();
+        if (blocking.Count > 0)
+        {
+            return new CheckinResult
+            {
+                Success = false,
+                BlockingProcesses = blocking,
+                Message = "Close Timing & Scoring before Done: " + string.Join(", ", blocking)
+            };
+        }
+
+        try
+        {
+            if (Directory.Exists(active.ActivePath))
+                _links.DeleteActiveTreeSafe(active.ActivePath);
+        }
+        catch (Exception ex)
+        {
+            return new CheckinResult
+            {
+                Success = false,
+                Message = "Could not clear the announcer folder: " + ex.Message
+            };
+        }
+
+        _activeStore.Save(null);
+        return new CheckinResult
+        {
+            Success = true,
+            AutosaveCleared = true,
+            Message = "Done. Announcer files were removed from this laptop. Nothing was uploaded."
+        };
+    }
+
+    /// <summary>
+    /// Sidecar primary when that file is on disk. Otherwise the hinted file, then ChoosePrimary.
+    /// </summary>
+    private static string ResolveTimingPrimary(string sessionPath, string? hinted)
+    {
+        var assigned = SessionRoleStore.TryLoad(sessionPath)?.PrimaryEventFile;
+        if (!string.IsNullOrWhiteSpace(assigned)
+            && File.Exists(Path.Combine(sessionPath, assigned)))
+            return assigned;
+
+        if (!string.IsNullOrWhiteSpace(hinted))
+        {
+            var name = Path.GetFileName(hinted.Trim());
+            if (!string.IsNullOrWhiteSpace(name) && File.Exists(Path.Combine(sessionPath, name)))
+                return name;
+        }
+
+        return EventFileSelector.ChoosePrimary(EventFileSelector.ListEventFiles(sessionPath))
+               ?? string.Empty;
+    }
+
     public async Task<CheckinResult> CheckinAsync(
         AppSettings settings,
         string holderName,
@@ -440,6 +644,15 @@ public sealed class CheckoutService
         var active = _activeStore.Load();
         if (active is null)
             return new CheckinResult { Success = false, Message = "No Active checkout on this machine." };
+
+        if (active.Role == CheckoutRole.Announcer)
+        {
+            return new CheckinResult
+            {
+                Success = false,
+                Message = "Announcer checkout does not upload. Close Timing & Scoring, then tap Done."
+            };
+        }
 
         var blocking = _processes.GetBlockingProcessNames();
         if (blocking.Count > 0 && !adminOverrideProcesses)

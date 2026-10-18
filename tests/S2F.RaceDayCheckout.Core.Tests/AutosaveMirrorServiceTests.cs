@@ -188,4 +188,38 @@ public class AutosaveMirrorServiceTests
         Assert.Equal("live", File.ReadAllText(dest));
         Assert.Equal("live", File.ReadAllText(Path.Combine(backup, "ENTRIES.DTA")));
     }
+
+    [Fact]
+    public async Task MirrorOnce_SkipsAnnouncerCheckout()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "s2f-announcer-mirror-" + Guid.NewGuid().ToString("N"));
+        var backup = Path.Combine(root, "Backup", "Event");
+        var autosave = Path.Combine(root, "autosave");
+        var activePath = Path.Combine(root, "Active", "Event");
+        Directory.CreateDirectory(backup);
+        Directory.CreateDirectory(activePath);
+        File.WriteAllText(Path.Combine(backup, "ENTRIES.DTA"), "live");
+
+        var store = new ActiveCheckoutStore(Path.Combine(root, "active.json"));
+        store.Save(new Models.ActiveCheckout
+        {
+            Office = "Test",
+            ParentEvent = "Event",
+            SessionName = "Event",
+            RelativePath = "Event",
+            LibrarySessionPath = root,
+            ActivePath = activePath,
+            BackupPath = backup,
+            AutosavePath = autosave,
+            DbsPath = Path.Combine(root, "DB's"),
+            PrimaryEventFile = "Event-announcer.event",
+            Role = Models.CheckoutRole.Announcer,
+            CheckedOutAt = DateTimeOffset.UtcNow
+        });
+
+        var mirror = new AutosaveMirrorService(new FileCopyService(), store);
+        await mirror.MirrorOnceAsync();
+        Assert.False(Directory.Exists(autosave));
+        Assert.True(File.Exists(Path.Combine(backup, "ENTRIES.DTA")));
+    }
 }

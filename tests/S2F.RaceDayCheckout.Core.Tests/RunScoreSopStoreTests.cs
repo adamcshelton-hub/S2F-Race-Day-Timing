@@ -19,6 +19,9 @@ public class RunScoreSopStoreTests
             Assert.False(result.UsedFallback);
             Assert.Equal(1, result.Profile.AutoSaveMinutes);
             Assert.Equal(RunScoreSopProfile.BackupPathToken, result.Profile.SaveEntriesDir);
+            Assert.Equal(
+                RunScoreSopProfile.NotepadPlusPlusExePath,
+                result.Profile.Strings[RunScoreSopProfile.ExternalEditorName]);
             Assert.True(result.Profile.Bools["Save all results"]);
             Assert.Contains("autoSaveMinutes", File.ReadAllText(path), StringComparison.OrdinalIgnoreCase);
         }
@@ -64,6 +67,58 @@ public class RunScoreSopStoreTests
             Assert.True(result.UsedFallback);
             Assert.NotNull(result.Warning);
             Assert.Equal(1, result.Profile.AutoSaveMinutes);
+        }
+        finally
+        {
+            try { File.Delete(path); } catch { }
+        }
+    }
+
+    [Fact]
+    public void Load_BlankExternalEditor_FillsNotepadPlusPlusPath()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "s2f-sop-" + Guid.NewGuid().ToString("N") + ".json");
+        try
+        {
+            File.WriteAllText(path, """
+                {
+                  "autoSaveMinutes": 1,
+                  "saveEntriesDir": "{{BackupPath}}",
+                  "saveResultsDir": "{{BackupPath}}",
+                  "strings": { "External Editor": "" }
+                }
+                """);
+            var store = new RunScoreSopStore(path);
+            var result = store.Load();
+
+            Assert.False(result.UsedFallback);
+            Assert.Equal(
+                RunScoreSopProfile.NotepadPlusPlusExePath,
+                result.Profile.Strings[RunScoreSopProfile.ExternalEditorName]);
+            var again = store.Load();
+            Assert.Equal(
+                RunScoreSopProfile.NotepadPlusPlusExePath,
+                again.Profile.Strings[RunScoreSopProfile.ExternalEditorName]);
+        }
+        finally
+        {
+            try { File.Delete(path); } catch { }
+        }
+    }
+
+    [Fact]
+    public void Load_CustomExternalEditor_IsKept()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "s2f-sop-" + Guid.NewGuid().ToString("N") + ".json");
+        try
+        {
+            var custom = RunScoreSopProfile.CreateDefaults();
+            custom.Strings[RunScoreSopProfile.ExternalEditorName] = @"D:\Tools\editor.exe";
+            var store = new RunScoreSopStore(path);
+            store.Save(custom);
+
+            var result = store.Load();
+            Assert.Equal(@"D:\Tools\editor.exe", result.Profile.Strings[RunScoreSopProfile.ExternalEditorName]);
         }
         finally
         {

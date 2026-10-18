@@ -60,6 +60,10 @@ jobs:
           /p:InformationalVersion=${{ steps.ver.outputs.version }}
           -o publish/${{ matrix.rid }}
 
+      - name: Bundle Notepad++ installer
+        shell: pwsh
+        run: ./build/fetch-notepadpp.ps1 -Rid "${{ matrix.rid }}" -Destination "publish/${{ matrix.rid }}/redist"
+
       - name: Check Artifact Signing config
         id: signing
         shell: pwsh
@@ -173,6 +177,11 @@ jobs:
           name: velopack-win-arm64
           path: releases/win-arm64
 
+      # GPL-3: convey Notepad++ corresponding source from the same release as the installer.
+      - name: Download Notepad++ source
+        shell: pwsh
+        run: ./build/fetch-notepadpp.ps1 -SourceZip "npp-gpl-source.zip"
+
       # Release already exists (created by `gh release create` / UI). Attach assets; don't create again.
       - name: Upload assets to GitHub Release
         env:
@@ -181,5 +190,6 @@ jobs:
         run: |
           gh release upload "${{ github.event.release.tag_name }}" `
             (Get-ChildItem -Path releases/win-x64,releases/win-arm64 -File).FullName `
+            "npp-gpl-source.zip" `
             --repo "${{ github.repository }}" `
             --clobber

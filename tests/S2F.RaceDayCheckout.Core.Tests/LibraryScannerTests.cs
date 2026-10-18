@@ -1,3 +1,4 @@
+using S2F.RaceDayCheckout.Core.Models;
 using S2F.RaceDayCheckout.Core.Services;
 
 namespace S2F.RaceDayCheckout.Core.Tests;
@@ -35,6 +36,18 @@ public class LibraryScannerTests
         Assert.Contains(sessions, s => s.DisplayName == "2026 - Heavens Cradle");
         Assert.Contains(sessions, s => s.DisplayName == "2026 - LRM Weekend / Sunday");
         Assert.Contains(sessions, s => s.PrimaryEventFile == "26 LRM Sunday.event");
+
+        var sunday = Path.Combine(root, "Memphis", "2026 - LRM Weekend", "Sunday");
+        SessionRoleStore.Save(sunday, new SessionRoles
+        {
+            PrimaryEventFile = "26 LRM Sunday-S2F-MEM-3.event",
+            AnnouncerEventFile = "26 LRM Sunday-announcer.event"
+        });
+        File.WriteAllText(Path.Combine(sunday, "26 LRM Sunday-announcer.event"), "a");
+        var assigned = scanner.ListSessions(root, officeFilter: "Memphis")
+            .Single(s => s.SessionName == "Sunday");
+        Assert.Equal("26 LRM Sunday-S2F-MEM-3.event", assigned.PrimaryEventFile);
+        Assert.Equal("26 LRM Sunday-announcer.event", assigned.AnnouncerEventFile);
 
         var search = scanner.ListSessions(root, search: "Sunday");
         Assert.Single(search);

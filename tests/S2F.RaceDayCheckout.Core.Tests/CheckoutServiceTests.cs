@@ -476,8 +476,20 @@ public class CheckoutServiceTests
             Task.FromResult(new CloudSyncResult { Success = true });
 
         public Task<CloudSyncResult> DownloadSessionAsync(
-            string librarySessionPath, string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default) =>
+            string librarySessionPath, string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default, SessionDownloadOptions? options = null) =>
             Task.FromResult(new CloudSyncResult { Success = true, Message = "local" });
+
+        public Task<CloudSyncResult> DownloadSessionRolesAsync(
+            IReadOnlyList<string> librarySessionPaths, string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new CloudSyncResult { Success = true });
+
+        public Task<IReadOnlyList<string>> ListRemoteEventFileNamesAsync(
+            string librarySessionPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<string>>(Array.Empty<string>());
+
+        public Task<CloudSyncResult> UploadSessionRolesAsync(
+            string librarySessionPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new CloudSyncResult { Success = true });
 
         public Task<CloudSyncResult> UploadSessionAsync(
             string librarySessionPath, string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default, IReadOnlyList<string>? onlyRelativePaths = null) =>
@@ -529,5 +541,215 @@ public class CheckoutServiceTests
         Assert.NotNull(activeStore.Load());
         Assert.NotNull(locks.TryRead(packPath));
         Assert.Equal(LockLifecycleStatus.Active, locks.TryRead(packPath)!.Status);
+    }
+
+    [Fact]
+    public async Task Checkout_UsesSidecarPrimary_InsteadOfShortestName()
+    {
+        var (packPath, libraryRoot) = CreateFlatPack();
+        File.WriteAllText(Path.Combine(packPath, "A.event"), "short");
+        File.WriteAllText(Path.Combine(packPath, "Sunday Timing File.event"), "assigned");
+        SessionRoleStore.Save(packPath, new SessionRoles
+        {
+            PrimaryEventFile = "Sunday Timing File.event"
+        });
+
+        var raceDay = Path.Combine(Path.GetTempPath(), "s2f-rd-" + Guid.NewGuid().ToString("N"));
+        var settings = new AppSettings { LibraryRoot = libraryRoot, RaceDayRoot = raceDay, DisplayName = "Adam" };
+        var paths = new PathService();
+        var service = new CheckoutService(
+            paths, new CheckoutLockService(paths, new FakeMachine()), new FileCopyService(),
+            new NoProcesses(), new ActiveCheckoutStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json")),
+            new InstantSync());
+
+        var result = await service.CheckoutAsync(new CheckoutRequest
+        {
+            Pack = PackInfo(packPath, "Memphis", "2026 - Sample Event"),
+            Settings = settings,
+            HolderName = "Adam",
+            PrimaryEventFileOverride = "A.event"
+        });
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(CheckoutRole.Timing, result.Active!.Role);
+        Assert.Equal("Sunday Timing File.event", result.Active.PrimaryEventFile);
+        Assert.True(File.Exists(Path.Combine(result.Active.ActivePath, "Sunday Timing File.event")));
+        Assert.False(File.Exists(Path.Combine(result.Active.ActivePath, "A.event")));
+    }
+
+    [Fact]
+    public async Task AnnouncerCheckout_IgnoresLiveLock_CopiesSlimPack_DoneUploadsNothing()
+    {
+        var (packPath, libraryRoot) = CreateFlatPack();
+        File.WriteAllText(Path.Combine(packPath, "Sample Event-announcer.event"), "announcer-event");
+        Directory.CreateDirectory(Path.Combine(packPath, "DB's", "exports"));
+        File.WriteAllText(Path.Combine(packPath, "DB's", "exports", "race.csv"), "nested");
+        SessionRoleStore.Save(packPath, new SessionRoles
+        {
+            PrimaryEventFile = "Sample Event.event",
+            AnnouncerEventFile = "Sample Event-announcer.event"
+        });
+
+        var raceDay = Path.Combine(Path.GetTempPath(), "s2f-rd-" + Guid.NewGuid().ToString("N"));
+        var activeStorePath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json");
+        var settings = new AppSettings { LibraryRoot = libraryRoot, RaceDayRoot = raceDay, DisplayName = "Adam" };
+        var paths = new PathService();
+        var other = new CheckoutLockService(paths, new OtherMachine());
+        other.Acquire(packPath, "Memphis", "2026 - Sample Event", "2026 - Sample Event", "Timer",
+            new[] { "RUNSCORE" }, "Sample Event.event");
+
+        var locks = new CheckoutLockService(paths, new FakeMachine());
+        var cloud = new TrackingCloud();
+        var activeStore = new ActiveCheckoutStore(activeStorePath);
+        var service = new CheckoutService(
+            paths, locks, new FileCopyService(), new NoProcesses(), activeStore,
+            new InstantSync(), cloud: cloud);
+
+        var result = await service.CheckoutAsync(new CheckoutRequest
+        {
+            Pack = PackInfo(packPath, "Memphis", "2026 - Sample Event"),
+            Settings = settings,
+            HolderName = "Announcer",
+            Role = CheckoutRole.Announcer
+        });
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(CheckoutRole.Announcer, result.Active!.Role);
+        Assert.Equal("Sample Event-announcer.event", result.Active.PrimaryEventFile);
+        Assert.True(File.Exists(Path.Combine(result.Active.ActivePath, "Sample Event-announcer.event")));
+        Assert.True(File.Exists(Path.Combine(result.Active.ActivePath, "DB's", "live.csv")));
+        Assert.True(File.Exists(Path.Combine(result.Active.ActivePath, "DB's", "exports", "race.csv")));
+        Assert.False(Directory.Exists(Path.Combine(result.Active.ActivePath, "RUNSCORE")));
+        Assert.False(File.Exists(Path.Combine(result.Active.ActivePath, "Sample Event.event")));
+        Assert.False(Directory.Exists(Path.Combine(packPath, "RUNSCORE", "_autosave")));
+        Assert.Equal(CheckoutRole.Announcer, cloud.LastDownloadRole);
+        Assert.Equal("Sample Event-announcer.event", cloud.LastAnnouncerFile);
+        Assert.Equal(0, cloud.SessionUploads);
+        Assert.Equal(0, cloud.LockUploads);
+
+        var held = locks.TryRead(packPath);
+        Assert.NotNull(held);
+        Assert.Equal(LockLifecycleStatus.Active, held!.Status);
+        Assert.Equal("OTHERMACHINE", held.MachineId);
+
+        var blocked = await service.CheckinAsync(settings, "Announcer");
+        Assert.False(blocked.Success);
+        Assert.Equal(0, cloud.SessionUploads);
+        Assert.Equal("OTHERMACHINE", locks.TryRead(packPath)!.MachineId);
+        Assert.NotNull(activeStore.Load());
+
+        var done = service.DoneAnnouncer();
+        Assert.True(done.Success, done.Message);
+        Assert.Null(activeStore.Load());
+        Assert.False(Directory.Exists(result.Active.ActivePath));
+        Assert.True(File.Exists(Path.Combine(packPath, "DB's", "live.csv")));
+        Assert.True(File.Exists(Path.Combine(packPath, "Sample Event-announcer.event")));
+        Assert.True(Directory.Exists(Path.Combine(packPath, "RUNSCORE")));
+        Assert.Equal(0, cloud.SessionUploads);
+        Assert.Equal(0, cloud.LockUploads);
+        Assert.Equal("OTHERMACHINE", locks.TryRead(packPath)!.MachineId);
+        Assert.Equal(LockLifecycleStatus.Active, locks.TryRead(packPath)!.Status);
+    }
+
+    [Fact]
+    public async Task DoneAnnouncer_RefusesWhileTimingAndScoringIsOpen()
+    {
+        var (packPath, libraryRoot) = CreateFlatPack();
+        File.WriteAllText(Path.Combine(packPath, "Sample Event-announcer.event"), "announcer-event");
+        SessionRoleStore.Save(packPath, new SessionRoles
+        {
+            AnnouncerEventFile = "Sample Event-announcer.event"
+        });
+
+        var raceDay = Path.Combine(Path.GetTempPath(), "s2f-rd-" + Guid.NewGuid().ToString("N"));
+        var activeStorePath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json");
+        var settings = new AppSettings { LibraryRoot = libraryRoot, RaceDayRoot = raceDay, DisplayName = "Adam" };
+        var paths = new PathService();
+        var activeStore = new ActiveCheckoutStore(activeStorePath);
+        var service = new CheckoutService(
+            paths, new CheckoutLockService(paths, new FakeMachine()), new FileCopyService(),
+            new RunScoreRunning(), activeStore, new InstantSync());
+
+        var checkout = await service.CheckoutAsync(new CheckoutRequest
+        {
+            Pack = PackInfo(packPath, "Memphis", "2026 - Sample Event"),
+            Settings = settings,
+            HolderName = "Announcer",
+            Role = CheckoutRole.Announcer
+        });
+        Assert.True(checkout.Success, checkout.Message);
+
+        var done = service.DoneAnnouncer();
+        Assert.False(done.Success);
+        Assert.NotEmpty(done.BlockingProcesses);
+        Assert.NotNull(activeStore.Load());
+        Assert.True(Directory.Exists(checkout.Active!.ActivePath));
+    }
+
+    private sealed class TrackingCloud : ICloudLibrarySync
+    {
+        public bool IsAvailable => true;
+        public int SessionUploads { get; private set; }
+        public int LockUploads { get; private set; }
+        public CheckoutRole? LastDownloadRole { get; private set; }
+        public string? LastAnnouncerFile { get; private set; }
+
+        public Task<CloudSyncResult> RefreshOfficeListAsync(
+            string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new CloudSyncResult { Success = true });
+
+        public Task<CloudSyncResult> RefreshOfficeSessionsAsync(
+            string libraryRoot, string graphDriveRoot, string officeName, IProgress<string>? status = null, CancellationToken cancellationToken = default, string? protectSessionPath = null) =>
+            Task.FromResult(new CloudSyncResult { Success = true });
+
+        public Task<CloudSyncResult> RefreshFolderChildrenAsync(
+            string libraryRoot, string graphDriveRoot, string relativeUnderLibrary, bool probeSessionLeaves = false, IProgress<string>? status = null, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new CloudSyncResult { Success = true });
+
+        public Task<CloudSyncResult> DownloadSessionAsync(
+            string librarySessionPath, string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default, SessionDownloadOptions? options = null)
+        {
+            LastDownloadRole = options?.Role ?? CheckoutRole.Timing;
+            LastAnnouncerFile = options?.AnnouncerEventFile;
+            return Task.FromResult(new CloudSyncResult { Success = true, Message = "tracked" });
+        }
+
+        public Task<CloudSyncResult> DownloadSessionRolesAsync(
+            IReadOnlyList<string> librarySessionPaths, string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new CloudSyncResult { Success = true });
+
+        public Task<IReadOnlyList<string>> ListRemoteEventFileNamesAsync(
+            string librarySessionPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<string>>(Array.Empty<string>());
+
+        public Task<CloudSyncResult> UploadSessionRolesAsync(
+            string librarySessionPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new CloudSyncResult { Success = true, FilesTransferred = 1 });
+
+        public Task<CloudSyncResult> UploadSessionAsync(
+            string librarySessionPath, string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default, IReadOnlyList<string>? onlyRelativePaths = null)
+        {
+            SessionUploads++;
+            return Task.FromResult(new CloudSyncResult { Success = true });
+        }
+
+        public Task<CloudSyncResult> UploadFolderAsync(
+            string localFolderPath, string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new CloudSyncResult { Success = true });
+
+        public Task<CloudSyncResult> UploadLocalFilesAsync(
+            IReadOnlyList<string> localFilePaths, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new CloudSyncResult { Success = true });
+
+        public Task<CloudSyncResult> UploadCheckoutLockAsync(
+            string librarySessionPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default)
+        {
+            LockUploads++;
+            return Task.FromResult(new CloudSyncResult { Success = true });
+        }
+
+        public Task<CloudSyncResult> ClearRemoteFolderAsync(
+            string localFolderPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new CloudSyncResult { Success = true });
     }
 }

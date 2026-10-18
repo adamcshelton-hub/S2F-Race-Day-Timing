@@ -87,6 +87,18 @@ public sealed class RunScoreSopStore : IRunScoreSopStore
             }
 
             NormalizeDictionaries(profile);
+            if (ApplyNotepadPlusPlusDefault(profile))
+            {
+                try
+                {
+                    Save(profile);
+                }
+                catch
+                {
+                    // In-memory profile still has the path for this launch.
+                }
+            }
+
             return new RunScoreSopLoadResult
             {
                 Profile = profile,
@@ -108,8 +120,8 @@ public sealed class RunScoreSopStore : IRunScoreSopStore
 
     public string EnsureFile()
     {
-        if (!File.Exists(_path))
-            Save(RunScoreSopProfile.CreateDefaults());
+        // Load seeds a missing file and fills a blank External Editor on older SOP files.
+        Load();
         return _path;
     }
 
@@ -127,5 +139,19 @@ public sealed class RunScoreSopStore : IRunScoreSopStore
         profile.Bools = new Dictionary<string, bool>(profile.Bools ?? new(), StringComparer.Ordinal);
         profile.Ints = new Dictionary<string, int>(profile.Ints ?? new(), StringComparer.Ordinal);
         profile.Strings = new Dictionary<string, string>(profile.Strings ?? new(), StringComparer.Ordinal);
+    }
+
+    /// <summary>
+    /// Older SOP files were seeded with a blank External Editor (RunScore then uses Notepad).
+    /// Fill that blank with the Program Files path. A non-empty custom editor is left alone.
+    /// </summary>
+    internal static bool ApplyNotepadPlusPlusDefault(RunScoreSopProfile profile)
+    {
+        if (profile.Strings.TryGetValue(RunScoreSopProfile.ExternalEditorName, out var current)
+            && !string.IsNullOrWhiteSpace(current))
+            return false;
+
+        profile.Strings[RunScoreSopProfile.ExternalEditorName] = RunScoreSopProfile.NotepadPlusPlusExePath;
+        return true;
     }
 }

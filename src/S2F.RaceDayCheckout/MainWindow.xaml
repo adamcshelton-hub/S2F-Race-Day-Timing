@@ -18,29 +18,19 @@
 
   <Grid>
     <DockPanel>
-      <!-- Header: orange 2 mark + product title; New event link only on office step -->
+      <!-- Header -->
       <Border DockPanel.Dock="Top" Background="{StaticResource HeaderBrush}" Padding="20,14">
-        <DockPanel LastChildFill="True">
-          <TextBlock DockPanel.Dock="Right" VerticalAlignment="Center" FontSize="14"
-                     Visibility="{Binding ShowNewEventLink, Converter={StaticResource BoolVis}}">
-            <Hyperlink Click="NewEvent_Click" Foreground="{StaticResource AccentBrush}"
-                       TextDecorations="Underline" Cursor="Hand"
-                       ToolTip="Copy a Template or Past Race and set race name, date, and %resultsid%.">
-              Set Up a New Event
-            </Hyperlink>
-          </TextBlock>
-          <StackPanel Orientation="Horizontal" VerticalAlignment="Center"
-                      MouseLeftButtonDown="Logo_MouseLeftButtonDown"
-                      ToolTip="Triple-click logo for admin settings">
-            <Image Source="pack://application:,,,/Assets/logo-mark.png"
-                   Width="40" Height="40" Stretch="Uniform" Margin="0,0,14,0"
-                   SnapsToDevicePixels="True"
-                   RenderOptions.BitmapScalingMode="HighQuality"/>
-            <TextBlock Text="Start 2 Finish Race Day Timing"
-                       Foreground="White" FontSize="20" FontWeight="Bold"
-                       VerticalAlignment="Center"/>
-          </StackPanel>
-        </DockPanel>
+        <StackPanel Orientation="Horizontal" VerticalAlignment="Center"
+                    MouseLeftButtonDown="Logo_MouseLeftButtonDown"
+                    ToolTip="Triple-click logo for admin settings">
+          <Image Source="pack://application:,,,/Assets/logo-mark.png"
+                 Width="40" Height="40" Stretch="Uniform" Margin="0,0,14,0"
+                 SnapsToDevicePixels="True"
+                 RenderOptions.BitmapScalingMode="HighQuality"/>
+          <TextBlock Text="Start 2 Finish Race Day Timing"
+                     Foreground="White" FontSize="20" FontWeight="Bold"
+                     VerticalAlignment="Center"/>
+        </StackPanel>
       </Border>
 
       <!-- Body -->
@@ -54,7 +44,36 @@
         <StackPanel Grid.Row="0" Margin="0,0,0,16">
           <TextBlock Text="{Binding StepTitle}" FontSize="28" FontWeight="SemiBold"/>
           <TextBlock Text="{Binding StepSubtitle}" Foreground="{StaticResource MutedBrush}"
-                     FontSize="15" Margin="0,6,0,0"/>
+                     FontSize="15" Margin="0,6,0,0" TextWrapping="Wrap"/>
+          <StackPanel Orientation="Horizontal" Margin="0,14,0,0"
+                      Visibility="{Binding ShowRolePicker, Converter={StaticResource BoolVis}}">
+            <Button Content="Timing" MinWidth="160" Margin="0,0,10,0" Click="RoleTiming_Click">
+              <Button.Style>
+                <Style TargetType="Button" BasedOn="{StaticResource SecondaryButton}">
+                  <Style.Triggers>
+                    <DataTrigger Binding="{Binding IsTimingRole}" Value="True">
+                      <Setter Property="Background" Value="{StaticResource AccentBrush}"/>
+                      <Setter Property="Foreground" Value="White"/>
+                      <Setter Property="BorderThickness" Value="0"/>
+                    </DataTrigger>
+                  </Style.Triggers>
+                </Style>
+              </Button.Style>
+            </Button>
+            <Button Content="Announcer" MinWidth="160" Click="RoleAnnouncer_Click">
+              <Button.Style>
+                <Style TargetType="Button" BasedOn="{StaticResource SecondaryButton}">
+                  <Style.Triggers>
+                    <DataTrigger Binding="{Binding IsAnnouncerRole}" Value="True">
+                      <Setter Property="Background" Value="{StaticResource AccentBrush}"/>
+                      <Setter Property="Foreground" Value="White"/>
+                      <Setter Property="BorderThickness" Value="0"/>
+                    </DataTrigger>
+                  </Style.Triggers>
+                </Style>
+              </Button.Style>
+            </Button>
+          </StackPanel>
         </StackPanel>
 
         <!-- OFFICE — OneDrive ready check + office list -->
@@ -102,21 +121,25 @@
                   <StackPanel>
                     <TextBlock Text="{Binding DisplayName}" FontSize="15" FontWeight="SemiBold"/>
                     <TextBlock Text="{Binding PrimaryEventFile}" Foreground="{StaticResource MutedBrush}"
-                               FontSize="11" Margin="0,1,0,0"/>
+                               FontSize="11" Margin="0,1,0,0"
+                               Visibility="{Binding DataContext.IsTimingRole, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolVis}}"/>
+                    <TextBlock Text="{Binding AnnouncerEventFile}" Foreground="{StaticResource MutedBrush}"
+                               FontSize="11" Margin="0,1,0,0"
+                               Visibility="{Binding DataContext.IsAnnouncerRole, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolVis}}"/>
                   </StackPanel>
                   <TextBlock Grid.Column="1" Text="{Binding DisplayLock}" VerticalAlignment="Center"
-                             Foreground="{StaticResource MutedBrush}" FontSize="11" Margin="12,0,0,0"/>
+                             Foreground="{StaticResource MutedBrush}" FontSize="11" Margin="12,0,0,0"
+                             Visibility="{Binding DataContext.ShowSessionLock, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolVis}}"/>
                 </Grid>
               </DataTemplate>
             </ListBox.ItemTemplate>
           </ListBox>
           <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" MaxWidth="480"
                       Visibility="{Binding ShowEmptySessions, Converter={StaticResource BoolVis}}">
-            <TextBlock Text="No events loaded for this office"
+            <TextBlock Text="{Binding EmptySessionsTitle}"
                        FontSize="20" FontWeight="SemiBold" TextAlignment="Center" TextWrapping="Wrap"/>
-            <TextBlock Margin="0,10,0,18" FontSize="14" TextAlignment="Center" TextWrapping="Wrap"
-                       Foreground="{StaticResource MutedBrush}"
-                       Text="Nothing listed for this folder yet (empty on OneDrive, or the list timed out). Go Back, or Refresh events."/>
+            <TextBlock Text="{Binding EmptySessionsBody}" Margin="0,10,0,18" FontSize="14" TextAlignment="Center" TextWrapping="Wrap"
+                       Foreground="{StaticResource MutedBrush}"/>
             <Button Content="Refresh events" Style="{StaticResource PrimaryButton}"
                     HorizontalAlignment="Center" MinWidth="200" Click="RefreshSessions_Click"
                     ToolTip="Re-list this office from OneDrive (adds new events, drops ones moved to Past Races)."/>
@@ -140,10 +163,10 @@
           </ListBox>
         </DockPanel>
 
-        <!-- ACTIVE — event name is already in the page title; card is actions only -->
+        <!-- ACTIVE timing — event name is already in the page title; card is actions only -->
         <Border Grid.Row="1" Background="{StaticResource CardBrush}" CornerRadius="10"
                 BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Padding="28"
-                Visibility="{Binding IsActiveStep, Converter={StaticResource BoolVis}}">
+                Visibility="{Binding IsTimingActive, Converter={StaticResource BoolVis}}">
           <StackPanel>
             <UniformGrid Columns="2" Margin="0,0,0,12">
               <Button Content="Open RunScore" Style="{StaticResource PrimaryButton}"
@@ -173,35 +196,133 @@
           </StackPanel>
         </Border>
 
-        <!-- ADMIN — Graph + SOP only (paths fixed under C:\S2F) -->
+        <!-- ACTIVE announcer — stays open; Done clears this laptop only -->
+        <Border Grid.Row="1" Background="{StaticResource CardBrush}" CornerRadius="10"
+                BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Padding="28"
+                Visibility="{Binding IsAnnouncerActive, Converter={StaticResource BoolVis}}">
+          <StackPanel>
+            <Button Content="Open Timing &amp; Scoring" Style="{StaticResource PrimaryButton}"
+                    HorizontalAlignment="Stretch" Margin="0,0,0,12" Click="LaunchTs_Click"
+                    ToolTip="Opens the assigned announcer .event. You can open it again any time while this stays up."/>
+
+            <Button Content="Browse race files" Style="{StaticResource SecondaryButton}"
+                    HorizontalAlignment="Left" Margin="0,0,0,28" Click="OpenWorkingFolder_Click"
+                    ToolTip="Opens the local announcer copy, including DB's."/>
+
+            <Border Background="#FFF8E8" BorderBrush="#E6C35C" BorderThickness="1"
+                    CornerRadius="8" Padding="16" Margin="0,0,0,12">
+              <TextBlock TextWrapping="Wrap" FontSize="14"
+                         Text="CSV and race database exports are in this race's DB's folder. Keep this app open while you announce. Open Timing &amp; Scoring again any time — it does not upload during the race."/>
+            </Border>
+
+            <Border Background="#F3FBF6" BorderBrush="{StaticResource SaveBrush}" BorderThickness="1"
+                    CornerRadius="8" Padding="16" Margin="0,0,0,16">
+              <TextBlock TextWrapping="Wrap" FontSize="14"
+                         Text="When you're finished, close Timing &amp; Scoring, then tap Done. Done removes the announcer files from this laptop only. Nothing is uploaded, and the timing laptop is not affected."/>
+            </Border>
+
+            <Button Content="Done" Style="{StaticResource SaveButton}"
+                    HorizontalAlignment="Stretch" FontSize="18" MinHeight="56" Click="Done_Click"/>
+          </StackPanel>
+        </Border>
+
+        <!-- ADMIN — Settings | Events -->
         <DockPanel Grid.Row="1" LastChildFill="True"
                    Visibility="{Binding IsAdminStep, Converter={StaticResource BoolVis}}">
           <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
             <Button Content="Edit RunScore SOP…" Style="{StaticResource SecondaryButton}"
-                    Width="180" Margin="0,0,12,0" Click="EditRunScoreSop_Click"/>
+                    Width="180" Margin="0,0,12,0" Click="EditRunScoreSop_Click"
+                    Visibility="{Binding IsAdminSettings, Converter={StaticResource BoolVis}}"/>
             <Button Content="Save" Style="{StaticResource PrimaryButton}"
-                    Width="140" Click="SaveAdmin_Click"/>
+                    Width="140" Click="SaveAdmin_Click"
+                    Visibility="{Binding IsAdminSettings, Converter={StaticResource BoolVis}}"/>
+            <Button Content="Save assignment" Style="{StaticResource PrimaryButton}"
+                    MinWidth="180" Click="SaveEventRoles_Click"
+                    Visibility="{Binding IsAdminEvents, Converter={StaticResource BoolVis}}"/>
           </StackPanel>
           <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
                         Padding="0,0,4,8">
             <StackPanel>
-              <TextBlock TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" FontSize="13" Margin="0,0,0,16"
-                         Text="Library and race-day folders are fixed at C:\S2F\Library and C:\S2F\RaceDay (Graph cache + Active). New events: use the link on the office screen."/>
+              <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
+                <Button Content="Settings" MinWidth="140" Margin="0,0,10,0" Click="AdminSettings_Click">
+                  <Button.Style>
+                    <Style TargetType="Button" BasedOn="{StaticResource SecondaryButton}">
+                      <Style.Triggers>
+                        <DataTrigger Binding="{Binding IsAdminSettings}" Value="True">
+                          <Setter Property="Background" Value="{StaticResource AccentBrush}"/>
+                          <Setter Property="Foreground" Value="White"/>
+                          <Setter Property="BorderThickness" Value="0"/>
+                        </DataTrigger>
+                      </Style.Triggers>
+                    </Style>
+                  </Button.Style>
+                </Button>
+                <Button Content="Events" MinWidth="140" Click="AdminEvents_Click">
+                  <Button.Style>
+                    <Style TargetType="Button" BasedOn="{StaticResource SecondaryButton}">
+                      <Style.Triggers>
+                        <DataTrigger Binding="{Binding IsAdminEvents}" Value="True">
+                          <Setter Property="Background" Value="{StaticResource AccentBrush}"/>
+                          <Setter Property="Foreground" Value="White"/>
+                          <Setter Property="BorderThickness" Value="0"/>
+                        </DataTrigger>
+                      </Style.Triggers>
+                    </Style>
+                  </Button.Style>
+                </Button>
+              </StackPanel>
 
-              <TextBlock Text="OneDrive" Margin="0,0,0,4" FontWeight="SemiBold"/>
-              <TextBlock Text="{Binding GraphAccountStatus}" TextWrapping="Wrap" Margin="0,0,0,8" FontSize="13"/>
-              <TextBlock Text="Cloud subfolder for the library (leave blank if offices are under My files)" Margin="0,0,0,4"
-                         Foreground="{StaticResource MutedBrush}" FontSize="12"/>
-              <TextBox Text="{Binding GraphDriveRoot, UpdateSourceTrigger=PropertyChanged}" Padding="10,8"
-                       Margin="0,0,0,12" ToolTip="Blank = OneDrive My files root (Atlanta, Test Office, …). Only fill in if offices live inside a subfolder."/>
-              <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
-                <Button Content="Sign in to OneDrive" Style="{StaticResource PrimaryButton}"
-                        MinHeight="40" Width="180" Margin="0,0,12,0" Click="GraphSignIn_Click"/>
-                <Button Content="Sign out" Style="{StaticResource SecondaryButton}"
-                        MinHeight="40" Width="120" Margin="0,0,12,0" Click="GraphSignOut_Click"/>
-                <Button Content="Refresh offices" Style="{StaticResource SecondaryButton}"
-                        MinHeight="40" Width="150" Click="GraphRefresh_Click"
-                        ToolTip="List offices/sessions from OneDrive into C:\S2F\Library"/>
+              <StackPanel Visibility="{Binding IsAdminSettings, Converter={StaticResource BoolVis}}">
+                <TextBlock TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" FontSize="13" Margin="0,0,0,16"
+                           Text="Library and race-day folders are fixed at C:\S2F\Library and C:\S2F\RaceDay (Graph cache + Active). New events and file assignment are under Events."/>
+
+                <TextBlock Text="OneDrive" Margin="0,0,0,4" FontWeight="SemiBold"/>
+                <TextBlock Text="{Binding GraphAccountStatus}" TextWrapping="Wrap" Margin="0,0,0,8" FontSize="13"/>
+                <TextBlock Text="Cloud subfolder for the library (leave blank if offices are under My files)" Margin="0,0,0,4"
+                           Foreground="{StaticResource MutedBrush}" FontSize="12"/>
+                <TextBox Text="{Binding GraphDriveRoot, UpdateSourceTrigger=PropertyChanged}" Padding="10,8"
+                         Margin="0,0,0,12" ToolTip="Blank = OneDrive My files root (Atlanta, Test Office, …). Only fill in if offices live inside a subfolder."/>
+                <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                  <Button Content="Sign in to OneDrive" Style="{StaticResource PrimaryButton}"
+                          MinHeight="40" Width="180" Margin="0,0,12,0" Click="GraphSignIn_Click"/>
+                  <Button Content="Sign out" Style="{StaticResource SecondaryButton}"
+                          MinHeight="40" Width="120" Margin="0,0,12,0" Click="GraphSignOut_Click"/>
+                  <Button Content="Refresh offices" Style="{StaticResource SecondaryButton}"
+                          MinHeight="40" Width="150" Click="GraphRefresh_Click"
+                          ToolTip="List office folders from OneDrive into C:\S2F\Library"/>
+                </StackPanel>
+              </StackPanel>
+
+              <StackPanel Visibility="{Binding IsAdminEvents, Converter={StaticResource BoolVis}}">
+                <TextBlock TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" FontSize="13" Margin="0,0,0,12"
+                           Text="We can't create the MyLaps .event ZIP here. Save As in Timing &amp; Scoring into the race folder, then assign which file is Timing and which is Announcer."/>
+                <Button Content="Set up a new event" Style="{StaticResource PrimaryButton}"
+                        HorizontalAlignment="Left" MinWidth="220" Margin="0,0,0,18" Click="NewEvent_Click"/>
+
+                <TextBlock Text="Configure an existing event" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                <TextBlock Text="Office" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}" FontSize="12"/>
+                <ComboBox x:Name="AdminOfficeBox" ItemsSource="{Binding AdminOffices}"
+                          Padding="8,6" MinHeight="36" Margin="0,0,0,12"
+                          SelectionChanged="AdminOffice_Changed"/>
+                <TextBlock Text="Event" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}" FontSize="12"/>
+                <ListBox x:Name="AdminSessionList" ItemsSource="{Binding AdminSessions}"
+                         MaxHeight="160" Margin="0,0,0,12"
+                         SelectionChanged="AdminSession_Changed">
+                  <ListBox.ItemTemplate>
+                    <DataTemplate>
+                      <TextBlock Text="{Binding DisplayName}" FontSize="14"/>
+                    </DataTemplate>
+                  </ListBox.ItemTemplate>
+                </ListBox>
+                <TextBlock Text="Timing file" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}" FontSize="12"/>
+                <ComboBox ItemsSource="{Binding AdminEventFiles}"
+                          SelectedItem="{Binding SelectedTimingFile}"
+                          Padding="8,6" MinHeight="36" Margin="0,0,0,12"/>
+                <TextBlock Text="Announcer file (optional — most races leave this blank)" Margin="0,0,0,4"
+                           Foreground="{StaticResource MutedBrush}" FontSize="12"/>
+                <ComboBox ItemsSource="{Binding AdminAnnouncerChoices}"
+                          SelectedItem="{Binding SelectedAnnouncerChoice}"
+                          Padding="8,6" MinHeight="36" Margin="0,0,0,8"/>
               </StackPanel>
             </StackPanel>
           </ScrollViewer>

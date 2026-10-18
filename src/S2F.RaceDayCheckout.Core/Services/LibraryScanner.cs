@@ -196,6 +196,10 @@ public sealed class LibraryScanner
         var parent = parts[0];
         var session = parts[^1];
         var eventFiles = EventFileSelector.ListEventFiles(sessionPath);
+        var roles = SessionRoleStore.TryLoad(sessionPath);
+        var primary = !string.IsNullOrWhiteSpace(roles?.PrimaryEventFile)
+            ? roles!.PrimaryEventFile
+            : EventFileSelector.ChoosePrimary(eventFiles);
         return new EventPackInfo
         {
             Office = office,
@@ -204,7 +208,8 @@ public sealed class LibraryScanner
             RelativePath = relative,
             Path = sessionPath,
             EventFiles = eventFiles,
-            PrimaryEventFile = EventFileSelector.ChoosePrimary(eventFiles)
+            PrimaryEventFile = primary,
+            AnnouncerEventFile = roles?.AnnouncerEventFile
         };
     }
 

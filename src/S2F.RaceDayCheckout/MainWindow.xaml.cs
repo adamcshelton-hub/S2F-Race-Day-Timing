@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Threading;
 using S2F.RaceDayCheckout.Core.Models;
@@ -47,6 +48,10 @@ public partial class MainWindow : Window
             this,
             msg => _vm.Status = msg);
 
+        // Once per machine: official Notepad++ installer → C:\Program Files\Notepad++.
+        // Skipped when that exe is already there, and when this build has no bundled installer.
+        await NotepadPlusPlusSetup.EnsureAsync(this, _vm);
+
         // First install only (Velopack OnFirstRun): create RaceDay Active/Backup + Defender opt-in.
         // Not on checkout; not again on routine updates once DefenderExclusionsConfigured is set.
         DefenderExclusionPrompt.TryOffer(this);
@@ -88,6 +93,27 @@ public partial class MainWindow : Window
     private void OpenWorkingFolder_Click(object sender, RoutedEventArgs e) => _vm.OpenWorkingFolder();
 
     private async void Finish_Click(object sender, RoutedEventArgs e) => await _vm.FinishAsync();
+
+    private async void Done_Click(object sender, RoutedEventArgs e) => await _vm.DoneAnnouncerAsync();
+
+    private async void RoleTiming_Click(object sender, RoutedEventArgs e) =>
+        await _vm.SetCheckoutRoleAsync(CheckoutRole.Timing);
+
+    private async void RoleAnnouncer_Click(object sender, RoutedEventArgs e) =>
+        await _vm.SetCheckoutRoleAsync(CheckoutRole.Announcer);
+
+    private void AdminSettings_Click(object sender, RoutedEventArgs e) => _vm.ShowAdminSettings();
+
+    private void AdminEvents_Click(object sender, RoutedEventArgs e) => _vm.ShowAdminEvents();
+
+    private async void AdminOffice_Changed(object sender, SelectionChangedEventArgs e) =>
+        await _vm.SelectAdminOfficeAsync(AdminOfficeBox.SelectedItem as string);
+
+    private async void AdminSession_Changed(object sender, SelectionChangedEventArgs e) =>
+        await _vm.LoadAdminEventFilesAsync(AdminSessionList.SelectedItem as EventPackInfo);
+
+    private async void SaveEventRoles_Click(object sender, RoutedEventArgs e) =>
+        await _vm.SaveAdminEventRolesAsync();
 
     private void BusyOk_Click(object sender, RoutedEventArgs e) => _vm.AcknowledgeBusy();
 

@@ -10,7 +10,8 @@ public enum TimerCloseChoice
 {
     KeepWorking,
     SaveAndClose,
-    CloseWithoutSaving
+    CloseWithoutSaving,
+    DoneLocalOnly
 }
 
 /// <summary>
@@ -266,6 +267,43 @@ public static class TimerDialog
             + "Keep this app open while racing — it mirrors live files to OneDrive for failover.\n\n"
             + "Save your work before closing. If you close without saving, another timer may not be able to use this event.",
             buttons: new[] { save, stay, discard });
+
+        window.Content = DimmedHost(card);
+        window.ShowDialog();
+        return result;
+    }
+
+    /// <summary>
+    /// Announcer close: no Finish/upload. Leave Active so Timing &amp; Scoring keeps its files,
+    /// or Done to clear this laptop only.
+    /// </summary>
+    public static TimerCloseChoice AskCloseWhileAnnouncerActive(Window? owner)
+    {
+        var result = TimerCloseChoice.KeepWorking;
+        var window = CreateChromeLess(owner);
+
+        var done = MakeButton("Done", "SaveButton", () =>
+        {
+            result = TimerCloseChoice.DoneLocalOnly;
+            window.DialogResult = true;
+        });
+        var stay = MakeButton("Keep working", "SecondaryButton", () =>
+        {
+            result = TimerCloseChoice.KeepWorking;
+            window.DialogResult = false;
+        });
+        var leave = MakeButton("Close app", "SecondaryButton", () =>
+        {
+            result = TimerCloseChoice.CloseWithoutSaving;
+            window.DialogResult = true;
+        });
+
+        var card = BuildCard(
+            "Announcer files still open",
+            "This announcer copy stays on this laptop only. Closing the app does not upload anything and does not affect the timing laptop.\n\n"
+            + "Timing & Scoring can stay open if you close the app.\n\n"
+            + "Tap Done only when you are finished — that removes the announcer files from this laptop.",
+            buttons: new[] { done, stay, leave });
 
         window.Content = DimmedHost(card);
         window.ShowDialog();

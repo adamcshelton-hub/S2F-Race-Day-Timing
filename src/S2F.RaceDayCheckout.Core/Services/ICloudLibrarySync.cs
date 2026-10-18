@@ -51,12 +51,42 @@ public interface ICloudLibrarySync
         IProgress<string>? status = null,
         CancellationToken cancellationToken = default);
 
-    /// <summary>Download a session pack (RUNSCORE, .event, ._checkin, DB's, _autosave) into the local library path.</summary>
+    /// <summary>
+    /// Download a session pack into the local library path.
+    /// Timing (default): RUNSCORE, .event, ._checkin files, DB's. Skips _autosave.
+    /// Announcer (<see cref="SessionDownloadOptions"/>): assigned .event + DB's only.
+    /// </summary>
     Task<CloudSyncResult> DownloadSessionAsync(
         string librarySessionPath,
         string libraryRoot,
         string graphDriveRoot,
         IProgress<string>? status = null,
+        CancellationToken cancellationToken = default,
+        SessionDownloadOptions? options = null);
+
+    /// <summary>
+    /// Download only <c>._checkin/s2f_session.json</c> for the given session leaves (parallel).
+    /// 404 means that race has no assignment yet. Does not pull race files.
+    /// </summary>
+    Task<CloudSyncResult> DownloadSessionRolesAsync(
+        IReadOnlyList<string> librarySessionPaths,
+        string libraryRoot,
+        string graphDriveRoot,
+        IProgress<string>? status = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Name-only <c>*.event</c> children of one session folder. No file bytes.</summary>
+    Task<IReadOnlyList<string>> ListRemoteEventFileNamesAsync(
+        string librarySessionPath,
+        string libraryRoot,
+        string graphDriveRoot,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Upload <c>._checkin/s2f_session.json</c> only.</summary>
+    Task<CloudSyncResult> UploadSessionRolesAsync(
+        string librarySessionPath,
+        string libraryRoot,
+        string graphDriveRoot,
         CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -125,8 +155,20 @@ public sealed class NullCloudLibrarySync : ICloudLibrarySync
         Task.FromResult(new CloudSyncResult { Success = true, Message = "Graph not signed in." });
 
     public Task<CloudSyncResult> DownloadSessionAsync(
-        string librarySessionPath, string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default) =>
+        string librarySessionPath, string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default, SessionDownloadOptions? options = null) =>
         Task.FromResult(new CloudSyncResult { Success = true, Message = "Graph not signed in — using local library." });
+
+    public Task<CloudSyncResult> DownloadSessionRolesAsync(
+        IReadOnlyList<string> librarySessionPaths, string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default) =>
+        Task.FromResult(new CloudSyncResult { Success = true, Message = "Graph not signed in." });
+
+    public Task<IReadOnlyList<string>> ListRemoteEventFileNamesAsync(
+        string librarySessionPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<string>>(Array.Empty<string>());
+
+    public Task<CloudSyncResult> UploadSessionRolesAsync(
+        string librarySessionPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
+        Task.FromResult(new CloudSyncResult { Success = true, Message = "Graph not signed in — saved on this laptop." });
 
     public Task<CloudSyncResult> UploadSessionAsync(
         string librarySessionPath, string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default, IReadOnlyList<string>? onlyRelativePaths = null) =>

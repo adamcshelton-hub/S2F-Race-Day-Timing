@@ -8,6 +8,15 @@ public sealed class RunScoreSopProfile
 {
     public const string BackupPathToken = "{{BackupPath}}";
 
+    /// <summary>Registry value RunScore reads for listing output (F7). Blank means Windows Notepad.</summary>
+    public const string ExternalEditorName = "External Editor";
+
+    /// <summary>
+    /// Default 64-bit Notepad++ install. The app setup writes this file when it is missing.
+    /// Same path on every machine that used the official installer and left the default folder.
+    /// </summary>
+    public const string NotepadPlusPlusExePath = @"C:\Program Files\Notepad++\notepad++.exe";
+
     /// <summary>Friendly minutes; converted to registry "Auto save counts" (= minutes × 300).</summary>
     public double AutoSaveMinutes { get; set; } = 1;
 
@@ -65,7 +74,7 @@ public sealed class RunScoreSopProfile
         Strings = new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["Bandit number"] = "0",
-            ["External Editor"] = "",
+            [ExternalEditorName] = NotepadPlusPlusExePath,
             ["Default font"] = "Courier New",
             ["Language"] = "English",
         }
