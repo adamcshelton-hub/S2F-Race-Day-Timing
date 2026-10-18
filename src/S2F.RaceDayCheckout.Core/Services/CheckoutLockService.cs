@@ -160,6 +160,28 @@ public sealed class CheckoutLockService
         return existing;
     }
 
+    /// <summary>
+    /// True only when the on-disk lock is Active and held by this machine.
+    /// Call after <c>DownloadCheckoutLockAsync</c> so a soft-takeover on OneDrive is visible locally.
+    /// </summary>
+    public bool ThisMachineHoldsActiveLock(string libraryEventPath)
+    {
+        var existing = TryRead(libraryEventPath);
+        return existing is { Status: LockLifecycleStatus.Active }
+               && string.Equals(existing.MachineId, _machine.MachineId, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>Active lock held by another machine (after refresh), or null if free / ours / missing.</summary>
+    public CheckoutLock? TryGetOtherMachineActiveLock(string libraryEventPath)
+    {
+        var existing = TryRead(libraryEventPath);
+        if (existing is null || existing.Status != LockLifecycleStatus.Active)
+            return null;
+        if (string.Equals(existing.MachineId, _machine.MachineId, StringComparison.OrdinalIgnoreCase))
+            return null;
+        return existing;
+    }
+
     public void Release(string libraryEventPath, string holderName, string? reason = null)
     {
         var existing = TryRead(libraryEventPath) ?? new CheckoutLock

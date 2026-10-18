@@ -15,9 +15,17 @@ public sealed class AppSettings
     /// <summary>Always <see cref="DefaultAdminPin"/> (7690). Ignored if present in settings.json.</summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public string AdminPin => DefaultAdminPin;
-    public const int DefaultStaleLockMinutes = 18;
+    /// <summary>
+    /// Soft (no-PIN) takeover when lock lastSeen is older than this. With a 1-minute heartbeat,
+    /// 6 minutes ≈ several missed beats + cellular Graph lag — short enough for 5K failover.
+    /// Force take-over + Admin PIN remains available immediately while the lock still looks alive.
+    /// </summary>
+    public const int DefaultStaleLockMinutes = 6;
 
-    public int HeartbeatSeconds { get; set; } = 120;
+    /// <summary>How often Active timing writes/uploads _checkout.json lastSeen (minimum 30s in UI timer).</summary>
+    public const int DefaultHeartbeatSeconds = 60;
+
+    public int HeartbeatSeconds { get; set; } = DefaultHeartbeatSeconds;
     public int StaleLockMinutes { get; set; } = DefaultStaleLockMinutes;
     public int AutosaveMirrorSeconds { get; set; } = 60;
     public int OneDriveSyncWaitSeconds { get; set; } = 180;

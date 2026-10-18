@@ -19,6 +19,11 @@ public sealed class AutosaveMirrorService
     private readonly ActiveCheckoutStore _activeStore;
     private readonly ICloudLibrarySync _cloud;
     private readonly Func<AppSettings> _settings;
+    /// <summary>
+    /// When set, mid-race Library/_autosave + Graph publish run only if this returns true
+    /// (this machine still holds the cloud checkout lock).
+    /// </summary>
+    private readonly Func<CancellationToken, Task<bool>>? _stillOwnsLockAsync;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private volatile bool _paused;
 
@@ -26,12 +31,14 @@ public sealed class AutosaveMirrorService
         IFileCopyService copy,
         ActiveCheckoutStore activeStore,
         ICloudLibrarySync? cloud = null,
-        Func<AppSettings>? settings = null)
+        Func<AppSettings>? settings = null,
+        Func<CancellationToken, Task<bool>>? stillOwnsLockAsync = null)
     {
         _copy = copy;
         _activeStore = activeStore;
         _cloud = cloud ?? new NullCloudLibrarySync();
         _settings = settings ?? (() => new AppSettings());
+        _stillOwnsLockAsync = stillOwnsLockAsync;
     }
 
     /// <summary>Stop accepting new mirror ticks (Finish / check-in).</summary>
@@ -63,6 +70,11 @@ public sealed class AutosaveMirrorService
 
             var active = _activeStore.Load();
             if (active is null || active.Role == CheckoutRole.Announcer)
+                return;
+
+            // Soft/force takeover on another laptop — do not write Library _autosave or Graph.
+            if (_stillOwnsLockAsync is not null
+                && !await _stillOwnsLockAsync(cancellationToken).ConfigureAwait(false))
                 return;
 
             Directory.CreateDirectory(active.BackupPath);

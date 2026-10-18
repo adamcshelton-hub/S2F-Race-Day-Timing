@@ -107,6 +107,10 @@ public sealed class MainViewModel : INotifyPropertyChanged
     /// only then — not merely because the PIN is still unlocked from an earlier Admin visit.
     /// </summary>
     private bool _finishReturnsToAdmin;
+    /// <summary>Prevent stacking takeover dialogs from heartbeat while one is open.</summary>
+    private bool _lockTakenOverPromptOpen;
+    /// <summary>After we detect a lost lock, skip cloud writes until user Close Local / Force.</summary>
+    private bool _cloudWritesBlockedUntilResolved;
     private string? _adminOffice;
     /// <summary>Under Admin → Edit Current Event → Past Races only (bucket / year). Separate from race-day browse.</summary>
     private string _adminPastRacesRelative = string.Empty;
@@ -147,7 +151,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
         _locks = new CheckoutLockService(_paths, _machine);
         _scanner = new LibraryScanner(_paths, _locks);
         _checkout = new CheckoutService(_paths, _locks, _copy, _processGuard, _activeStore, cloud: _cloud);
-        _mirror = new AutosaveMirrorService(_copy, _activeStore, _cloud, () => _settings);
+        _mirror = new AutosaveMirrorService(
+            _copy,
+            _activeStore,
+            _cloud,
+            () => _settings,
+            stillOwnsLockAsync: StillOwnsLockForCloudWritesAsync);
 
         Offices = new ObservableCollection<string>();
         VisibleOffices = new ObservableCollection<string>();
@@ -173,7 +182,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
         };
 
         _heartbeatTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(Math.Max(30, _settings.HeartbeatSeconds)) };
-        _heartbeatTimer.Tick += (_, _) => Heartbeat();
+        _heartbeatTimer.Tick += async (_, _) =>
+        {
+            try { await HeartbeatAsync().ConfigureAwait(true); }
+            catch { /* non-fatal */ }
+        };
         _mirrorTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(Math.Max(30, _settings.AutosaveMirrorSeconds)) };
         _mirrorTimer.Tick += async (_, _) =>
         {
@@ -963,6 +976,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         {
             // Restart / same-machine reclaim — treat as race-day, not Admin setup checkout.
             _finishReturnsToAdmin = false;
+            _cloudWritesBlockedUntilResolved = false;
             Step = WizardStep.Active;
             Status = Active.Role == CheckoutRole.Announcer
                 ? "Announcer T&S files loaded — tap Done when you're finished."
@@ -1360,12 +1374,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 var lastSeen = eval.Lock?.LastSeenAt.ToLocalTime().ToString("g") ?? "unknown";
                 if (!TimerDialog.Confirm(
                         OwnerWindow,
-                        "Already in use",
+                        "Already in Use",
                         $"Someone else is already using this event.\n\n"
                         + $"{holder} on {machine}\nLast seen {lastSeen}\n\n"
-                        + "Only force take-over if that laptop truly cannot finish (crash, power loss, or you're the only timer left).\n\n"
-                        + "Force take-over requires the Admin PIN.",
-                        yesLabel: "Force take-over…",
+                        + "Only use Force Take Over if that laptop truly cannot finish (crash, power loss, or you're the only timer left).\n\n"
+                        + "Force Take Over requires the Admin PIN.",
+                        yesLabel: "Force Take Over…",
                         noLabel: "Cancel"))
                     return;
 
@@ -1391,12 +1405,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 var lastSeen = eval.Lock?.LastSeenAt.ToLocalTime().ToString("g") ?? "unknown";
                 if (!TimerDialog.Confirm(
                         OwnerWindow,
-                        "Take over event?",
+                        "Take Over Event?",
                         $"This event was checked out by {holder} on {machine}.\n"
                         + $"Last seen {lastSeen} — that laptop looks offline (crashed or shut down).\n\n"
                         + "Take over on this laptop?\n\n"
                         + "We'll load the race from OneDrive and apply any newer live autosave files from the other machine.",
-                        yesLabel: "Take over",
+                        yesLabel: "Take Over",
                         noLabel: "Cancel"))
                     return;
                 SetBusy("Loading event", "Recovering race…");
@@ -1469,6 +1483,13 @@ public sealed class MainViewModel : INotifyPropertyChanged
         if (Active.Role == CheckoutRole.Announcer)
         {
             await DoneAnnouncerAsync().ConfigureAwait(true);
+            return;
+        }
+
+        // Soft/force takeover elsewhere — never Finish-upload over the other laptop.
+        if (!await StillOwnsLockForCloudWritesAsync().ConfigureAwait(true))
+        {
+            await HandleLockTakenOverAsync().ConfigureAwait(true);
             return;
         }
 
@@ -3899,11 +3920,58 @@ public sealed class MainViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(DisplayName));
     }
 
-    private void Heartbeat()
+    /// <summary>
+    /// Refresh cloud lock when signed in; true only if this machine still holds Active.
+    /// Fail closed on Graph errors so a sleeping laptop cannot re-upload after soft takeover.
+    /// </summary>
+    private async Task<bool> StillOwnsLockForCloudWritesAsync(CancellationToken cancellationToken = default)
+    {
+        if (_cloudWritesBlockedUntilResolved)
+            return false;
+
+        var active = _activeStore.Load();
+        if (active is null || active.Role == CheckoutRole.Announcer)
+            return true;
+
+        if (_cloud.IsAvailable)
+        {
+            try
+            {
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                cts.CancelAfter(GraphSyncPolicy.HttpTimeout);
+                var pull = await _cloud.DownloadCheckoutLockAsync(
+                    active.LibrarySessionPath,
+                    _settings.LibraryRoot,
+                    _settings.GraphDriveRoot,
+                    cts.Token).ConfigureAwait(false);
+                if (!pull.Success)
+                    return false;
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                return false;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        return _locks.ThisMachineHoldsActiveLock(active.LibrarySessionPath);
+    }
+
+    private async Task HeartbeatAsync()
     {
         var active = _activeStore.Load();
         if (active is null || active.Role == CheckoutRole.Announcer)
             return;
+
+        if (!await StillOwnsLockForCloudWritesAsync().ConfigureAwait(true))
+        {
+            await HandleLockTakenOverAsync().ConfigureAwait(true);
+            return;
+        }
+
         try { _locks.Heartbeat(active.LibrarySessionPath); }
         catch { /* ignore */ }
 
@@ -3913,6 +3981,10 @@ public sealed class MainViewModel : INotifyPropertyChanged
         // Tiny lock JSON only — never UploadFolderAsync(._checkin) (history + backup trees).
         var lockPath = _paths.GetLockPath(active.LibrarySessionPath);
         if (!File.Exists(lockPath))
+            return;
+
+        // Re-check after local heartbeat write — never upload if we no longer own.
+        if (!_locks.ThisMachineHoldsActiveLock(active.LibrarySessionPath))
             return;
 
         var sessionPath = active.LibrarySessionPath;
@@ -3938,6 +4010,148 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 _heartbeatUploadGate.Release();
             }
         });
+    }
+
+    private async Task HandleLockTakenOverAsync()
+    {
+        if (_lockTakenOverPromptOpen)
+            return;
+
+        var active = Active ?? _activeStore.Load();
+        if (active is null || active.Role == CheckoutRole.Announcer)
+            return;
+
+        _cloudWritesBlockedUntilResolved = true;
+        _mirror.Pause();
+
+        var other = _locks.TryGetOtherMachineActiveLock(active.LibrarySessionPath);
+        _lockTakenOverPromptOpen = true;
+        try
+        {
+            var choice = TimerDialog.AskLockTakenOver(
+                OwnerWindow,
+                other?.HolderName ?? "Another timer",
+                other?.MachineName ?? "another laptop");
+
+            if (choice == TimerLockTakenOverChoice.ForceTakeOver)
+            {
+                await ForceReclaimAfterLockTakenAsync(active).ConfigureAwait(true);
+                return;
+            }
+
+            await CloseLocalCopyAfterLockTakenAsync().ConfigureAwait(true);
+        }
+        finally
+        {
+            _lockTakenOverPromptOpen = false;
+        }
+    }
+
+    private async Task CloseLocalCopyAfterLockTakenAsync()
+    {
+        var result = _checkout.AbandonLocalActive(requireVendorsClosed: true);
+        if (!result.Success && result.BlockingProcesses.Count > 0)
+        {
+            if (!TimerDialog.Confirm(
+                    OwnerWindow,
+                    "Vendors Still Open",
+                    result.Message + "\n\nClose them, then Close Local Copy again — or clear Active anyway (you must close RunScore / Timing & Scoring yourself).",
+                    yesLabel: "Clear Active Anyway",
+                    noLabel: "Cancel"))
+            {
+                // Stay blocked — next heartbeat re-prompts.
+                return;
+            }
+
+            result = _checkout.AbandonLocalActive(requireVendorsClosed: false);
+        }
+
+        if (!result.Success)
+        {
+            Alert("Close Local Copy", result.Message);
+            return;
+        }
+
+        Active = null;
+        SelectedSession = null;
+        SelectedEventFile = null;
+        _finishReturnsToAdmin = false;
+        _cloudWritesBlockedUntilResolved = false;
+        _mirror.Resume();
+        LoadOffices();
+        if (Offices.Count == 1)
+            await SelectOfficeAsync(Offices[0]).ConfigureAwait(true);
+        else
+            Step = WizardStep.Office;
+        Status = result.Message;
+    }
+
+    private async Task ForceReclaimAfterLockTakenAsync(ActiveCheckout active)
+    {
+        var pin = PromptPin("Enter Admin PIN to force take-over:");
+        if (pin is null)
+            return;
+        if (!string.Equals(pin, AppSettings.DefaultAdminPin, StringComparison.Ordinal))
+        {
+            Alert("Wrong PIN", "Admin PIN did not match. Event was not taken over.");
+            return;
+        }
+
+        SelectedSession = new EventPackInfo
+        {
+            Office = active.Office,
+            ParentEvent = active.ParentEvent,
+            SessionName = active.SessionName,
+            RelativePath = active.RelativePath,
+            Path = active.LibrarySessionPath,
+            EventFiles = EventFileSelector.ListEventFiles(active.LibrarySessionPath),
+            PrimaryEventFile = active.PrimaryEventFile
+        };
+        SelectedEventFile = active.PrimaryEventFile ?? string.Empty;
+        _sessionPackPulled = SessionPackLooksUsable(active.LibrarySessionPath);
+        _checkoutRole = CheckoutRole.Timing;
+        OnPropertyChanged(nameof(IsTimingRole));
+        OnPropertyChanged(nameof(IsAnnouncerRole));
+
+        SetBusy("Force Take Over", "Reclaiming this race on this laptop…");
+        try
+        {
+            var progress = new Progress<CopyProgress>(p =>
+                ProgressText = p.FilesCopied > 0 ? $"Copying race files… ({p.FilesCopied})" : "Getting your race ready…");
+            var statusProgress = new Progress<string>(s => ProgressText = FriendlyProgress(s));
+            var result = await _checkout.CheckoutAsync(new CheckoutRequest
+            {
+                Pack = SelectedSession,
+                Settings = _settings,
+                HolderName = DisplayName.Trim(),
+                PrimaryEventFileOverride = SelectedEventFile,
+                ConfirmForceTakeover = true,
+                EmergencyReason = "Force take-over (Admin PIN) — lock was held by another laptop after this machine woke",
+                SkipGraphDownload = _sessionPackPulled
+            }, progress, statusProgress).ConfigureAwait(true);
+
+            if (!result.Success)
+            {
+                await ShowBusyResultAsync("Couldn't take over", result.Message).ConfigureAwait(true);
+                return;
+            }
+
+            Active = result.Active;
+            Step = WizardStep.Active;
+            _cloudWritesBlockedUntilResolved = false;
+            _mirror.Resume();
+            Status = string.Empty;
+            await ShowBusyResultAsync("Force take-over complete", result.Message).ConfigureAwait(true);
+        }
+        catch (Exception ex)
+        {
+            await ShowBusyResultAsync("Couldn't take over", ex.Message).ConfigureAwait(true);
+        }
+        finally
+        {
+            if (Busy && !BusyNeedsAcknowledge)
+                ClearBusy();
+        }
     }
 
     private static string? PromptPin(string message)

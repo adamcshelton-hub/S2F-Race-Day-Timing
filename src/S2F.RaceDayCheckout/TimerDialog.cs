@@ -14,6 +14,15 @@ public enum TimerCloseChoice
     DoneLocalOnly
 }
 
+/// <summary>Another laptop took the checkout lock while this machine still has Active.</summary>
+public enum TimerLockTakenOverChoice
+{
+    /// <summary>Clear local Active; leave the other laptop's lock alone.</summary>
+    CloseLocalCopy,
+    /// <summary>Admin PIN force take-over — reclaim this race on this laptop.</summary>
+    ForceTakeOver
+}
+
 /// <summary>
 /// In-app branded dialogs matching the busy overlay (no Windows title-bar chrome).
 /// </summary>
@@ -112,6 +121,44 @@ public static class TimerDialog
         window.Content = DimmedHost(card);
         window.ShowDialog();
         return result;
+    }
+
+    /// <summary>
+    /// Soft/force takeover happened elsewhere while this laptop still has Active.
+    /// Primary = Close Local Copy (safe). Secondary = Force Take Over (Admin PIN next).
+    /// </summary>
+    public static TimerLockTakenOverChoice AskLockTakenOver(
+        Window? owner,
+        string holderName,
+        string machineName)
+    {
+        var choice = TimerLockTakenOverChoice.CloseLocalCopy;
+        var window = CreateChromeLess(owner);
+        var who = string.IsNullOrWhiteSpace(holderName) ? "Another timer" : holderName.Trim();
+        var where = string.IsNullOrWhiteSpace(machineName) ? "another laptop" : machineName.Trim();
+
+        var closeLocal = MakeButton("Close Local Copy", "PrimaryButton", () =>
+        {
+            choice = TimerLockTakenOverChoice.CloseLocalCopy;
+            window.DialogResult = true;
+        });
+        var force = MakeButton("Force Take Over…", "DangerButton", () =>
+        {
+            choice = TimerLockTakenOverChoice.ForceTakeOver;
+            window.DialogResult = true;
+        });
+
+        var card = BuildCard(
+            "Another Laptop Took Over",
+            $"{who} on {where} now holds this event.\n\n"
+            + "This laptop must not upload or Finish — that would overwrite their work.\n\n"
+            + "Close Local Copy clears Active on this machine only (close RunScore / Timing & Scoring first).\n\n"
+            + "Force Take Over requires the Admin PIN and reclaims the race here.",
+            buttons: new[] { closeLocal, force });
+
+        window.Content = DimmedHost(card);
+        window.ShowDialog();
+        return choice;
     }
 
     /// <summary>

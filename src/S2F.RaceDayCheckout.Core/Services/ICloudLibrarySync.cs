@@ -130,6 +130,17 @@ public interface ICloudLibrarySync
         string graphDriveRoot,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Download only <c>._checkin/_checkout.json</c> into the local Library session (overwrite).
+    /// Used before heartbeat / mirror so a sleeping laptop cannot re-upload a stale lock after soft takeover.
+    /// 404 leaves local lock unchanged and returns Success with 0 files.
+    /// </summary>
+    Task<CloudSyncResult> DownloadCheckoutLockAsync(
+        string librarySessionPath,
+        string libraryRoot,
+        string graphDriveRoot,
+        CancellationToken cancellationToken = default);
+
     /// <summary>Delete all files under a remote folder (used to clear cloud _autosave after Finish).</summary>
     Task<CloudSyncResult> ClearRemoteFolderAsync(
         string localFolderPath,
@@ -183,6 +194,10 @@ public sealed class NullCloudLibrarySync : ICloudLibrarySync
         Task.FromResult(new CloudSyncResult { Success = true, Message = "Graph not signed in." });
 
     public Task<CloudSyncResult> UploadCheckoutLockAsync(
+        string librarySessionPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
+        Task.FromResult(new CloudSyncResult { Success = true, Message = "Graph not signed in." });
+
+    public Task<CloudSyncResult> DownloadCheckoutLockAsync(
         string librarySessionPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
         Task.FromResult(new CloudSyncResult { Success = true, Message = "Graph not signed in." });
 

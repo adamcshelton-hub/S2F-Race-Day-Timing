@@ -96,6 +96,38 @@ public class CheckoutServiceTests
     }
 
     [Fact]
+    public async Task AbandonLocalActive_ClearsActive_LeavesLockActive()
+    {
+        var (pack, libraryRoot) = CreateFlatPack();
+        var raceDay = Path.Combine(Path.GetTempPath(), "s2f-rd-" + Guid.NewGuid().ToString("N"));
+        var settings = new AppSettings { LibraryRoot = libraryRoot, RaceDayRoot = raceDay, DisplayName = "Adam" };
+        var paths = new PathService();
+        var locks = new CheckoutLockService(paths, new FakeMachine());
+        var storePath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json");
+        var service = new CheckoutService(
+            paths, locks, new FileCopyService(), new NoProcesses(),
+            new ActiveCheckoutStore(storePath), new InstantSync());
+
+        var checkout = await service.CheckoutAsync(new CheckoutRequest
+        {
+            Pack = PackInfo(pack, "Memphis", "2026 - Sample Event"),
+            Settings = settings,
+            HolderName = "Adam"
+        });
+        Assert.True(checkout.Success, checkout.Message);
+        Assert.Equal(LockLifecycleStatus.Active, locks.TryRead(pack)!.Status);
+        Assert.Equal("TESTMACHINE", locks.TryRead(pack)!.MachineId);
+
+        var abandon = service.AbandonLocalActive();
+        Assert.True(abandon.Success, abandon.Message);
+        Assert.Null(service.GetActive());
+        Assert.False(Directory.Exists(checkout.Active!.ActivePath));
+        // Other laptop's (or our prior) lock must not be released — takeover owner keeps it.
+        Assert.Equal(LockLifecycleStatus.Active, locks.TryRead(pack)!.Status);
+        Assert.Equal("TESTMACHINE", locks.TryRead(pack)!.MachineId);
+    }
+
+    [Fact]
     public async Task Checkin_DiscoversSaveAsEvent_CopiesToLibrary()
     {
         var root = Path.Combine(Path.GetTempPath(), "s2f-lib-" + Guid.NewGuid().ToString("N"));
@@ -304,7 +336,7 @@ public class CheckoutServiceTests
             LibraryRoot = libraryRoot,
             RaceDayRoot = raceDay,
             DisplayName = "Adam",
-            StaleLockMinutes = 18
+            StaleLockMinutes = AppSettings.DefaultStaleLockMinutes
         };
         var paths = new PathService();
         var t0 = DateTimeOffset.Parse("2026-10-16T12:00:00Z");
@@ -313,7 +345,8 @@ public class CheckoutServiceTests
                 new[] { "RUNSCORE" }, primaryEventFile: "Sample Event.event");
 
         // Evaluator clock is past stale window → NeedsEmergencyConfirm.
-        var locks = new CheckoutLockService(paths, new FakeMachine(), () => t0.AddMinutes(30));
+        var locks = new CheckoutLockService(
+            paths, new FakeMachine(), () => t0.AddMinutes(AppSettings.DefaultStaleLockMinutes + 1));
         var service = new CheckoutService(
             paths, locks, new FileCopyService(),
             new NoProcesses(), new ActiveCheckoutStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json")),
@@ -504,6 +537,10 @@ public class CheckoutServiceTests
             Task.FromResult(new CloudSyncResult { Success = true });
 
         public Task<CloudSyncResult> UploadCheckoutLockAsync(
+            string librarySessionPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new CloudSyncResult { Success = true });
+
+        public Task<CloudSyncResult> DownloadCheckoutLockAsync(
             string librarySessionPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
             Task.FromResult(new CloudSyncResult { Success = true });
 
@@ -748,6 +785,10 @@ public class CheckoutServiceTests
             LockUploads++;
             return Task.FromResult(new CloudSyncResult { Success = true });
         }
+
+        public Task<CloudSyncResult> DownloadCheckoutLockAsync(
+            string librarySessionPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new CloudSyncResult { Success = true });
 
         public Task<CloudSyncResult> ClearRemoteFolderAsync(
             string localFolderPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>

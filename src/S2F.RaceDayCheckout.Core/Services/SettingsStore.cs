@@ -59,11 +59,14 @@ public sealed class SettingsStore : ISettingsStore
     /// <summary>
     /// Graph-era installs always use <c>C:\S2F\Library</c> and <c>C:\S2F\RaceDay</c>.
     /// Migrates older settings that pointed at OneDrive Desktop paths.
+    /// Heartbeat / soft-takeover windows are company-fixed (not per-laptop tuning).
     /// </summary>
     public static AppSettings ApplyFixedPaths(AppSettings settings)
     {
         settings.LibraryRoot = AppSettings.DefaultLibraryRoot;
         settings.RaceDayRoot = AppSettings.DefaultRaceDayRoot;
+        settings.HeartbeatSeconds = AppSettings.DefaultHeartbeatSeconds;
+        settings.StaleLockMinutes = AppSettings.DefaultStaleLockMinutes;
         // Mistaken default: Explorer label "Start 2 - Personal" is the OD sync root, not a Graph child.
         // Offices (Test Office, Memphis, …) live at My files — empty GraphDriveRoot.
         if (string.Equals(settings.GraphDriveRoot?.Trim(), "Start 2 - Personal", StringComparison.OrdinalIgnoreCase))

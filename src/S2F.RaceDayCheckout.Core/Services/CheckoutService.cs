@@ -620,6 +620,65 @@ public sealed class CheckoutService
     }
 
     /// <summary>
+    /// Another laptop took the cloud lock (soft/force takeover). Clear local Active only —
+    /// no Finish upload and no lock release (the other machine owns the lock).
+    /// </summary>
+    /// <param name="requireVendorsClosed">
+    /// When true, refuse if RunScore / T&amp;S still running. When false (user already warned),
+    /// clear Active anyway — staff must close vendors themselves.
+    /// </param>
+    public CheckinResult AbandonLocalActive(bool requireVendorsClosed = true)
+    {
+        var active = _activeStore.Load();
+        if (active is null)
+            return new CheckinResult { Success = false, Message = "No Active checkout on this machine." };
+
+        if (requireVendorsClosed)
+        {
+            var blocking = _processes.GetBlockingProcessNames();
+            if (blocking.Count > 0)
+            {
+                return new CheckinResult
+                {
+                    Success = false,
+                    BlockingProcesses = blocking,
+                    Message = "Close RunScore and Timing & Scoring first: " + string.Join(", ", blocking)
+                };
+            }
+        }
+
+        try
+        {
+            if (Directory.Exists(active.ActivePath))
+                _links.DeleteActiveTreeSafe(active.ActivePath);
+        }
+        catch (Exception ex)
+        {
+            return new CheckinResult
+            {
+                Success = false,
+                Message = "Could not clear the local Active folder: " + ex.Message
+            };
+        }
+
+        _activeStore.Save(null);
+
+        if (active.Role == CheckoutRole.Timing)
+        {
+            try { _runScorePrefs.RestoreNativePrefs(); }
+            catch { /* non-fatal */ }
+        }
+
+        return new CheckinResult
+        {
+            Success = true,
+            AutosaveCleared = true,
+            Message =
+                "Local copy closed. Nothing was uploaded and the other laptop's checkout lock was left alone."
+        };
+    }
+
+    /// <summary>
     /// Sidecar primary when that file is on disk. Otherwise the hinted file, then ChoosePrimary.
     /// </summary>
     private static string ResolveTimingPrimary(string sessionPath, string? hinted)

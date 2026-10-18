@@ -63,7 +63,7 @@ public class CheckoutLockServiceTests
         Acquire(holderLocks, root, "Sam");
 
         var otherLocks = new CheckoutLockService(new PathService(), new FakeMachine("BBB", "LaptopB"), () => now.AddMinutes(5));
-        var eval = otherLocks.EvaluateAcquire(root, new AppSettings { StaleLockMinutes = 18 });
+        var eval = otherLocks.EvaluateAcquire(root, new AppSettings { StaleLockMinutes = AppSettings.DefaultStaleLockMinutes });
         Assert.Equal(LockAcquireOutcome.BlockedAlive, eval.Outcome);
         Assert.Contains("Sam", eval.Message);
     }
@@ -75,10 +75,14 @@ public class CheckoutLockServiceTests
         var (root, holderLocks) = CreateEnv(new FakeMachine("AAA"), () => now);
         Acquire(holderLocks, root, "Sam");
 
-        var otherLocks = new CheckoutLockService(new PathService(), new FakeMachine("BBB"), () => now.AddMinutes(30));
+        // Just past the soft-takeover window (default 6 minutes).
+        var otherLocks = new CheckoutLockService(
+            new PathService(),
+            new FakeMachine("BBB"),
+            () => now.AddMinutes(AppSettings.DefaultStaleLockMinutes + 1));
         Assert.Equal(
             LockAcquireOutcome.NeedsEmergencyConfirm,
-            otherLocks.EvaluateAcquire(root, new AppSettings { StaleLockMinutes = 18 }).Outcome);
+            otherLocks.EvaluateAcquire(root, new AppSettings { StaleLockMinutes = AppSettings.DefaultStaleLockMinutes }).Outcome);
     }
 
     [Fact]
@@ -101,5 +105,39 @@ public class CheckoutLockServiceTests
         t = t.AddMinutes(2);
         locks.Heartbeat(root);
         Assert.Equal(t, locks.TryRead(root)!.LastSeenAt);
+    }
+
+    [Fact]
+    public void ThisMachineHoldsActiveLock_FalseWhenOtherMachine()
+    {
+        var (root, holderLocks) = CreateEnv(new FakeMachine("AAA", "LaptopA"));
+        Acquire(holderLocks, root, "Sam");
+
+        var other = new CheckoutLockService(new PathService(), new FakeMachine("BBB", "LaptopB"));
+        Assert.False(other.ThisMachineHoldsActiveLock(root));
+        Assert.NotNull(other.TryGetOtherMachineActiveLock(root));
+        Assert.Equal("Sam", other.TryGetOtherMachineActiveLock(root)!.HolderName);
+    }
+
+    [Fact]
+    public void ThisMachineHoldsActiveLock_TrueWhenOurs()
+    {
+        var (root, locks) = CreateEnv(new FakeMachine("AAA"));
+        Acquire(locks, root, "Adam");
+        Assert.True(locks.ThisMachineHoldsActiveLock(root));
+        Assert.Null(locks.TryGetOtherMachineActiveLock(root));
+    }
+
+    [Fact]
+    public void Heartbeat_DoesNotRefreshWhenOtherMachineHoldsLock()
+    {
+        var t0 = DateTimeOffset.Parse("2026-10-16T12:00:00Z");
+        var (root, holderLocks) = CreateEnv(new FakeMachine("AAA"), () => t0);
+        Acquire(holderLocks, root, "Sam");
+        var lastSeen = holderLocks.TryRead(root)!.LastSeenAt;
+
+        var t1 = t0.AddMinutes(3);
+        var zombie = new CheckoutLockService(new PathService(), new FakeMachine("BBB"), () => t1);
+        Assert.Equal(lastSeen, zombie.Heartbeat(root)!.LastSeenAt);
     }
 }

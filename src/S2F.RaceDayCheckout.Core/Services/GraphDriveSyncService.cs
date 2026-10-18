@@ -771,6 +771,41 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
         }
     }
 
+    public async Task<CloudSyncResult> DownloadCheckoutLockAsync(
+        string librarySessionPath,
+        string libraryRoot,
+        string graphDriveRoot,
+        CancellationToken cancellationToken = default)
+    {
+        if (!_tokens.IsSignedIn)
+            return new CloudSyncResult { Success = true, Message = "Graph not signed in." };
+
+        try
+        {
+            var relative = ToDriveRelative(librarySessionPath, libraryRoot, graphDriveRoot);
+            if (relative is null)
+                return new CloudSyncResult { Success = false, Message = "Session path is outside LibraryRoot." };
+
+            var cloud = JoinDrivePath(relative, PathService.AppMetaFolderName + "/_checkout.json");
+            var local = new PathService().GetLockPath(librarySessionPath);
+            var got = await TryDownloadOptionalFileAsync(cloud, local, cancellationToken).ConfigureAwait(false);
+            return new CloudSyncResult
+            {
+                Success = true,
+                FilesTransferred = got ? 1 : 0,
+                Message = got ? "Checkout lock refreshed from OneDrive." : "No checkout lock on OneDrive."
+            };
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            return new CloudSyncResult { Success = false, Message = "Lock download failed: " + ex.Message };
+        }
+    }
+
     public async Task<CloudSyncResult> UploadFolderAsync(
         string localFolderPath,
         string libraryRoot,
