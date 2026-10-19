@@ -3,7 +3,7 @@ using S2F.RaceDayCheckout.Core.Models;
 namespace S2F.RaceDayCheckout.Core.Services;
 
 /// <summary>
-/// Temporary checkout-lock diagnosis log for race-day testing.
+/// Checkout-lock problem log. Healthy heartbeats are not written.
 /// File: %AppData%\S2FRaceDayCheckout\lock-trace.log
 /// </summary>
 public static class RaceDayTrace

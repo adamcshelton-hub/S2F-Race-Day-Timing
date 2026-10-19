@@ -172,7 +172,6 @@ public sealed class CheckoutLockService
 
         existing.LastSeenAt = _clock();
         WriteLockWithRetry(libraryEventPath, existing);
-        RaceDayTrace.Write($"lock heartbeat wrote path={libraryEventPath} lock={RaceDayTrace.FormatLock(existing)}");
         return existing;
     }
 
@@ -250,6 +249,37 @@ public sealed class CheckoutLockService
             Reason = reason
         });
         return true;
+    }
+
+    /// <summary>
+    /// Put a pre-download copy of _checkout.json back after OneDrive replaced it
+    /// with something that is not another laptop's Active lock.
+    /// </summary>
+    public bool TryReplaceLockFile(string libraryEventPath, byte[] contents)
+    {
+        _paths.EnsureAppMetaFolder(libraryEventPath);
+        var path = _paths.GetLockPath(libraryEventPath);
+        const int attempts = 12;
+        for (var i = 0; i < attempts; i++)
+        {
+            try
+            {
+                using var fs = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.Read);
+                fs.Write(contents, 0, contents.Length);
+                return true;
+            }
+            catch (IOException) when (i < attempts - 1)
+            {
+                Thread.Sleep(80 * (i + 1));
+            }
+            catch (IOException ex)
+            {
+                RaceDayTrace.Write($"lock restore failed path={path} error={ex.Message}");
+                return false;
+            }
+        }
+
+        return false;
     }
 
     private void WriteLockWithRetry(string libraryEventPath, CheckoutLock lockInfo)

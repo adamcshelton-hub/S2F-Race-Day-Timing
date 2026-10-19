@@ -156,9 +156,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
             _activeStore,
             _cloud,
             () => _settings,
-            stillOwnsLockAsync: ct => StillOwnsLockForCloudWritesAsync(ct, "mirror"));
-        RaceDayTrace.Write(
-            $"identity machine={_machine.MachineName} user={_machine.WindowsUser} os={Environment.OSVersion} machineId={_machine.MachineId}");
+            stillOwnsLockAsync: async ct =>
+                await CheckLockOwnershipAsync(ct, "mirror").ConfigureAwait(false) == LockCloudVerdict.Held);
 
         Offices = new ObservableCollection<string>();
         VisibleOffices = new ObservableCollection<string>();
@@ -1537,12 +1536,18 @@ public sealed class MainViewModel : INotifyPropertyChanged
             return;
         }
 
-        // Soft/force takeover elsewhere — never Finish-upload over the other laptop.
-        if (!await StillOwnsLockForCloudWritesAsync(caller: "finish").ConfigureAwait(true))
+        // Never Finish-upload over another laptop. A failed OneDrive check is not a takeover.
+        switch (await CheckLockOwnershipAsync(caller: "finish").ConfigureAwait(true))
         {
-            RaceDayTrace.Write("lock takeover prompt from finish");
-            await HandleLockTakenOverAsync().ConfigureAwait(true);
-            return;
+            case LockCloudVerdict.TakenOver:
+                RaceDayTrace.Write("lock takeover prompt from finish");
+                await HandleLockTakenOverAsync().ConfigureAwait(true);
+                return;
+            case LockCloudVerdict.Unconfirmed:
+                await ShowBusyResultAsync(
+                    "Couldn't Confirm Checkout",
+                    "OneDrive didn't confirm this laptop still holds the race. Nothing was uploaded. Try Finish again.");
+                return;
         }
 
         // Optional: confirm main timing .event when files are present. Missing .event does not block Finish.
@@ -4076,24 +4081,40 @@ public sealed class MainViewModel : INotifyPropertyChanged
     }
 
     /// <summary>
-    /// Refresh cloud lock when signed in; true only if this machine still holds Active.
-    /// Fail closed on Graph errors so a sleeping laptop cannot re-upload after soft takeover.
+    /// Refresh the cloud lock when signed in.
+    /// Upload only when this machine still holds Active.
+    /// Show a takeover only when the downloaded lock is Active for another machine.
+    /// A failed download does not upload and does not claim another laptop took the race.
     /// </summary>
-    private async Task<bool> StillOwnsLockForCloudWritesAsync(
+    private async Task<LockCloudVerdict> CheckLockOwnershipAsync(
         CancellationToken cancellationToken = default,
         string caller = "check")
     {
         if (_cloudWritesBlockedUntilResolved)
         {
-            RaceDayTrace.Write($"lock own-check caller={caller} result=false reason=writes-blocked");
-            return false;
+            RaceDayTrace.Write($"lock own-check caller={caller} result=taken-over reason=writes-blocked");
+            return LockCloudVerdict.TakenOver;
         }
 
         var active = _activeStore.Load();
         if (active is null || active.Role == CheckoutRole.Announcer)
-            return true;
+            return LockCloudVerdict.Held;
 
-        var before = RaceDayTrace.FormatLock(_locks.TryRead(active.LibrarySessionPath));
+        var sessionPath = active.LibrarySessionPath;
+        var lockPath = _paths.GetLockPath(sessionPath);
+        var heldBefore = _locks.ThisMachineHoldsActiveLock(sessionPath);
+        var before = RaceDayTrace.FormatLock(_locks.TryRead(sessionPath));
+        byte[]? snapshot = null;
+        if (heldBefore && File.Exists(lockPath))
+        {
+            try { snapshot = File.ReadAllBytes(lockPath); }
+            catch (Exception ex)
+            {
+                RaceDayTrace.Write($"lock snapshot failed path={lockPath} error={ex.GetType().Name}: {ex.Message}");
+            }
+        }
+
+        var downloadConfirmed = !_cloud.IsAvailable;
         if (_cloud.IsAvailable)
         {
             try
@@ -4101,44 +4122,78 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 cts.CancelAfter(GraphSyncPolicy.HttpTimeout);
                 var pull = await _cloud.DownloadCheckoutLockAsync(
-                    active.LibrarySessionPath,
+                    sessionPath,
                     _settings.LibraryRoot,
                     _settings.GraphDriveRoot,
                     cts.Token).ConfigureAwait(false);
+                downloadConfirmed = pull.Success;
                 if (!pull.Success)
-                {
-                    LogOwnCheck(caller, false, "graph-download-failed", active.LibrarySessionPath, before, pull.Message);
-                    return false;
-                }
+                    LogOwnCheck(caller, LockCloudVerdict.Unconfirmed, "graph-download-failed", sessionPath, before, pull.Message);
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
-                LogOwnCheck(caller, false, "graph-download-timeout", active.LibrarySessionPath, before, "HttpTimeout");
-                return false;
+                LogOwnCheck(caller, LockCloudVerdict.Unconfirmed, "graph-download-timeout", sessionPath, before, "HttpTimeout");
+                return LockCloudVerdict.Unconfirmed;
             }
             catch (Exception ex)
             {
-                LogOwnCheck(caller, false, "graph-download-exception", active.LibrarySessionPath, before, ex.GetType().Name + ": " + ex.Message);
-                return false;
+                LogOwnCheck(caller, LockCloudVerdict.Unconfirmed, "graph-download-exception", sessionPath, before, ex.GetType().Name + ": " + ex.Message);
+                return LockCloudVerdict.Unconfirmed;
             }
+
+            if (!downloadConfirmed)
+                return LockCloudVerdict.Unconfirmed;
         }
 
-        var owns = _locks.ThisMachineHoldsActiveLock(active.LibrarySessionPath);
+        var afterLock = _locks.TryRead(sessionPath);
+        var decision = LockOwnershipPolicy.Decide(
+            downloadConfirmed,
+            afterLock,
+            _machine.MachineId,
+            heldBefore && snapshot is not null);
+
+        if (decision.RestoreLocalActive)
+        {
+            if (snapshot is null || !_locks.TryReplaceLockFile(sessionPath, snapshot))
+            {
+                LogOwnCheck(caller, LockCloudVerdict.Unconfirmed, "restore-failed", sessionPath, before, "cloud copy was not another laptop");
+                return LockCloudVerdict.Unconfirmed;
+            }
+
+            LogOwnCheck(caller, LockCloudVerdict.Held, "restored-local", sessionPath, before, "cloud copy was not another laptop");
+            return LockCloudVerdict.Held;
+        }
+
+        var reason = decision.Verdict switch
+        {
+            LockCloudVerdict.Held => "held",
+            LockCloudVerdict.TakenOver => "taken-over",
+            _ => "not-active"
+        };
         LogOwnCheck(
             caller,
-            owns,
-            owns ? "held" : "local-lock-not-ours",
-            active.LibrarySessionPath,
+            decision.Verdict,
+            reason,
+            sessionPath,
             before,
             _cloud.IsAvailable ? "downloaded" : "graph-unavailable");
-        return owns;
+        return decision.Verdict;
     }
 
-    private void LogOwnCheck(string caller, bool owns, string reason, string sessionPath, string before, string detail)
+    private void LogOwnCheck(
+        string caller,
+        LockCloudVerdict verdict,
+        string reason,
+        string sessionPath,
+        string before,
+        string detail)
     {
+        if (verdict == LockCloudVerdict.Held && reason == "held")
+            return;
+
         var after = RaceDayTrace.FormatLock(_locks.TryRead(sessionPath));
         RaceDayTrace.Write(
-            $"lock own-check caller={caller} result={owns} reason={reason} " +
+            $"lock own-check caller={caller} result={verdict} reason={reason} " +
             $"ours={_machine.MachineId} oursMachine={_machine.MachineName} oursUser={_machine.WindowsUser} " +
             $"before=[{before}] after=[{after}] detail={detail}");
     }
@@ -4149,11 +4204,15 @@ public sealed class MainViewModel : INotifyPropertyChanged
         if (active is null || active.Role == CheckoutRole.Announcer)
             return;
 
-        if (!await StillOwnsLockForCloudWritesAsync(caller: "heartbeat").ConfigureAwait(true))
+        switch (await CheckLockOwnershipAsync(caller: "heartbeat").ConfigureAwait(true))
         {
-            RaceDayTrace.Write("lock takeover prompt from heartbeat");
-            await HandleLockTakenOverAsync().ConfigureAwait(true);
-            return;
+            case LockCloudVerdict.TakenOver:
+                RaceDayTrace.Write("lock takeover prompt from heartbeat");
+                await HandleLockTakenOverAsync().ConfigureAwait(true);
+                return;
+            case LockCloudVerdict.Unconfirmed:
+                RaceDayTrace.Write("lock heartbeat upload skipped reason=unconfirmed");
+                return;
         }
 
         try { _locks.Heartbeat(active.LibrarySessionPath); }
@@ -4163,10 +4222,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
 
         if (!_cloud.IsAvailable)
-        {
-            RaceDayTrace.Write("lock heartbeat upload skipped reason=graph-unavailable");
             return;
-        }
 
         // Tiny lock JSON only — never UploadFolderAsync(._checkin) (history + backup trees).
         var lockPath = _paths.GetLockPath(active.LibrarySessionPath);
@@ -4188,19 +4244,14 @@ public sealed class MainViewModel : INotifyPropertyChanged
         var driveRoot = _settings.GraphDriveRoot;
         // Skip tick if prior lock upload still running (weak cell must not stack).
         if (!_heartbeatUploadGate.Wait(0))
-        {
-            RaceDayTrace.Write("lock heartbeat upload skipped reason=previous-upload-still-running");
             return;
-        }
 
         _ = Task.Run(async () =>
         {
             try
             {
                 using var cts = new CancellationTokenSource(GraphSyncPolicy.HttpTimeout);
-                var uploaded = await _cloud.UploadCheckoutLockAsync(sessionPath, libraryRoot, driveRoot, cts.Token);
-                RaceDayTrace.Write(
-                    $"lock heartbeat upload result success={uploaded.Success} files={uploaded.FilesTransferred} message={uploaded.Message}");
+                await _cloud.UploadCheckoutLockAsync(sessionPath, libraryRoot, driveRoot, cts.Token);
             }
             catch (Exception ex)
             {
