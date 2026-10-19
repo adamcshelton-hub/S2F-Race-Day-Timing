@@ -31,4 +31,29 @@ public class GraphDriveSyncServiceTests
         var result = await cloud.DownloadSessionAsync(@"C:\x", @"C:\x", "");
         Assert.True(result.Success);
     }
+
+    [Fact]
+    public void FormatOfficeSessionsRefreshMessage_AlreadyInSync_DoesNotSayNoEvents()
+    {
+        // Bug: created=0 pruned=0 used to mean “no RUNSCORE on OneDrive” even when remoteCount > 0.
+        var msg = GraphDriveSyncService.FormatOfficeSessionsRefreshMessage("Memphis", 0, 0, 12);
+        Assert.Contains("12 races", msg, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("no races", msg, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("RUNSCORE", msg, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void FormatOfficeSessionsRefreshMessage_EmptyRemote()
+    {
+        Assert.Equal(
+            "Memphis: no races on OneDrive.",
+            GraphDriveSyncService.FormatOfficeSessionsRefreshMessage("Memphis", 0, 0, 0));
+    }
+
+    [Fact]
+    public void FormatOfficeSessionsRefreshMessage_CreatedAndPruned()
+    {
+        var msg = GraphDriveSyncService.FormatOfficeSessionsRefreshMessage("Memphis", 2, 1, 10);
+        Assert.Equal("Memphis: 2 new, 1 removed (moved/gone on OneDrive).", msg);
+    }
 }

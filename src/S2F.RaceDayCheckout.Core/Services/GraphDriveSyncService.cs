@@ -136,24 +136,15 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
 
             // Full remote list required before prune — never delete on timeout/partial walk
             // (staff move events to Past Races; stale local folders under the old office must go).
-            var (created, pruned) = await SyncOfficeSessionPlaceholdersAsync(
+            var (created, pruned, remoteCount) = await SyncOfficeSessionPlaceholdersAsync(
                     officeLocal, officeCloud, protectSessionPath, budget.Token)
                 .ConfigureAwait(false);
 
-            var parts = new List<string>();
-            if (created > 0)
-                parts.Add($"{created} new");
-            if (pruned > 0)
-                parts.Add($"{pruned} removed (moved/gone on OneDrive)");
             return new CloudSyncResult
             {
                 Success = true,
                 FilesTransferred = created + pruned,
-                Message = parts.Count > 0
-                    ? $"{officeName}: {string.Join(", ", parts)}."
-                    : created == 0 && pruned == 0
-                        ? $"{officeName}: no events with a RUNSCORE folder found on OneDrive."
-                        : $"{officeName}: event list up to date."
+                Message = FormatOfficeSessionsRefreshMessage(officeName, created, pruned, remoteCount)
             };
         }
         catch (OperationCanceledException)
@@ -1326,7 +1317,7 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
     private static string EncodeDrivePath(string path) =>
         string.Join("/", path.Split('/', StringSplitOptions.RemoveEmptyEntries).Select(Uri.EscapeDataString));
 
-    private async Task<(int Created, int Pruned)> SyncOfficeSessionPlaceholdersAsync(
+    private async Task<(int Created, int Pruned, int RemoteCount)> SyncOfficeSessionPlaceholdersAsync(
         string officeLocal,
         string officeCloud,
         string? protectSessionPath,
@@ -1352,7 +1343,34 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
         // If remote is empty, still prune orphans (office verified to exist by caller) —
         // e.g. every event was moved to Past Races.
         var pruned = LibrarySessionCache.PruneSessionsNotOnRemote(officeLocal, remote, protectSessionPath);
-        return (created, pruned);
+        return (created, pruned, remote.Count);
+    }
+
+    /// <summary>
+    /// Status line after indexing one office. Must not say “no events” when OneDrive listed races
+    /// but local placeholders were already present (created=0, pruned=0).
+    /// </summary>
+    public static string FormatOfficeSessionsRefreshMessage(
+        string officeName,
+        int created,
+        int pruned,
+        int remoteCount)
+    {
+        var parts = new List<string>();
+        if (created > 0)
+            parts.Add($"{created} new");
+        if (pruned > 0)
+            parts.Add($"{pruned} removed (moved/gone on OneDrive)");
+
+        if (parts.Count > 0)
+            return $"{officeName}: {string.Join(", ", parts)}.";
+
+        if (remoteCount <= 0)
+            return $"{officeName}: no races on OneDrive.";
+
+        return remoteCount == 1
+            ? $"{officeName}: 1 race — list up to date."
+            : $"{officeName}: {remoteCount} races — list up to date.";
     }
 
     private async IAsyncEnumerable<string> EnumerateRemoteSessionLeavesAsync(
