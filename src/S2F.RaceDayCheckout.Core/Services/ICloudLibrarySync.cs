@@ -5,11 +5,17 @@ public sealed class CloudSyncResult
     public bool Success { get; init; }
     public string Message { get; init; } = string.Empty;
     public int FilesTransferred { get; init; }
+
+    /// <summary>
+    /// Session-relative paths that failed during Finish upload (partial failure).
+    /// Empty on full success or when the whole planned set should be retried (timeout / hard fail).
+    /// </summary>
+    public IReadOnlyList<string> FailedRelativePaths { get; init; } = Array.Empty<string>();
 }
 
 /// <summary>
 /// App-owned sync between local <c>LibraryRoot</c> and personal OneDrive via Microsoft Graph.
-/// When unavailable, checkout/Finish keep today's file + OneDrive Desktop behavior.
+/// Race-day laptops do not use the OneDrive desktop client — Graph is the only cloud path.
 /// </summary>
 public interface ICloudLibrarySync
 {
@@ -147,6 +153,18 @@ public interface ICloudLibrarySync
         string libraryRoot,
         string graphDriveRoot,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Move a top-level live-office folder (flat race or whole Race Group) into
+    /// <c>Past Races/{Office} Past Races/{Year}/{item}</c> on OneDrive, then reconcile local Library.
+    /// </summary>
+    Task<CloudSyncResult> MoveOfficeItemToPastRacesAsync(
+        string libraryRoot,
+        string graphDriveRoot,
+        string officeName,
+        string itemFolderName,
+        IProgress<string>? status = null,
+        CancellationToken cancellationToken = default);
 }
 
 public sealed class NullCloudLibrarySync : ICloudLibrarySync
@@ -183,7 +201,7 @@ public sealed class NullCloudLibrarySync : ICloudLibrarySync
 
     public Task<CloudSyncResult> UploadSessionAsync(
         string librarySessionPath, string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default, IReadOnlyList<string>? onlyRelativePaths = null) =>
-        Task.FromResult(new CloudSyncResult { Success = true, Message = "Graph not signed in — using OneDrive Desktop settle." });
+        Task.FromResult(new CloudSyncResult { Success = false, Message = "Sign in to OneDrive to upload race files." });
 
     public Task<CloudSyncResult> UploadFolderAsync(
         string localFolderPath, string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default) =>
@@ -204,4 +222,13 @@ public sealed class NullCloudLibrarySync : ICloudLibrarySync
     public Task<CloudSyncResult> ClearRemoteFolderAsync(
         string localFolderPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
         Task.FromResult(new CloudSyncResult { Success = true, Message = "Graph not signed in." });
+
+    public Task<CloudSyncResult> MoveOfficeItemToPastRacesAsync(
+        string libraryRoot,
+        string graphDriveRoot,
+        string officeName,
+        string itemFolderName,
+        IProgress<string>? status = null,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(new CloudSyncResult { Success = false, Message = "Sign in to OneDrive first." });
 }

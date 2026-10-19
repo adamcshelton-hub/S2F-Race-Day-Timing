@@ -354,6 +354,9 @@ public partial class MainWindow : Window
     private void AdminAddRaceToGroup_Click(object sender, RoutedEventArgs e) =>
         _vm.BeginAddRaceToExistingGroup();
 
+    private async void AdminMoveToPastRaces_Click(object sender, RoutedEventArgs e) =>
+        await _vm.MoveAdminSessionToPastRacesAsync();
+
     private async void NewEventSourceKindContinue_Click(object sender, RoutedEventArgs e) =>
         await SelectNewEventSourceKindFromListAsync();
 

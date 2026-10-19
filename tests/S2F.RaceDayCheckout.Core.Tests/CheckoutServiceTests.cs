@@ -79,7 +79,7 @@ public class CheckoutServiceTests
             new FileCopyService(),
             new NoProcesses(),
             new ActiveCheckoutStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json")),
-            new InstantSync());
+            new InstantSync(), cloud: new OkCloudSync());
 
         var result = await service.CheckoutAsync(new CheckoutRequest
         {
@@ -106,7 +106,7 @@ public class CheckoutServiceTests
         var storePath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json");
         var service = new CheckoutService(
             paths, locks, new FileCopyService(), new NoProcesses(),
-            new ActiveCheckoutStore(storePath), new InstantSync());
+            new ActiveCheckoutStore(storePath), new InstantSync(), cloud: new OkCloudSync());
 
         var checkout = await service.CheckoutAsync(new CheckoutRequest
         {
@@ -145,7 +145,8 @@ public class CheckoutServiceTests
             new FileCopyService(),
             new NoProcesses(),
             new ActiveCheckoutStore(activeStorePath),
-            new InstantSync());
+            new InstantSync(),
+            cloud: new OkCloudSync());
 
         var checkout = await service.CheckoutAsync(new CheckoutRequest
         {
@@ -179,7 +180,7 @@ public class CheckoutServiceTests
             new FileCopyService(),
             new NoProcesses(),
             new ActiveCheckoutStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json")),
-            new InstantSync());
+            new InstantSync(), cloud: new OkCloudSync());
 
         var result = await service.CheckoutAsync(new CheckoutRequest
         {
@@ -192,17 +193,18 @@ public class CheckoutServiceTests
         Assert.Equal("Sample Event.event", result.Active!.PrimaryEventFile);
         Assert.True(File.Exists(Path.Combine(result.Active.ActivePath, "RUNSCORE", "ENTRIES.FRM")));
         Assert.True(File.Exists(Path.Combine(result.Active.ActivePath, "Sample Event.event")));
-        // Active DB's is a link to OneDrive so RunScore ~..\DB's\ exports stay on the cloud pack.
+        // Graph-only: Active DB's is a real local folder (seeded from Library); app publishes via Graph.
         var activeDbs = Path.Combine(result.Active.ActivePath, "DB's");
         Assert.True(Directory.Exists(activeDbs));
-        Assert.True(File.GetAttributes(activeDbs).HasFlag(FileAttributes.ReparsePoint));
+        Assert.False(File.GetAttributes(activeDbs).HasFlag(FileAttributes.ReparsePoint));
+        Assert.True(File.Exists(Path.Combine(activeDbs, "live.csv")));
         Assert.False(File.Exists(Path.Combine(result.Active.ActivePath, "Sample Event-S2F-MEM-1.event")));
         Assert.True(File.Exists(Path.Combine(packPath, "DB's", "live.csv")));
         Assert.Contains("RUNSCORE", result.Active.ScopedPaths);
     }
 
     [Fact]
-    public async Task Checkout_DbsLink_WritesLandOnOneDrive_AndCheckinDoesNotWipeThem()
+    public async Task Checkout_LocalDbs_FinishMirrorsIntoLibrary()
     {
         var (packPath, libraryRoot) = CreateFlatPack();
         var raceDay = Path.Combine(Path.GetTempPath(), "s2f-rd-" + Guid.NewGuid().ToString("N"));
@@ -211,7 +213,8 @@ public class CheckoutServiceTests
         var paths = new PathService();
         var service = new CheckoutService(
             paths, new CheckoutLockService(paths, new FakeMachine()), new FileCopyService(),
-            new NoProcesses(), new ActiveCheckoutStore(activeStorePath), new InstantSync());
+            new NoProcesses(), new ActiveCheckoutStore(activeStorePath), new InstantSync(),
+            cloud: new OkCloudSync());
 
         var pack = PackInfo(packPath, "Memphis", "2026 - Sample Event");
         var result = await service.CheckoutAsync(new CheckoutRequest
@@ -222,9 +225,9 @@ public class CheckoutServiceTests
         });
         Assert.True(result.Success, result.Message);
 
-        var viaLink = Path.Combine(result.Active!.ActivePath, "DB's", "from-runscore.csv");
-        File.WriteAllText(viaLink, "announcer");
-        Assert.True(File.Exists(Path.Combine(packPath, "DB's", "from-runscore.csv")));
+        var viaActive = Path.Combine(result.Active!.ActivePath, "DB's", "from-runscore.csv");
+        File.WriteAllText(viaActive, "announcer");
+        Assert.False(File.Exists(Path.Combine(packPath, "DB's", "from-runscore.csv")));
         Assert.True(File.Exists(Path.Combine(packPath, "DB's", "live.csv")));
 
         var checkin = await service.CheckinAsync(settings, "Adam", waitForOneDrive: true);
@@ -245,7 +248,8 @@ public class CheckoutServiceTests
         var locks = new CheckoutLockService(paths, new FakeMachine());
         var service = new CheckoutService(
             paths, locks, new FileCopyService(), new NoProcesses(),
-            new ActiveCheckoutStore(activeStorePath), new InstantSync());
+            new ActiveCheckoutStore(activeStorePath), new InstantSync(),
+            cloud: new OkCloudSync());
 
         var pack = PackInfo(packPath, "Memphis", "2026 - Sample Event");
         var result = await service.CheckoutAsync(new CheckoutRequest { Pack = pack, Settings = settings, HolderName = "Adam" });
@@ -264,6 +268,60 @@ public class CheckoutServiceTests
     }
 
     [Fact]
+    public async Task Checkout_WithoutGraph_Refuses()
+    {
+        var (packPath, libraryRoot) = CreateFlatPack();
+        var raceDay = Path.Combine(Path.GetTempPath(), "s2f-rd-" + Guid.NewGuid().ToString("N"));
+        var settings = new AppSettings { LibraryRoot = libraryRoot, RaceDayRoot = raceDay, DisplayName = "Adam" };
+        var paths = new PathService();
+        var service = new CheckoutService(
+            paths, new CheckoutLockService(paths, new FakeMachine()), new FileCopyService(),
+            new NoProcesses(), new ActiveCheckoutStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json")),
+            new InstantSync(), cloud: new NullCloudLibrarySync());
+
+        var checkout = await service.CheckoutAsync(new CheckoutRequest
+        {
+            Pack = PackInfo(packPath, "Memphis", "2026 - Sample Event"),
+            Settings = settings,
+            HolderName = "Adam"
+        });
+        Assert.False(checkout.Success);
+        Assert.Contains("Sign in to OneDrive", checkout.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Checkin_WithoutGraph_RefusesAndKeepsActive()
+    {
+        var (packPath, libraryRoot) = CreateFlatPack();
+        var raceDay = Path.Combine(Path.GetTempPath(), "s2f-rd-" + Guid.NewGuid().ToString("N"));
+        var activeStorePath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json");
+        var settings = new AppSettings { LibraryRoot = libraryRoot, RaceDayRoot = raceDay, DisplayName = "Adam" };
+        var paths = new PathService();
+        var locks = new CheckoutLockService(paths, new FakeMachine());
+        var activeStore = new ActiveCheckoutStore(activeStorePath);
+        var online = new CheckoutService(
+            paths, locks, new FileCopyService(), new NoProcesses(), activeStore,
+            new InstantSync(), cloud: new OkCloudSync());
+
+        var checkout = await online.CheckoutAsync(new CheckoutRequest
+        {
+            Pack = PackInfo(packPath, "Memphis", "2026 - Sample Event"),
+            Settings = settings,
+            HolderName = "Adam"
+        });
+        Assert.True(checkout.Success, checkout.Message);
+
+        var offline = new CheckoutService(
+            paths, locks, new FileCopyService(), new NoProcesses(), activeStore,
+            new InstantSync(), cloud: new NullCloudLibrarySync());
+        var checkin = await offline.CheckinAsync(settings, "Adam");
+        Assert.False(checkin.Success);
+        Assert.Contains("Sign in to OneDrive", checkin.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.NotNull(activeStore.Load());
+        Assert.Equal(LockLifecycleStatus.Active, locks.TryRead(packPath)!.Status);
+    }
+
+    [Fact]
     public async Task Checkout_WhenRunScoreAlreadyOpen_FlagsNeedsRestart()
     {
         var (packPath, libraryRoot) = CreateFlatPack();
@@ -273,7 +331,7 @@ public class CheckoutServiceTests
         var service = new CheckoutService(
             paths, new CheckoutLockService(paths, new FakeMachine()), new FileCopyService(),
             new RunScoreRunning(), new ActiveCheckoutStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json")),
-            new InstantSync());
+            new InstantSync(), cloud: new OkCloudSync());
 
         var result = await service.CheckoutAsync(new CheckoutRequest
         {
@@ -303,7 +361,7 @@ public class CheckoutServiceTests
         var service = new CheckoutService(
             paths, new CheckoutLockService(paths, new FakeMachine()), new FileCopyService(),
             new NoProcesses(), new ActiveCheckoutStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json")),
-            new InstantSync());
+            new InstantSync(), cloud: new OkCloudSync());
 
         var result = await service.CheckoutAsync(new CheckoutRequest
         {
@@ -350,7 +408,7 @@ public class CheckoutServiceTests
         var service = new CheckoutService(
             paths, locks, new FileCopyService(),
             new NoProcesses(), new ActiveCheckoutStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json")),
-            new InstantSync());
+            new InstantSync(), cloud: new OkCloudSync());
 
         var result = await service.CheckoutAsync(new CheckoutRequest
         {
@@ -382,7 +440,7 @@ public class CheckoutServiceTests
         var service = new CheckoutService(
             paths, new CheckoutLockService(paths, new FakeMachine()), new FileCopyService(),
             new NoProcesses(), new ActiveCheckoutStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json")),
-            new InstantSync());
+            new InstantSync(), cloud: new OkCloudSync());
 
         var blocked = await service.CheckoutAsync(new CheckoutRequest
         {
@@ -415,7 +473,8 @@ public class CheckoutServiceTests
         var paths = new PathService();
         var service = new CheckoutService(
             paths, new CheckoutLockService(paths, new FakeMachine()), new FileCopyService(),
-            new NoProcesses(), new ActiveCheckoutStore(activeStorePath), new InstantSync());
+            new NoProcesses(), new ActiveCheckoutStore(activeStorePath), new InstantSync(),
+            cloud: new OkCloudSync());
 
         var pack = PackInfo(packPath, "Memphis", "2026 - Sample Event");
         var result = await service.CheckoutAsync(new CheckoutRequest { Pack = pack, Settings = settings, HolderName = "Adam" });
@@ -477,7 +536,7 @@ public class CheckoutServiceTests
         var service = new CheckoutService(
             paths, new CheckoutLockService(paths, new FakeMachine()), new FileCopyService(),
             new NoProcesses(), new ActiveCheckoutStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json")),
-            new InstantSync());
+            new InstantSync(), cloud: new OkCloudSync());
 
         var relative = Path.Combine("2026 - LRM Weekend", "Sunday");
         var result = await service.CheckoutAsync(new CheckoutRequest
@@ -492,7 +551,7 @@ public class CheckoutServiceTests
         Assert.Contains(Path.Combine("2026 - LRM Weekend", "Sunday"), result.Active.ActivePath);
     }
 
-    private sealed class FailingCloudSync : ICloudLibrarySync
+    private abstract class StubCloudSync : ICloudLibrarySync
     {
         public bool IsAvailable => true;
 
@@ -524,9 +583,8 @@ public class CheckoutServiceTests
             string librarySessionPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
             Task.FromResult(new CloudSyncResult { Success = true });
 
-        public Task<CloudSyncResult> UploadSessionAsync(
-            string librarySessionPath, string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default, IReadOnlyList<string>? onlyRelativePaths = null) =>
-            Task.FromResult(new CloudSyncResult { Success = false, Message = "cellular timeout" });
+        public abstract Task<CloudSyncResult> UploadSessionAsync(
+            string librarySessionPath, string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default, IReadOnlyList<string>? onlyRelativePaths = null);
 
         public Task<CloudSyncResult> UploadFolderAsync(
             string localFolderPath, string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default) =>
@@ -536,7 +594,7 @@ public class CheckoutServiceTests
             IReadOnlyList<string> localFilePaths, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
             Task.FromResult(new CloudSyncResult { Success = true });
 
-        public Task<CloudSyncResult> UploadCheckoutLockAsync(
+        public virtual Task<CloudSyncResult> UploadCheckoutLockAsync(
             string librarySessionPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
             Task.FromResult(new CloudSyncResult { Success = true });
 
@@ -544,9 +602,106 @@ public class CheckoutServiceTests
             string librarySessionPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
             Task.FromResult(new CloudSyncResult { Success = true });
 
-        public Task<CloudSyncResult> ClearRemoteFolderAsync(
+        public virtual Task<CloudSyncResult> ClearRemoteFolderAsync(
             string localFolderPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
             Task.FromResult(new CloudSyncResult { Success = true });
+
+        public Task<CloudSyncResult> MoveOfficeItemToPastRacesAsync(
+            string libraryRoot,
+            string graphDriveRoot,
+            string officeName,
+            string itemFolderName,
+            IProgress<string>? status = null,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(new CloudSyncResult { Success = true, Message = "moved (stub)" });
+    }
+
+    private sealed class OkCloudSync : StubCloudSync
+    {
+        public override Task<CloudSyncResult> UploadSessionAsync(
+            string librarySessionPath, string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default, IReadOnlyList<string>? onlyRelativePaths = null) =>
+            Task.FromResult(new CloudSyncResult
+            {
+                Success = true,
+                FilesTransferred = onlyRelativePaths?.Count ?? 0,
+                Message = "ok"
+            });
+    }
+
+    private sealed class FailingCloudSync : StubCloudSync
+    {
+        public override Task<CloudSyncResult> UploadSessionAsync(
+            string librarySessionPath, string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default, IReadOnlyList<string>? onlyRelativePaths = null) =>
+            Task.FromResult(new CloudSyncResult { Success = false, Message = "cellular timeout" });
+    }
+
+    private sealed class RecordingCloudSync : StubCloudSync
+    {
+        private readonly int _failFirstCalls;
+        public int UploadCalls { get; private set; }
+        public int LockUploadCalls { get; private set; }
+        public int RemoteClearCalls { get; private set; }
+        public IReadOnlyList<string>? LastOnlyRelativePaths { get; private set; }
+
+        public RecordingCloudSync(int failFirstCalls) => _failFirstCalls = failFirstCalls;
+
+        public override Task<CloudSyncResult> UploadSessionAsync(
+            string librarySessionPath, string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default, IReadOnlyList<string>? onlyRelativePaths = null)
+        {
+            UploadCalls++;
+            LastOnlyRelativePaths = onlyRelativePaths;
+            if (UploadCalls <= _failFirstCalls)
+                return Task.FromResult(new CloudSyncResult { Success = false, Message = "cellular timeout" });
+            return Task.FromResult(new CloudSyncResult
+            {
+                Success = true,
+                FilesTransferred = onlyRelativePaths?.Count ?? 0,
+                Message = "ok"
+            });
+        }
+
+        public override Task<CloudSyncResult> UploadCheckoutLockAsync(
+            string librarySessionPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default)
+        {
+            LockUploadCalls++;
+            return Task.FromResult(new CloudSyncResult { Success = true });
+        }
+
+        public override Task<CloudSyncResult> ClearRemoteFolderAsync(
+            string localFolderPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default)
+        {
+            RemoteClearCalls++;
+            return Task.FromResult(new CloudSyncResult { Success = true });
+        }
+    }
+
+    private sealed class PartialFailCloudSync : StubCloudSync
+    {
+        private readonly IReadOnlyList<string> _failed;
+
+        public PartialFailCloudSync(IReadOnlyList<string> failedRelativePaths) => _failed = failedRelativePaths;
+
+        public override Task<CloudSyncResult> UploadSessionAsync(
+            string librarySessionPath, string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default, IReadOnlyList<string>? onlyRelativePaths = null) =>
+            Task.FromResult(new CloudSyncResult
+            {
+                Success = false,
+                FilesTransferred = Math.Max(0, (onlyRelativePaths?.Count ?? 0) - _failed.Count),
+                FailedRelativePaths = _failed,
+                Message = "partial"
+            });
+    }
+
+    private sealed class CancelUploadCloudSync : StubCloudSync
+    {
+        public IReadOnlyList<string>? CapturedOnlyRelativePaths { get; private set; }
+
+        public override Task<CloudSyncResult> UploadSessionAsync(
+            string librarySessionPath, string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default, IReadOnlyList<string>? onlyRelativePaths = null)
+        {
+            CapturedOnlyRelativePaths = onlyRelativePaths;
+            throw new OperationCanceledException();
+        }
     }
 
     [Fact]
@@ -571,13 +726,312 @@ public class CheckoutServiceTests
         });
         Assert.True(checkout.Success, checkout.Message);
 
+        // Ensure Active differs from Library so Finish plans a real upload set.
+        File.WriteAllText(
+            Path.Combine(checkout.Active!.ActivePath, "RUNSCORE", "ENTRIES.FRM"),
+            "race-day-edit");
+
         var checkin = await service.CheckinAsync(settings, "Adam", waitForOneDrive: true);
         Assert.True(checkin.Success, checkin.Message);
         Assert.True(checkin.RetainActiveForCloudRetry);
         Assert.True(checkin.AwaitingOneDriveConfirm);
-        Assert.NotNull(activeStore.Load());
+        var retained = activeStore.Load();
+        Assert.NotNull(retained);
+        Assert.NotNull(retained.PendingFinishUploadRelativePaths);
+        Assert.NotEmpty(retained.PendingFinishUploadRelativePaths!);
         Assert.NotNull(locks.TryRead(packPath));
         Assert.Equal(LockLifecycleStatus.Active, locks.TryRead(packPath)!.Status);
+    }
+
+    [Fact]
+    public async Task Checkin_Retry_UploadsPendingWhenActiveMatchesLibrary()
+    {
+        var (packPath, libraryRoot) = CreateFlatPack();
+        var raceDay = Path.Combine(Path.GetTempPath(), "s2f-rd-" + Guid.NewGuid().ToString("N"));
+        var activeStorePath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json");
+        var settings = new AppSettings { LibraryRoot = libraryRoot, RaceDayRoot = raceDay, DisplayName = "Adam" };
+        var paths = new PathService();
+        var locks = new CheckoutLockService(paths, new FakeMachine());
+        var activeStore = new ActiveCheckoutStore(activeStorePath);
+        var cloud = new RecordingCloudSync(failFirstCalls: 1);
+        var service = new CheckoutService(
+            paths, locks, new FileCopyService(), new NoProcesses(), activeStore,
+            new InstantSync(), cloud: cloud);
+
+        var checkout = await service.CheckoutAsync(new CheckoutRequest
+        {
+            Pack = PackInfo(packPath, "Memphis", "2026 - Sample Event"),
+            Settings = settings,
+            HolderName = "Adam"
+        });
+        Assert.True(checkout.Success, checkout.Message);
+
+        File.WriteAllText(
+            Path.Combine(checkout.Active!.ActivePath, "RUNSCORE", "ENTRIES.FRM"),
+            "race-day-edit");
+
+        var first = await service.CheckinAsync(settings, "Adam", waitForOneDrive: true);
+        Assert.True(first.RetainActiveForCloudRetry);
+        Assert.Equal(1, cloud.UploadCalls);
+        Assert.NotNull(cloud.LastOnlyRelativePaths);
+        Assert.NotEmpty(cloud.LastOnlyRelativePaths!);
+
+        // Active already copied into Library — fresh diff alone would be empty.
+        var second = await service.CheckinAsync(settings, "Adam", waitForOneDrive: true, removeActive: true);
+        Assert.True(second.Success, second.Message);
+        Assert.False(second.RetainActiveForCloudRetry);
+        Assert.Equal(2, cloud.UploadCalls);
+        Assert.NotNull(cloud.LastOnlyRelativePaths);
+        Assert.NotEmpty(cloud.LastOnlyRelativePaths!);
+        // Checkout acquire + successful Finish Released publish.
+        Assert.Equal(2, cloud.LockUploadCalls);
+        Assert.Equal(1, cloud.RemoteClearCalls);
+        Assert.Null(activeStore.Load());
+        var lockAfter = locks.TryRead(packPath);
+        Assert.NotNull(lockAfter);
+        Assert.Equal(LockLifecycleStatus.Released, lockAfter!.Status);
+    }
+
+    [Fact]
+    public async Task Checkin_GraphFail_DoesNotClearRemoteAutosaveOrPublishReleasedLock()
+    {
+        var (packPath, libraryRoot) = CreateFlatPack();
+        var raceDay = Path.Combine(Path.GetTempPath(), "s2f-rd-" + Guid.NewGuid().ToString("N"));
+        var activeStorePath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json");
+        var settings = new AppSettings { LibraryRoot = libraryRoot, RaceDayRoot = raceDay, DisplayName = "Adam" };
+        var paths = new PathService();
+        var locks = new CheckoutLockService(paths, new FakeMachine());
+        var activeStore = new ActiveCheckoutStore(activeStorePath);
+        var cloud = new RecordingCloudSync(failFirstCalls: 99);
+        var service = new CheckoutService(
+            paths, locks, new FileCopyService(), new NoProcesses(), activeStore,
+            new InstantSync(), cloud: cloud);
+
+        var checkout = await service.CheckoutAsync(new CheckoutRequest
+        {
+            Pack = PackInfo(packPath, "Memphis", "2026 - Sample Event"),
+            Settings = settings,
+            HolderName = "Adam"
+        });
+        Assert.True(checkout.Success, checkout.Message);
+        var locksAfterCheckout = cloud.LockUploadCalls;
+        Assert.True(locksAfterCheckout >= 1);
+        File.WriteAllText(
+            Path.Combine(checkout.Active!.ActivePath, "RUNSCORE", "ENTRIES.FRM"),
+            "edit-" + Guid.NewGuid().ToString("N"));
+
+        var checkin = await service.CheckinAsync(settings, "Adam", waitForOneDrive: true);
+        Assert.True(checkin.RetainActiveForCloudRetry);
+        Assert.Equal(locksAfterCheckout, cloud.LockUploadCalls);
+        Assert.Equal(0, cloud.RemoteClearCalls);
+        Assert.Equal(LockLifecycleStatus.Active, locks.TryRead(packPath)!.Status);
+    }
+
+    [Fact]
+    public async Task Checkin_UploadCancel_PersistsPendingForRetry()
+    {
+        var (packPath, libraryRoot) = CreateFlatPack();
+        var raceDay = Path.Combine(Path.GetTempPath(), "s2f-rd-" + Guid.NewGuid().ToString("N"));
+        var activeStorePath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json");
+        var settings = new AppSettings { LibraryRoot = libraryRoot, RaceDayRoot = raceDay, DisplayName = "Adam" };
+        var paths = new PathService();
+        var locks = new CheckoutLockService(paths, new FakeMachine());
+        var activeStore = new ActiveCheckoutStore(activeStorePath);
+        var cloud = new CancelUploadCloudSync();
+        var service = new CheckoutService(
+            paths, locks, new FileCopyService(), new NoProcesses(), activeStore,
+            new InstantSync(), cloud: cloud);
+
+        var checkout = await service.CheckoutAsync(new CheckoutRequest
+        {
+            Pack = PackInfo(packPath, "Memphis", "2026 - Sample Event"),
+            Settings = settings,
+            HolderName = "Adam"
+        });
+        Assert.True(checkout.Success, checkout.Message);
+        var entries = Path.Combine(checkout.Active!.ActivePath, "RUNSCORE", "ENTRIES.FRM");
+        File.WriteAllText(entries, "edit-" + Guid.NewGuid().ToString("N"));
+        Assert.True(File.Exists(entries));
+        var plannedBefore = FinishUploadPlanner.PlanUploadRelativePaths(activeStore.Load()!);
+        Assert.True(plannedBefore.Count > 0, "Active edit should produce Finish upload paths before Checkin.");
+
+        // Cloud throws cancel after Library copy — must persist pending (Active≈Library trap).
+        var checkin = await service.CheckinAsync(settings, "Adam", waitForOneDrive: true);
+        Assert.True(checkin.RetainActiveForCloudRetry, checkin.Message);
+        Assert.NotNull(cloud.CapturedOnlyRelativePaths);
+        Assert.True(
+            cloud.CapturedOnlyRelativePaths!.Count > 0,
+            "UploadSessionAsync should receive the planned paths.");
+        var pending = activeStore.Load()?.PendingFinishUploadRelativePaths;
+        Assert.NotNull(pending);
+        Assert.True(pending!.Count > 0, "Pending paths must survive cancel after Library commit.");
+        Assert.Equal(LockLifecycleStatus.Active, locks.TryRead(packPath)!.Status);
+    }
+
+    [Fact]
+    public async Task Checkin_PendingWithoutGraph_DoesNotClearActive()
+    {
+        var (packPath, libraryRoot) = CreateFlatPack();
+        var raceDay = Path.Combine(Path.GetTempPath(), "s2f-rd-" + Guid.NewGuid().ToString("N"));
+        var activeStorePath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json");
+        var settings = new AppSettings { LibraryRoot = libraryRoot, RaceDayRoot = raceDay, DisplayName = "Adam" };
+        var paths = new PathService();
+        var locks = new CheckoutLockService(paths, new FakeMachine());
+        var activeStore = new ActiveCheckoutStore(activeStorePath);
+        // First Finish with Graph fail to create pending.
+        var serviceFail = new CheckoutService(
+            paths, locks, new FileCopyService(), new NoProcesses(), activeStore,
+            new InstantSync(), cloud: new FailingCloudSync());
+        var checkout = await serviceFail.CheckoutAsync(new CheckoutRequest
+        {
+            Pack = PackInfo(packPath, "Memphis", "2026 - Sample Event"),
+            Settings = settings,
+            HolderName = "Adam"
+        });
+        File.WriteAllText(
+            Path.Combine(checkout.Active!.ActivePath, "RUNSCORE", "ENTRIES.FRM"),
+            "edit-" + Guid.NewGuid().ToString("N"));
+        var first = await serviceFail.CheckinAsync(settings, "Adam", waitForOneDrive: true);
+        Assert.True(first.RetainActiveForCloudRetry, first.Message);
+        Assert.NotNull(activeStore.Load()!.PendingFinishUploadRelativePaths);
+        Assert.NotEmpty(activeStore.Load()!.PendingFinishUploadRelativePaths!);
+
+        // Sign-out / Graph unavailable — must not release lock or drop Active.
+        var serviceOffline = new CheckoutService(
+            paths, locks, new FileCopyService(), new NoProcesses(), activeStore,
+            new InstantSync(), cloud: new NullCloudLibrarySync());
+        var second = await serviceOffline.CheckinAsync(settings, "Adam", waitForOneDrive: true);
+        Assert.True(second.RetainActiveForCloudRetry);
+        Assert.NotNull(activeStore.Load());
+        Assert.NotEmpty(activeStore.Load()!.PendingFinishUploadRelativePaths!);
+        Assert.Equal(LockLifecycleStatus.Active, locks.TryRead(packPath)!.Status);
+    }
+
+    private sealed class ThrowOnNthCopy : IFileCopyService
+    {
+        private readonly IFileCopyService _inner = new FileCopyService();
+        private readonly int _throwOnCall;
+        private int _copies;
+
+        public ThrowOnNthCopy(int throwOnCall) => _throwOnCall = throwOnCall;
+
+        public Task CopyDirectoryAsync(
+            string source, string destination, IProgress<CopyProgress>? progress = null,
+            CancellationToken cancellationToken = default)
+        {
+            _copies++;
+            if (_copies == _throwOnCall)
+                throw new IOException("disk full during finish:copy");
+            return _inner.CopyDirectoryAsync(source, destination, progress, cancellationToken);
+        }
+
+        public Task<IReadOnlyList<string>> MirrorNewerFilesAsync(
+            string source, string destination, IProgress<CopyProgress>? progress = null,
+            CancellationToken cancellationToken = default) =>
+            _inner.MirrorNewerFilesAsync(source, destination, progress, cancellationToken);
+    }
+
+    [Fact]
+    public async Task Checkin_CopyFailureAfterPlan_RetainsPendingForRetry()
+    {
+        // Library mutation can fail mid-Finish; must not clear Active without pending
+        // (next Finish would see a partial Library and skip Graph).
+        var (packPath, libraryRoot) = CreateFlatPack();
+        var raceDay = Path.Combine(Path.GetTempPath(), "s2f-rd-" + Guid.NewGuid().ToString("N"));
+        var activeStorePath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json");
+        var settings = new AppSettings { LibraryRoot = libraryRoot, RaceDayRoot = raceDay, DisplayName = "Adam" };
+        var paths = new PathService();
+        var locks = new CheckoutLockService(paths, new FakeMachine());
+        var activeStore = new ActiveCheckoutStore(activeStorePath);
+        // Call 1 = backup Library→._checkin; call 2 = Active→Library.
+        var service = new CheckoutService(
+            paths, locks, new ThrowOnNthCopy(throwOnCall: 2), new NoProcesses(), activeStore,
+            new InstantSync(), cloud: new FailingCloudSync());
+
+        var checkout = await service.CheckoutAsync(new CheckoutRequest
+        {
+            Pack = PackInfo(packPath, "Memphis", "2026 - Sample Event"),
+            Settings = settings,
+            HolderName = "Adam"
+        });
+        Assert.True(checkout.Success, checkout.Message);
+        File.WriteAllText(
+            Path.Combine(checkout.Active!.ActivePath, "RUNSCORE", "ENTRIES.FRM"),
+            "edit-" + Guid.NewGuid().ToString("N"));
+
+        var checkin = await service.CheckinAsync(settings, "Adam", waitForOneDrive: true);
+        Assert.True(checkin.Success, checkin.Message);
+        Assert.True(checkin.RetainActiveForCloudRetry, checkin.Message);
+        Assert.NotNull(activeStore.Load()?.PendingFinishUploadRelativePaths);
+        Assert.NotEmpty(activeStore.Load()!.PendingFinishUploadRelativePaths!);
+        Assert.Equal(LockLifecycleStatus.Active, locks.TryRead(packPath)!.Status);
+    }
+
+    [Fact]
+    public async Task Checkin_PartialFail_ShrinksPendingToFailedPaths()
+    {
+        var (packPath, libraryRoot) = CreateFlatPack();
+        var raceDay = Path.Combine(Path.GetTempPath(), "s2f-rd-" + Guid.NewGuid().ToString("N"));
+        var activeStorePath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json");
+        var settings = new AppSettings { LibraryRoot = libraryRoot, RaceDayRoot = raceDay, DisplayName = "Adam" };
+        var paths = new PathService();
+        var activeStore = new ActiveCheckoutStore(activeStorePath);
+        var failedOnly = new[] { Path.Combine("RUNSCORE", "ENTRIES.FRM") };
+        var cloud = new PartialFailCloudSync(failedOnly);
+        var service = new CheckoutService(
+            paths, new CheckoutLockService(paths, new FakeMachine()), new FileCopyService(),
+            new NoProcesses(), activeStore, new InstantSync(), cloud: cloud);
+
+        var checkout = await service.CheckoutAsync(new CheckoutRequest
+        {
+            Pack = PackInfo(packPath, "Memphis", "2026 - Sample Event"),
+            Settings = settings,
+            HolderName = "Adam"
+        });
+        Assert.True(checkout.Success, checkout.Message);
+        File.WriteAllText(Path.Combine(checkout.Active!.ActivePath, "RUNSCORE", "ENTRIES.FRM"), "edit-a");
+        File.WriteAllText(Path.Combine(checkout.Active.ActivePath, "Sample Event.event"), "edit-event");
+
+        var checkin = await service.CheckinAsync(settings, "Adam", waitForOneDrive: true);
+        Assert.True(checkin.RetainActiveForCloudRetry);
+        var pending = activeStore.Load()!.PendingFinishUploadRelativePaths!;
+        Assert.Single(pending);
+        Assert.Contains(pending, p => p.Replace('\\', '/').Contains("ENTRIES.FRM", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void ActiveCheckoutStore_RoundTripsPendingFinishPaths()
+    {
+        var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + "-active.json");
+        try
+        {
+            var store = new ActiveCheckoutStore(path);
+            var pending = new[] { Path.Combine("RUNSCORE", "ENTRIES.FRM"), "Sample.event" };
+            store.Save(new ActiveCheckout
+            {
+                Office = "Memphis",
+                ParentEvent = "Race",
+                SessionName = "Race",
+                RelativePath = "Memphis/Race",
+                LibrarySessionPath = @"C:\S2F\Library\Memphis\Race",
+                ActivePath = @"C:\S2F\RaceDay\Active\Memphis\Race",
+                BackupPath = @"C:\S2F\RaceDay\Backup\Memphis\Race",
+                AutosavePath = @"C:\S2F\Library\Memphis\Race\RUNSCORE\_autosave",
+                DbsPath = @"C:\S2F\RaceDay\Active\Memphis\Race\DB's",
+                PrimaryEventFile = "Sample.event",
+                CheckedOutAt = DateTimeOffset.UtcNow,
+                PendingFinishUploadRelativePaths = pending
+            });
+
+            var loaded = store.Load();
+            Assert.NotNull(loaded);
+            Assert.Equal(2, loaded!.PendingFinishUploadRelativePaths!.Count);
+            Assert.Contains(loaded.PendingFinishUploadRelativePaths, p => p.Contains("ENTRIES.FRM"));
+        }
+        finally
+        {
+            try { File.Delete(path); } catch { /* ignore */ }
+        }
     }
 
     [Fact]
@@ -597,7 +1051,7 @@ public class CheckoutServiceTests
         var service = new CheckoutService(
             paths, new CheckoutLockService(paths, new FakeMachine()), new FileCopyService(),
             new NoProcesses(), new ActiveCheckoutStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json")),
-            new InstantSync());
+            new InstantSync(), cloud: new OkCloudSync());
 
         var result = await service.CheckoutAsync(new CheckoutRequest
         {
@@ -705,7 +1159,7 @@ public class CheckoutServiceTests
         var activeStore = new ActiveCheckoutStore(activeStorePath);
         var service = new CheckoutService(
             paths, new CheckoutLockService(paths, new FakeMachine()), new FileCopyService(),
-            new RunScoreRunning(), activeStore, new InstantSync());
+            new RunScoreRunning(), activeStore, new InstantSync(), cloud: new OkCloudSync());
 
         var checkout = await service.CheckoutAsync(new CheckoutRequest
         {
@@ -793,5 +1247,14 @@ public class CheckoutServiceTests
         public Task<CloudSyncResult> ClearRemoteFolderAsync(
             string localFolderPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
             Task.FromResult(new CloudSyncResult { Success = true });
+
+        public Task<CloudSyncResult> MoveOfficeItemToPastRacesAsync(
+            string libraryRoot,
+            string graphDriveRoot,
+            string officeName,
+            string itemFolderName,
+            IProgress<string>? status = null,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(new CloudSyncResult { Success = true, Message = "moved (track)" });
     }
 }

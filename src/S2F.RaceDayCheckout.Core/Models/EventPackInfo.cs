@@ -91,8 +91,34 @@ public sealed class ActiveCheckout
     public IReadOnlyList<string> ScopedPaths { get; init; } = Array.Empty<string>();
     public DateTimeOffset CheckedOutAt { get; init; }
 
+    /// <summary>
+    /// Session-relative paths still needing Graph Finish upload after a prior cloud failure.
+    /// Null/empty = normal Finish (no retry pending).
+    /// </summary>
+    public IReadOnlyList<string>? PendingFinishUploadRelativePaths { get; init; }
+
     public string DisplayName =>
         string.Equals(ParentEvent, SessionName, StringComparison.OrdinalIgnoreCase)
             ? SessionName
             : $"{ParentEvent} / {SessionName}";
+
+    public ActiveCheckout WithPendingFinishUpload(IReadOnlyList<string>? pendingPaths) => new()
+    {
+        Office = Office,
+        ParentEvent = ParentEvent,
+        SessionName = SessionName,
+        RelativePath = RelativePath,
+        LibrarySessionPath = LibrarySessionPath,
+        ActivePath = ActivePath,
+        BackupPath = BackupPath,
+        AutosavePath = AutosavePath,
+        DbsPath = DbsPath,
+        PrimaryEventFile = PrimaryEventFile,
+        Role = Role,
+        ScopedPaths = ScopedPaths,
+        CheckedOutAt = CheckedOutAt,
+        PendingFinishUploadRelativePaths = pendingPaths is { Count: > 0 }
+            ? pendingPaths.ToList()
+            : null
+    };
 }

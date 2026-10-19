@@ -17,6 +17,10 @@ public class GraphSyncPolicyTests
     public void FinishBudget_IsUnderTwoMinutes_ForCellular()
     {
         Assert.True(GraphSyncPolicy.FinishUploadBudget <= TimeSpan.FromSeconds(90));
+        // Past Races year probes reuse download gate (parallel FolderExists).
+        Assert.True(GraphSyncPolicy.DownloadParallelism >= 2);
+        Assert.True(GraphSyncPolicy.DownloadParallelismFloor >= 1);
+        Assert.True(GraphSyncPolicy.DownloadParallelismFloor <= GraphSyncPolicy.DownloadParallelism);
         Assert.True(GraphSyncPolicy.HttpTimeout <= TimeSpan.FromSeconds(30));
         Assert.True(GraphSyncPolicy.OfficeListBudget <= TimeSpan.FromSeconds(20));
         Assert.True(GraphSyncPolicy.OfficeSessionsBudget <= TimeSpan.FromSeconds(75));

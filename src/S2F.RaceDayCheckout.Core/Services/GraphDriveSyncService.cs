@@ -210,6 +210,7 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
             var children = await ListChildFoldersAsync(cloudFolder, budget.Token).ConfigureAwait(false);
             var created = 0;
             var sessions = 0;
+            var probeNames = new List<string>();
             foreach (var name in children)
             {
                 budget.Token.ThrowIfCancellationRequested();
@@ -223,19 +224,60 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
                     created++;
                 }
 
-                if (!probeSessionLeaves)
-                    continue;
+                if (probeSessionLeaves)
+                    probeNames.Add(name);
+            }
 
-                status?.Report($"Checking {name}…");
-                var runScoreCloud = JoinDrivePath(cloudFolder, name + "/" + PathService.RunScoreFolderName);
-                if (!await FolderExistsAsync(runScoreCloud, budget.Token).ConfigureAwait(false))
-                    continue;
-
-                var runScoreLocal = Path.Combine(localChild, PathService.RunScoreFolderName);
-                if (!Directory.Exists(runScoreLocal))
+            if (probeSessionLeaves && probeNames.Count > 0)
+            {
+                status?.Report($"Checking races… 0/{probeNames.Count}");
+                await using var gate = new AdaptiveTransferGate(
+                    GraphSyncPolicy.DownloadParallelism,
+                    GraphSyncPolicy.DownloadParallelismFloor);
+                var done = 0;
+                var sessionHits = new System.Collections.Concurrent.ConcurrentBag<string>();
+                var probeTasks = probeNames.Select(async name =>
                 {
-                    Directory.CreateDirectory(runScoreLocal);
-                    sessions++;
+                    await using (await gate.AcquireAsync(budget.Token).ConfigureAwait(false))
+                    {
+                        try
+                        {
+                            var runScoreCloud = JoinDrivePath(
+                                cloudFolder, name + "/" + PathService.RunScoreFolderName);
+                            if (await FolderExistsAsync(runScoreCloud, budget.Token).ConfigureAwait(false))
+                                sessionHits.Add(name);
+                            gate.NoteSuccess();
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            throw;
+                        }
+                        catch (HttpRequestException ex) when (IsTransientGraphFailure(ex, out var retryAfter))
+                        {
+                            if (ex.StatusCode is System.Net.HttpStatusCode.TooManyRequests
+                                or System.Net.HttpStatusCode.ServiceUnavailable)
+                                gate.NoteThrottle(retryAfter);
+                            // Treat as non-session on probe failure — next Refresh can retry.
+                        }
+                        catch
+                        {
+                            // Same — leave without RUNSCORE placeholder.
+                        }
+
+                        var n = Interlocked.Increment(ref done);
+                        status?.Report($"Checking races… {n}/{probeNames.Count}");
+                    }
+                });
+                await Task.WhenAll(probeTasks).ConfigureAwait(false);
+
+                foreach (var name in sessionHits)
+                {
+                    var runScoreLocal = Path.Combine(localFolder, name, PathService.RunScoreFolderName);
+                    if (!Directory.Exists(runScoreLocal))
+                    {
+                        Directory.CreateDirectory(runScoreLocal);
+                        sessions++;
+                    }
                 }
             }
 
@@ -548,7 +590,20 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
         IReadOnlyList<string>? onlyRelativePaths = null)
     {
         if (!_tokens.IsSignedIn)
+        {
+            // Finish with race files still pending must not look like success (would clear Active).
+            if (onlyRelativePaths is { Count: > 0 })
+            {
+                return new CloudSyncResult
+                {
+                    Success = false,
+                    FailedRelativePaths = NormalizeSessionRels(onlyRelativePaths),
+                    Message = "Sign in to OneDrive to upload race files, then tap Finish again."
+                };
+            }
+
             return new CloudSyncResult { Success = true, Message = "Graph not signed in." };
+        }
 
         try
         {
@@ -561,37 +616,65 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
             var raceFailures = 0;
             var eventFailures = 0;
             var plannedRaceFiles = onlyRelativePaths?.Count ?? -1;
+            var raceJobsQueued = 0;
 
             await using var uploadGate = new AdaptiveTransferGate(
                 GraphSyncPolicy.UploadParallelism,
                 GraphSyncPolicy.UploadParallelismFloor);
 
+            IReadOnlyList<string> failedRels = Array.Empty<string>();
             if (onlyRelativePaths is not null)
             {
                 // Finish: upload only Active-vs-Library diffs (caller compared before finish:copy).
                 // Empty list = no race content changed — still push lock metadata.
                 var jobs = new List<UploadJob>();
-                foreach (var sessionRel in onlyRelativePaths)
+                var plannedNorm = NormalizeSessionRels(onlyRelativePaths);
+                foreach (var norm in plannedNorm)
                 {
-                    if (string.IsNullOrWhiteSpace(sessionRel))
-                        continue;
-                    var localFile = Path.Combine(librarySessionPath, sessionRel);
+                    var localFile = Path.Combine(librarySessionPath, norm);
                     if (GraphSyncPolicy.ShouldSkipFile(localFile, GraphSyncPolicy.FinishMaxFileBytes))
                         continue;
-                    var cloudRel = sessionRel.Replace('\\', '/');
+                    var cloudRel = norm.Replace('\\', '/');
                     jobs.Add(new UploadJob(
                         localFile,
                         JoinDrivePath(relative, cloudRel),
                         cloudRel.EndsWith(".event", StringComparison.OrdinalIgnoreCase)
                             ? "timing file"
-                            : "changed"));
+                            : "changed",
+                        SessionRelativePath: norm));
                 }
 
+                raceJobsQueued = jobs.Count;
                 var uploaded = await UploadJobsParallelAsync(
                     jobs, uploadGate, status, cancellationToken).ConfigureAwait(false);
                 count += uploaded.Succeeded;
                 raceFailures += uploaded.Failed;
                 eventFailures += uploaded.EventFailed;
+
+                // Integrity: every planned path must land on OneDrive. Skipped (missing /
+                // oversize) or PUT-failed paths stay pending — never report success because
+                // sibling files uploaded (would clear Active with cloud still stale).
+                var putFailed = new HashSet<string>(
+                    uploaded.FailedRelativePaths, StringComparer.OrdinalIgnoreCase);
+                var uploadedOk = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var job in jobs)
+                {
+                    if (job.SessionRelativePath is null)
+                        continue;
+                    if (!putFailed.Contains(job.SessionRelativePath))
+                        uploadedOk.Add(job.SessionRelativePath);
+                }
+
+                failedRels = plannedNorm
+                    .Where(p => !uploadedOk.Contains(p))
+                    .ToList();
+                if (failedRels.Count > 0)
+                {
+                    raceFailures = Math.Max(raceFailures, failedRels.Count);
+                    eventFailures = Math.Max(
+                        eventFailures,
+                        failedRels.Count(p => p.EndsWith(".event", StringComparison.OrdinalIgnoreCase)));
+                }
             }
             else
             {
@@ -642,12 +725,17 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
                 eventFailures += eventResult.EventFailed;
             }
 
-            // Lock metadata only — never upload Finish backup trees under ._checkin (cellular).
-            count += await UploadLockMetadataAsync(
-                librarySessionPath,
-                relative,
-                status,
-                cancellationToken).ConfigureAwait(false);
+            // Full-tree callers (new event publish): push lock metadata here.
+            // Finish passes onlyRelativePaths — CheckinAsync releases locally then uploads
+            // Released via UploadCheckoutLockAsync (avoids Active-then-Released double PUT).
+            if (onlyRelativePaths is null)
+            {
+                count += await UploadLockMetadataAsync(
+                    librarySessionPath,
+                    relative,
+                    status,
+                    cancellationToken).ConfigureAwait(false);
+            }
 
             if (plannedRaceFiles == 0)
             {
@@ -661,35 +749,34 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
                 };
             }
 
-            if (count == 0)
+            // Planned race paths existed but every file was missing/too large/temp — do not
+            // treat lock-only PUTs as Finish success (would drop Active with cloud still stale).
+            if (onlyRelativePaths is not null && raceJobsQueued == 0)
             {
                 return new CloudSyncResult
                 {
                     Success = false,
-                    Message = "No race files could be uploaded to OneDrive (check cellular signal)."
+                    FailedRelativePaths = failedRels.Count > 0
+                        ? failedRels
+                        : NormalizeSessionRels(onlyRelativePaths),
+                    Message =
+                        "Race files to upload were missing or too large for cellular Finish. "
+                        + "Tap Finish again when the pack is ready, or ask setup for help."
                 };
             }
 
-            if (eventFailures > 0)
+            if (eventFailures > 0 || raceFailures > 0 || failedRels.Count > 0)
             {
+                var kind = eventFailures > 0
+                    ? "the Timing & Scoring .event file failed"
+                    : $"{Math.Max(raceFailures, failedRels.Count)} changed file(s) failed";
                 return new CloudSyncResult
                 {
                     Success = false,
-                    FilesTransferred = count,
+                    FilesTransferred = Math.Max(0, raceJobsQueued - failedRels.Count),
+                    FailedRelativePaths = failedRels,
                     Message =
-                        $"Uploaded {count} file(s), but the Timing & Scoring .event file failed. "
-                        + "Tap Finish again when signal improves."
-                };
-            }
-
-            if (raceFailures > 0)
-            {
-                return new CloudSyncResult
-                {
-                    Success = false,
-                    FilesTransferred = count,
-                    Message =
-                        $"Uploaded {count} file(s), but {raceFailures} changed file(s) failed. "
+                        $"Uploaded {Math.Max(0, raceJobsQueued - failedRels.Count)} race file(s), but {kind}. "
                         + "Tap Finish again when signal improves."
                 };
             }
@@ -701,10 +788,31 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
                 Message = $"Uploaded {count} file(s) to OneDrive."
             };
         }
+        catch (OperationCanceledException)
+        {
+            // Let CheckinAsync map budget timeout → RetainActive + full pending set.
+            throw;
+        }
         catch (Exception ex)
         {
-            return new CloudSyncResult { Success = false, Message = "Graph upload failed: " + ex.Message };
+            return new CloudSyncResult
+            {
+                Success = false,
+                FailedRelativePaths = onlyRelativePaths is { Count: > 0 }
+                    ? NormalizeSessionRels(onlyRelativePaths)
+                    : Array.Empty<string>(),
+                Message = "Graph upload failed: " + ex.Message
+            };
         }
+    }
+
+    private static IReadOnlyList<string> NormalizeSessionRels(IReadOnlyList<string> relativePaths)
+    {
+        return relativePaths
+            .Where(p => !string.IsNullOrWhiteSpace(p))
+            .Select(p => p.Replace('/', Path.DirectorySeparatorChar).Replace('\\', Path.DirectorySeparatorChar))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     private async Task<int> UploadLockMetadataAsync(
@@ -922,6 +1030,263 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
             // Non-fatal for Finish — local clear already ran.
             return new CloudSyncResult { Success = true, Message = "Remote clear skipped: " + ex.Message };
         }
+    }
+
+    public async Task<CloudSyncResult> MoveOfficeItemToPastRacesAsync(
+        string libraryRoot,
+        string graphDriveRoot,
+        string officeName,
+        string itemFolderName,
+        IProgress<string>? status = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (!_tokens.IsSignedIn)
+            return new CloudSyncResult { Success = false, Message = "Sign in to OneDrive first." };
+
+        if (string.IsNullOrWhiteSpace(libraryRoot)
+            || string.IsNullOrWhiteSpace(officeName)
+            || string.IsNullOrWhiteSpace(itemFolderName))
+        {
+            return new CloudSyncResult { Success = false, Message = "Office and event folder are required." };
+        }
+
+        if (string.Equals(officeName, EventBuilderService.PastRacesFolderName, StringComparison.OrdinalIgnoreCase)
+            || !EventBuilderService.DestinationOffices.Contains(officeName, StringComparer.OrdinalIgnoreCase))
+        {
+            return new CloudSyncResult
+            {
+                Success = false,
+                Message = $"“{officeName}” is not a live office that can be archived."
+            };
+        }
+
+        var itemName = itemFolderName.Trim().Trim('/', '\\');
+        var year = PastRacesArchivePaths.ResolveArchiveYear(itemName);
+        var destYearRel = PastRacesArchivePaths.DestinationYearRelative(officeName, year);
+        var destItemRel = PastRacesArchivePaths.DestinationItemRelative(officeName, year, itemName);
+        var rootPath = NormalizeDrivePath(graphDriveRoot);
+        var sourceCloud = JoinDrivePath(rootPath, JoinDrivePath(officeName, itemName));
+        var destYearCloud = JoinDrivePath(rootPath, destYearRel);
+        var destItemCloud = JoinDrivePath(rootPath, destItemRel);
+
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        budget.CancelAfter(GraphSyncPolicy.MoveToPastRacesBudget);
+
+        try
+        {
+            status?.Report($"Checking {officeName} / {itemName}…");
+            if (!await FolderExistsAsync(sourceCloud, budget.Token).ConfigureAwait(false))
+            {
+                return new CloudSyncResult
+                {
+                    Success = false,
+                    Message = $"“{officeName}/{itemName}” was not found on OneDrive."
+                };
+            }
+
+            if (await FolderExistsAsync(destItemCloud, budget.Token).ConfigureAwait(false))
+            {
+                return new CloudSyncResult
+                {
+                    Success = false,
+                    Message = $"Already exists in Past Races:\n{destItemRel.Replace('/', Path.DirectorySeparatorChar)}"
+                };
+            }
+
+            status?.Report("Preparing Past Races folders…");
+            await EnsureRemoteFolderChainAsync(destYearCloud, budget.Token).ConfigureAwait(false);
+
+            status?.Report($"Moving to Past Races / {year}…");
+            var sourceId = await GetDriveItemIdAsync(sourceCloud, budget.Token).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(sourceId))
+            {
+                return new CloudSyncResult
+                {
+                    Success = false,
+                    Message = $"Could not resolve OneDrive id for “{officeName}/{itemName}”."
+                };
+            }
+
+            var destParentId = await GetDriveItemIdAsync(destYearCloud, budget.Token).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(destParentId))
+            {
+                return new CloudSyncResult
+                {
+                    Success = false,
+                    Message = $"Could not resolve Past Races year folder “{destYearRel}”."
+                };
+            }
+
+            await MoveRemoteItemByIdAsync(sourceId, destParentId, budget.Token).ConfigureAwait(false);
+
+            status?.Report("Updating local Library…");
+            var sourceLocal = Path.Combine(libraryRoot, officeName, itemName);
+            var destLocal = Path.Combine(
+                libraryRoot,
+                destItemRel.Replace('/', Path.DirectorySeparatorChar));
+            // Cloud is authoritative after Graph move — relocate local tree (or delete leftovers).
+            // Do not nest RefreshOfficeSessionsAsync here (would re-walk the office under this budget).
+            TryMoveLocalLibraryFolder(sourceLocal, destLocal);
+            RemoveLocalArchiveSourceIfStillPresent(sourceLocal);
+
+            var destParent = Path.GetDirectoryName(destLocal);
+            if (!string.IsNullOrEmpty(destParent))
+                Directory.CreateDirectory(destParent);
+            if (!Directory.Exists(destLocal))
+                Directory.CreateDirectory(destLocal);
+
+            return new CloudSyncResult
+            {
+                Success = true,
+                Message = $"Moved “{itemName}” to Past Races ({year}).",
+                FilesTransferred = 1
+            };
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return new CloudSyncResult
+            {
+                Success = false,
+                Message = "Move timed out (weak signal). Check OneDrive — the folder may already be in Past Races — then Refresh Events."
+            };
+        }
+        catch (Exception ex)
+        {
+            return new CloudSyncResult { Success = false, Message = "Move to Past Races failed: " + ex.Message };
+        }
+    }
+
+    private async Task EnsureRemoteFolderChainAsync(string driveFolderPath, CancellationToken cancellationToken)
+    {
+        var parts = driveFolderPath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        var built = "";
+        foreach (var part in parts)
+        {
+            var parent = built;
+            built = string.IsNullOrEmpty(built) ? part : built + "/" + part;
+            if (await FolderExistsAsync(built, cancellationToken).ConfigureAwait(false))
+                continue;
+            await CreateRemoteFolderAsync(parent, part, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private async Task CreateRemoteFolderAsync(
+        string parentDrivePath,
+        string folderName,
+        CancellationToken cancellationToken)
+    {
+        var url = string.IsNullOrEmpty(parentDrivePath)
+            ? $"{GraphRoot}/me/drive/root/children"
+            : ItemPathUrl(parentDrivePath, "children");
+        var body =
+            "{\"name\":" + JsonSerializer.Serialize(folderName)
+            + ",\"folder\":{},\"@microsoft.graph.conflictBehavior\":\"fail\"}";
+        using var req = await CreateRequestAsync(HttpMethod.Post, url, cancellationToken).ConfigureAwait(false);
+        req.Content = new StringContent(body, Encoding.UTF8, "application/json");
+        using var resp = await _http.SendAsync(req, cancellationToken).ConfigureAwait(false);
+        if (resp.StatusCode == System.Net.HttpStatusCode.Conflict)
+            return;
+        if (!resp.IsSuccessStatusCode)
+        {
+            var err = await resp.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            throw new InvalidOperationException(
+                $"Could not create “{folderName}” ({(int)resp.StatusCode}): {TrimGraphError(err)}");
+        }
+    }
+
+    private async Task<string?> GetDriveItemIdAsync(string drivePath, CancellationToken cancellationToken)
+    {
+        // Trailing ':' before query — same path-addressed form as DELETE.
+        var url = ItemPathUrl(drivePath);
+        if (!url.EndsWith(':'))
+            url += ":";
+        url += "?$select=id,folder";
+        using var req = await CreateRequestAsync(HttpMethod.Get, url, cancellationToken).ConfigureAwait(false);
+        using var resp = await _http.SendAsync(req, cancellationToken).ConfigureAwait(false);
+        if (resp.StatusCode == System.Net.HttpStatusCode.NotFound)
+            return null;
+        resp.EnsureSuccessStatusCode();
+        await using var stream = await resp.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+        var item = await JsonSerializer.DeserializeAsync<GraphDriveItem>(stream, JsonOptions, cancellationToken)
+            .ConfigureAwait(false);
+        return item?.Id;
+    }
+
+    private async Task MoveRemoteItemByIdAsync(
+        string itemId,
+        string newParentId,
+        CancellationToken cancellationToken)
+    {
+        var url = $"{GraphRoot}/me/drive/items/{Uri.EscapeDataString(itemId)}";
+        var body = "{\"parentReference\":{\"id\":" + JsonSerializer.Serialize(newParentId) + "}}";
+        using var req = await CreateRequestAsync(new HttpMethod("PATCH"), url, cancellationToken)
+            .ConfigureAwait(false);
+        req.Content = new StringContent(body, Encoding.UTF8, "application/json");
+        using var resp = await _http.SendAsync(req, cancellationToken).ConfigureAwait(false);
+        if (!resp.IsSuccessStatusCode)
+        {
+            var err = await resp.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            throw new InvalidOperationException(
+                $"Graph move failed ({(int)resp.StatusCode}): {TrimGraphError(err)}");
+        }
+    }
+
+    private static void TryMoveLocalLibraryFolder(string sourceLocal, string destLocal)
+    {
+        if (!Directory.Exists(sourceLocal))
+            return;
+
+        var destParent = Path.GetDirectoryName(destLocal);
+        if (!string.IsNullOrEmpty(destParent))
+            Directory.CreateDirectory(destParent);
+
+        if (Directory.Exists(destLocal))
+        {
+            try
+            {
+                // Empty / placeholder dest from a prior browse — replace so Move can land.
+                if (!Directory.EnumerateFileSystemEntries(destLocal).Any())
+                    Directory.Delete(destLocal, recursive: false);
+                else
+                    return;
+            }
+            catch
+            {
+                return;
+            }
+        }
+
+        try
+        {
+            Directory.Move(sourceLocal, destLocal);
+        }
+        catch
+        {
+            // Fall through to RemoveLocalArchiveSourceIfStillPresent.
+        }
+    }
+
+    private static void RemoveLocalArchiveSourceIfStillPresent(string sourceLocal)
+    {
+        if (!Directory.Exists(sourceLocal))
+            return;
+
+        try
+        {
+            Directory.Delete(sourceLocal, recursive: true);
+        }
+        catch
+        {
+            // Locked / in use — next office Refresh Events will prune after Graph index.
+        }
+    }
+
+    private static string TrimGraphError(string? body)
+    {
+        if (string.IsNullOrWhiteSpace(body))
+            return "unknown error";
+        var t = body.Trim();
+        return t.Length <= 240 ? t : t[..240] + "…";
     }
 
     private async Task<string> GetTokenAsync(CancellationToken cancellationToken)
@@ -1401,11 +1766,12 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
         CancellationToken cancellationToken)
     {
         if (jobs.Count == 0)
-            return new UploadBatchResult(0, 0, 0);
+            return new UploadBatchResult(0, 0, 0, Array.Empty<string>());
 
         var succeeded = 0;
         var failed = 0;
         var eventFailed = 0;
+        var failedRels = new System.Collections.Concurrent.ConcurrentBag<string>();
 
         var tasks = jobs.Select(async job =>
         {
@@ -1430,12 +1796,14 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
                     Interlocked.Increment(ref failed);
                     if (isEvent)
                         Interlocked.Increment(ref eventFailed);
+                    if (!string.IsNullOrWhiteSpace(job.SessionRelativePath))
+                        failedRels.Add(job.SessionRelativePath);
                 }
             }
         });
 
         await Task.WhenAll(tasks).ConfigureAwait(false);
-        return new UploadBatchResult(succeeded, failed, eventFailed);
+        return new UploadBatchResult(succeeded, failed, eventFailed, failedRels.ToList());
     }
 
     private async Task UploadFileWithGuardsAsync(
@@ -1800,9 +2168,17 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
 
     private sealed record DownloadJob(string CloudPath, string LocalPath, string Name, long? Size);
 
-    private sealed record UploadJob(string LocalPath, string CloudPath, string ProgressLabel);
+    private sealed record UploadJob(
+        string LocalPath,
+        string CloudPath,
+        string ProgressLabel,
+        string? SessionRelativePath = null);
 
-    private readonly record struct UploadBatchResult(int Succeeded, int Failed, int EventFailed);
+    private readonly record struct UploadBatchResult(
+        int Succeeded,
+        int Failed,
+        int EventFailed,
+        IReadOnlyList<string> FailedRelativePaths);
 
     /// <summary>
     /// Starts at full parallelism; on Graph 429/503 holds permits down to the floor and

@@ -17,7 +17,7 @@ public interface IOneDriveSyncMonitor
 
 /// <summary>
 /// Pragmatic sync wait: after check-in, wait until scoped files under the session stop changing
-/// (OneDrive upload burst settles). Not a full OneDrive API; Finish UI still tells staff to verify the cloud icon.
+/// Legacy desktop-client settle helper. Unused on Graph-only race-day laptops (kept for tests / compat).
 /// </summary>
 public sealed class SettlingOneDriveSyncMonitor : IOneDriveSyncMonitor
 {

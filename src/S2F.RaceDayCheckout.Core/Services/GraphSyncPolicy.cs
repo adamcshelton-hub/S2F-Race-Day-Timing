@@ -56,6 +56,11 @@ public static class GraphSyncPolicy
     public static readonly TimeSpan MidRacePublishBudget = TimeSpan.FromSeconds(45);
 
     /// <summary>
+    /// Admin Move to Past Races — ensure destination folders + Graph move (few calls, not a pack transfer).
+    /// </summary>
+    public static readonly TimeSpan MoveToPastRacesBudget = TimeSpan.FromSeconds(45);
+
+    /// <summary>
     /// Skip mid-race / backup noise on cellular.
     /// Logs and Events stay (small daily files — useful for support).
     /// </summary>

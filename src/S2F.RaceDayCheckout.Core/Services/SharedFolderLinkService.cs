@@ -11,8 +11,8 @@ public sealed class LinkResult
 }
 
 /// <summary>
-/// Links Active session shared folders (DB's) to OneDrive so RunScore relative
-/// exports like <c>~..\DB's\%race name% backupsave.csv</c> still hit the cloud pack.
+/// Active session DB's helpers. Graph-only race day uses <see cref="EnsureLocalDbsFolder"/>;
+/// <see cref="EnsureDbsLink"/> remains for legacy OneDrive-junction tests only.
 /// </summary>
 public sealed class SharedFolderLinkService
 {

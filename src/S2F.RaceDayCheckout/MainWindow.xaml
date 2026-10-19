@@ -130,7 +130,8 @@
           <ListBox x:Name="OfficeList"
                    Style="{StaticResource StepListBox}"
                    ItemsSource="{Binding VisibleOffices}"
-                   MouseDoubleClick="Office_DoubleClick">
+                   MouseDoubleClick="Office_DoubleClick"
+                   Visibility="{Binding ShowRaceDayOfficeList, Converter={StaticResource BoolVis}}">
             <ListBox.ItemTemplate>
               <DataTemplate>
                 <TextBlock Text="{Binding}" FontSize="15" FontWeight="SemiBold"
@@ -456,6 +457,10 @@
                     MinWidth="220" Margin="0,0,12,0" Click="AdminAddRaceToGroup_Click"
                     Visibility="{Binding ShowAddRaceToGroup, Converter={StaticResource BoolVis}}"
                     ToolTip="Create another race folder under this Race Group."/>
+            <Button Content="Move to Past Races" Style="{StaticResource SecondaryButton}"
+                    MinWidth="180" Margin="0,0,12,0" Click="AdminMoveToPastRaces_Click"
+                    Visibility="{Binding ShowMoveToPastRaces, Converter={StaticResource BoolVis}}"
+                    ToolTip="Move this race (or whole Race Group) from the live office into Past Races on OneDrive."/>
             <Button Content="Save Assignment" MinWidth="180" Click="SaveEventRoles_Click"
                     Visibility="{Binding ShowAdminSaveAssignment, Converter={StaticResource BoolVis}}"
                     ToolTip="Enter — save the main timing .event">
@@ -735,7 +740,7 @@
                           CornerRadius="8" Padding="12" Margin="0,14,0,0"
                           Visibility="{Binding ShowAddRaceToGroup, Converter={StaticResource BoolVis}}">
                     <TextBlock TextWrapping="Wrap" FontSize="13"
-                               Text="This race sits under a Race Group. Use Add Race to This Race Group to create another event folder under the same group."/>
+                               Text="This race sits under a Race Group. Use Add Race to This Race Group to create another event folder under the same group. Move to Past Races archives the whole Race Group."/>
                   </Border>
                 </StackPanel>
               </StackPanel>

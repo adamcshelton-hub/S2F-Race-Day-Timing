@@ -334,9 +334,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 OnPropertyChanged(nameof(IsAdminEventsAssign));
                 OnPropertyChanged(nameof(ShowAdminListFilter));
                 OnPropertyChanged(nameof(ShowAddRaceToGroup));
+                OnPropertyChanged(nameof(ShowMoveToPastRaces));
                 OnPropertyChanged(nameof(ShowAdminHeaderLink));
                 OnPropertyChanged(nameof(ShowGraphReadyInline));
                 OnPropertyChanged(nameof(ShowGraphSignInBanner));
+                OnPropertyChanged(nameof(ShowRaceDayOfficeList));
                 OnPropertyChanged(nameof(EmptySessionsTitle));
                 OnPropertyChanged(nameof(EmptySessionsBody));
                 OnPropertyChanged(nameof(ShowSessionLock));
@@ -509,6 +511,16 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public bool ShowAddRaceToGroup => IsAdminEventsAssign && IsAdminSessionRaceGroupLeaf;
 
     /// <summary>
+    /// Edit Current Event on a live office pack — archive whole race / Race Group into Past Races via Graph.
+    /// </summary>
+    public bool ShowMoveToPastRaces =>
+        IsAdminEventsAssign
+        && _adminSession is not null
+        && !IsAdminPastRacesBrowse
+        && EventBuilderService.DestinationOffices.Contains(
+            _adminSession.Office, StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
     /// Edit Current Event assign with no .event yet — Launch T&amp;S + same Save As map as checkout setup.
     /// </summary>
     public bool ShowAdminTsSetup => IsAdminEventsAssign && AdminEventFiles.Count == 0;
@@ -553,7 +565,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
             ? "Search Offices…"
             : "Search This Folder…";
 
-    public bool ShowRaceDayListFilter => IsOfficeStep || IsSessionStep;
+    public bool ShowRaceDayListFilter =>
+        (IsOfficeStep && IsGraphSignedIn) || IsSessionStep;
 
     public string RaceDayListFilter
     {
@@ -947,7 +960,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public string GraphLandingStatus =>
         IsGraphSignedIn
             ? $"Signed in as {_graphAuth.AccountEmail ?? "OneDrive"}. This laptop can download and sync race files."
-            : "Sign in so this laptop can download race files. Without OneDrive, events cannot be loaded for checkout.";
+            : "Sign in to OneDrive to begin. This laptop does not use the OneDrive desktop app — "
+              + "you cannot choose an office or load a race until you are signed in.";
 
     /// <summary>Compact account line for the inline ready chip (office step, signed in).</summary>
     public string GraphReadyInlineDetail =>
@@ -958,6 +972,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     /// <summary>Full-width sign-in banner — only when signed out, so staff cannot miss it.</summary>
     public bool ShowGraphSignInBanner => IsOfficeStep && !IsGraphSignedIn;
+
+    /// <summary>Office list only after Graph sign-in (Graph-only race day).</summary>
+    public bool ShowRaceDayOfficeList => IsOfficeStep && IsGraphSignedIn;
 
     public System.Windows.Media.Brush GraphReadyBannerBackground =>
         IsGraphSignedIn
@@ -994,7 +1011,14 @@ public sealed class MainViewModel : INotifyPropertyChanged
             ? string.Empty
             : "Library folder not found. Ask setup staff to check Admin settings.";
 
-        // One office → show session step with local list; Graph fill runs via SelectOfficeAsync when needed.
+        // Graph-only: stay on office step until signed in (do not auto-skip into sessions).
+        if (!IsGraphSignedIn)
+        {
+            Step = WizardStep.Office;
+            return;
+        }
+
+        // One office → show session step; Graph fill runs via SelectOfficeAsync when needed.
         if (Offices.Count == 1)
         {
             SelectedOffice = Offices[0];
@@ -1003,6 +1027,19 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
         else
             Step = WizardStep.Office;
+    }
+
+    /// <summary>Race-day browse/checkout requires Graph. Active mid-race stays on screen if already checked out.</summary>
+    private bool EnsureGraphSignedInToBegin(string action)
+    {
+        if (IsGraphSignedIn)
+            return true;
+
+        Alert(
+            "Sign In to OneDrive",
+            $"Sign in to OneDrive before you {action}.\n\n"
+            + "This laptop does not use the OneDrive desktop app — race files download and upload through this app only.");
+        return false;
     }
 
     public void GoBack()
@@ -1147,6 +1184,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
         if (HasActive || string.IsNullOrWhiteSpace(office))
             return;
 
+        if (!EnsureGraphSignedInToBegin("choose an office"))
+            return;
+
         SelectedOffice = office;
         _pastRacesRelative = string.Empty;
         ClearRaceDayListFilter();
@@ -1179,6 +1219,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public async Task SelectSessionAsync(EventPackInfo? session)
     {
         if (HasActive || session is null)
+            return;
+
+        if (!EnsureGraphSignedInToBegin("load a race"))
             return;
 
         if (session.IsNavigationFolder)
@@ -1346,6 +1389,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public async Task CheckoutAsync()
     {
         if (SelectedSession is null)
+            return;
+
+        if (!EnsureGraphSignedInToBegin("load a race"))
             return;
 
         if (IsAnnouncerRole)
@@ -1614,10 +1660,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 Status = string.Empty;
             }
 
-            var doneBody = result.AwaitingOneDriveConfirm
-                ? "Your race is saved.\n\nCheck the OneDrive cloud icon in the taskbar — when it looks finished, you can shut down this laptop."
-                : "Your race is saved.";
-            if (!returnToAdmin && !result.AwaitingOneDriveConfirm)
+            // AwaitingOneDriveConfirm here means RetainActiveForCloudRetry was already handled above.
+            var doneBody = "Your race is saved.";
+            if (!returnToAdmin)
                 doneBody += "\n\nSafe to shut down this laptop.";
             if (!result.AutosaveCleared)
             {
@@ -1893,6 +1938,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
             Status = $"Signed in as {_graphAuth.AccountEmail}.";
             NotifyGraphStatus();
             await RefreshLibraryFromGraphAsync();
+            // After sign-in, allow single-office auto-advance into the session list.
+            if (!HasActive)
+                ReloadFromDisk();
         }
         catch (Exception)
         {
@@ -1915,6 +1963,14 @@ public sealed class MainViewModel : INotifyPropertyChanged
             _graphIndexedOffices.Clear();
             Status = "Signed out of OneDrive Graph.";
             NotifyGraphStatus();
+            // Race day cannot continue without Graph — back to office + sign-in banner.
+            if (!HasActive && Step is WizardStep.Session or WizardStep.EventFile)
+            {
+                _pastRacesRelative = string.Empty;
+                SelectedSession = null;
+                SelectedEventFile = null;
+                Step = WizardStep.Office;
+            }
         }
         catch (Exception)
         {
@@ -3348,6 +3404,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(IsAdminEventsAssign));
         OnPropertyChanged(nameof(IsAdminSessionRaceGroupLeaf));
         OnPropertyChanged(nameof(ShowAddRaceToGroup));
+        OnPropertyChanged(nameof(ShowMoveToPastRaces));
         OnPropertyChanged(nameof(ShowAdminTsSetup));
         OnPropertyChanged(nameof(ShowAdminSaveAssignment));
         OnPropertyChanged(nameof(AdminSaveAsFolderGuide));
@@ -3382,6 +3439,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(GraphReadyInlineDetail));
         OnPropertyChanged(nameof(ShowGraphReadyInline));
         OnPropertyChanged(nameof(ShowGraphSignInBanner));
+        OnPropertyChanged(nameof(ShowRaceDayOfficeList));
+        OnPropertyChanged(nameof(ShowRaceDayListFilter));
         OnPropertyChanged(nameof(GraphReadyBannerBackground));
         OnPropertyChanged(nameof(GraphReadyBannerBorder));
     }
@@ -3669,6 +3728,94 @@ public sealed class MainViewModel : INotifyPropertyChanged
             : $"Add another race under {_newEventParentFolder}.";
         UpdateNewEventPreview();
         NotifyAdminSection();
+    }
+
+    /// <summary>
+    /// Admin → Edit Current Event: Graph-move the flat race or whole Race Group into Past Races.
+    /// </summary>
+    public async Task MoveAdminSessionToPastRacesAsync()
+    {
+        if (!ShowMoveToPastRaces || _adminSession is null)
+            return;
+
+        if (!_cloud.IsAvailable)
+        {
+            Alert("Move to Past Races", "Sign in to OneDrive first (Admin → Settings).");
+            return;
+        }
+
+        var office = _adminSession.Office;
+        var itemName = PastRacesArchivePaths.ResolveArchiveItemName(_adminSession);
+        var year = PastRacesArchivePaths.ResolveArchiveYear(itemName);
+        var destRel = PastRacesArchivePaths.DestinationItemRelative(office, year, itemName)
+            .Replace('/', Path.DirectorySeparatorChar);
+
+        if (PastRacesArchivePaths.IsLibraryPathUnderArchiveItem(
+                _settings.LibraryRoot, office, itemName, Active?.LibrarySessionPath))
+        {
+            Alert(
+                "Move to Past Races",
+                "This race (or a race in this Race Group) is checked out on this laptop.\n\n"
+                + "Finish first, then move it to Past Races.");
+            return;
+        }
+
+        var what = IsAdminSessionRaceGroupLeaf
+            ? $"the whole Race Group “{itemName}” (all races in the group)"
+            : $"“{itemName}”";
+
+        if (!TimerDialog.Confirm(
+                OwnerWindow,
+                "Move to Past Races",
+                $"Move {what} out of {office} into:\n\n{destRel}\n\n"
+                + "This updates OneDrive. Staff will no longer see it under the live office list.",
+                yesLabel: "Move to Past Races",
+                noLabel: "Cancel"))
+            return;
+
+        SetBusy("Moving to Past Races", $"Moving {itemName}…");
+        try
+        {
+            var result = await _cloud.MoveOfficeItemToPastRacesAsync(
+                    _settings.LibraryRoot,
+                    _settings.GraphDriveRoot,
+                    office,
+                    itemName,
+                    new Progress<string>(s => Status = s))
+                .ConfigureAwait(true);
+
+            Status = result.Message;
+            if (!result.Success)
+            {
+                Alert("Move to Past Races", result.Message);
+                return;
+            }
+
+            // Move already refreshed the live office on Graph. Invalidate Past Races browse cache only.
+            _graphIndexedOffices.Add(office);
+            _graphIndexedOffices.RemoveWhere(k =>
+                k.StartsWith(EventBuilderService.PastRacesFolderName + ":", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(k, EventBuilderService.PastRacesFolderName, StringComparison.OrdinalIgnoreCase));
+
+            Alert("Move to Past Races", result.Message);
+
+            ResetAdminAssignUi();
+            _adminEventsSubStep = AdminEventsSubStep.Session;
+            _adminSessionSource.Clear();
+            foreach (var session in _scanner.ListSessions(_settings.LibraryRoot, office))
+                _adminSessionSource.Add(session);
+            ApplyAdminListFilter();
+            NotifyAdminSection();
+        }
+        catch (Exception ex)
+        {
+            Alert("Move to Past Races", ex.Message);
+        }
+        finally
+        {
+            if (Busy && !BusyNeedsAcknowledge)
+                ClearBusy();
+        }
     }
 
     /// <summary>

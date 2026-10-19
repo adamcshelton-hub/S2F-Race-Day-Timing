@@ -72,6 +72,29 @@ public class FinishUploadPlannerTests
     }
 
     [Fact]
+    public void NeedsUpload_SameSizeContentChangeWithinTwoSeconds_True()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "s2f-finish-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(root);
+            var library = Path.Combine(root, "lib.bin");
+            var active = Path.Combine(root, "act.bin");
+            var stamp = DateTime.UtcNow.AddMinutes(-1);
+            File.WriteAllText(library, "data"); // 4 chars
+            File.SetLastWriteTimeUtc(library, stamp);
+            File.WriteAllText(active, "edit"); // 4 chars, different bytes
+            File.SetLastWriteTimeUtc(active, stamp.AddSeconds(1)); // within old 2s "skip" window
+
+            Assert.True(FinishUploadPlanner.NeedsUpload(active, library));
+        }
+        finally
+        {
+            TryDelete(root);
+        }
+    }
+
+    [Fact]
     public void CollectChanged_NewEventFile_Included()
     {
         var root = Path.Combine(Path.GetTempPath(), "s2f-finish-" + Guid.NewGuid().ToString("N"));
@@ -102,6 +125,84 @@ public class FinishUploadPlannerTests
             var active = Path.Combine(root, "a.bin");
             File.WriteAllBytes(active, new byte[] { 1, 2, 3 });
             Assert.True(FinishUploadPlanner.NeedsUpload(active, Path.Combine(root, "missing.bin")));
+        }
+        finally
+        {
+            TryDelete(root);
+        }
+    }
+
+    [Fact]
+    public void PlanUpload_PendingOnly_WhenActiveMatchesLibrary()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "s2f-finish-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var library = Path.Combine(root, "Library", "Race");
+            var active = Path.Combine(root, "Active", "Race");
+            SeedIdenticalPack(library, active);
+
+            var pending = new[] { Path.Combine(PathService.RunScoreFolderName, "race.dat") };
+            var checkout = MakeCheckout(active, library).WithPendingFinishUpload(pending);
+
+            var planned = FinishUploadPlanner.PlanUploadRelativePaths(checkout);
+            Assert.Single(planned);
+            Assert.Contains(planned, p => p.Replace('\\', '/').EndsWith("RUNSCORE/race.dat", StringComparison.OrdinalIgnoreCase)
+                || p.EndsWith(Path.Combine(PathService.RunScoreFolderName, "race.dat")));
+        }
+        finally
+        {
+            TryDelete(root);
+        }
+    }
+
+    [Fact]
+    public void PlanUpload_UnionsPendingWithFreshDiff()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "s2f-finish-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var library = Path.Combine(root, "Library", "Race");
+            var active = Path.Combine(root, "Active", "Race");
+            SeedIdenticalPack(library, active);
+
+            File.WriteAllText(Path.Combine(active, "Extra.event"), "new");
+            var checkout = MakeCheckout(active, library)
+                .WithPendingFinishUpload(new[] { PathService.RunScoreFolderName + "/race.dat" });
+
+            var planned = FinishUploadPlanner.PlanUploadRelativePaths(checkout);
+            Assert.Contains(planned, p => p.Equals("Extra.event", StringComparison.OrdinalIgnoreCase));
+            Assert.Contains(planned, p => p.Replace('\\', '/').Contains("race.dat", StringComparison.OrdinalIgnoreCase));
+            // Mixed separators must not duplicate the same file.
+            Assert.Equal(1, planned.Count(p => p.Replace('\\', '/').EndsWith("RUNSCORE/race.dat", StringComparison.OrdinalIgnoreCase)
+                || p.EndsWith(Path.Combine(PathService.RunScoreFolderName, "race.dat"))));
+        }
+        finally
+        {
+            TryDelete(root);
+        }
+    }
+
+    [Fact]
+    public void ExistingLibraryRelativePaths_DropsMissingKeepsPresent()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "s2f-finish-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var library = Path.Combine(root, "Library", "Race");
+            var active = Path.Combine(root, "Active", "Race");
+            SeedIdenticalPack(library, active);
+
+            var kept = FinishUploadPlanner.ExistingLibraryRelativePaths(
+                library,
+                new[]
+                {
+                    Path.Combine(PathService.RunScoreFolderName, "race.dat"),
+                    Path.Combine(PathService.RunScoreFolderName, "gone.dat"),
+                    "Race.event"
+                });
+            Assert.Equal(2, kept.Count);
+            Assert.DoesNotContain(kept, p => p.Contains("gone", StringComparison.OrdinalIgnoreCase));
         }
         finally
         {

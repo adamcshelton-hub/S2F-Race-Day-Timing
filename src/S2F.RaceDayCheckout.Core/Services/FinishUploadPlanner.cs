@@ -44,6 +44,52 @@ public static class FinishUploadPlanner
         return results;
     }
 
+    /// <summary>
+    /// Merge a prior Finish-retry pending list with a fresh Active-vs-Library diff
+    /// (covers edits while waiting for cellular).
+    /// </summary>
+    public static IReadOnlyList<string> PlanUploadRelativePaths(ActiveCheckout active)
+    {
+        var fresh = CollectChangedRelativePaths(active).Select(NormalizeRelative).ToList();
+        var pending = active.PendingFinishUploadRelativePaths;
+        if (pending is null || pending.Count == 0)
+            return fresh;
+
+        var pendingNorm = pending.Select(NormalizeRelative).ToList();
+        if (fresh.Count == 0)
+            return pendingNorm;
+
+        return pendingNorm
+            .Concat(fresh)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    /// <summary>Keep only session-relative paths that still exist under the library session.</summary>
+    public static IReadOnlyList<string> ExistingLibraryRelativePaths(
+        string librarySessionPath,
+        IReadOnlyList<string>? relativePaths)
+    {
+        if (relativePaths is null || relativePaths.Count == 0)
+            return Array.Empty<string>();
+
+        var kept = new List<string>();
+        foreach (var rel in relativePaths)
+        {
+            if (string.IsNullOrWhiteSpace(rel))
+                continue;
+            var norm = NormalizeRelative(rel);
+            var full = Path.Combine(librarySessionPath, norm);
+            if (File.Exists(full))
+                kept.Add(norm);
+        }
+
+        return kept;
+    }
+
+    internal static string NormalizeRelative(string relative) =>
+        relative.Replace('/', Path.DirectorySeparatorChar).Replace('\\', Path.DirectorySeparatorChar);
+
     private static void CollectTreeDiffs(
         string activeRoot,
         string libraryRoot,
@@ -87,11 +133,15 @@ public static class FinishUploadPlanner
         if (a.Length != b.Length)
             return true;
 
-        // Same size: if Active is not newer than Library, treat as unchanged (opened RS, no edit).
-        if (a.LastWriteTimeUtc <= b.LastWriteTimeUtc.AddSeconds(2))
+        // Same size + Active clearly older than Library (2s skew) → unchanged.
+        // Do NOT treat "Active slightly newer" as unchanged without a byte compare —
+        // RunScore can rewrite same-length files within that window and we would
+        // skip Finish upload (Active≈Library trap after a failed cloud Finish).
+        if (a.LastWriteTimeUtc < b.LastWriteTimeUtc.AddSeconds(-2))
             return false;
 
-        // Same size, Active newer — compare bytes (RS often bumps mtime without edits).
+        // Same size and Active same-or-newer — compare bytes (mtime bumps with no edit
+        // still return false; real same-size content edits return true).
         return !FilesEqual(activeFile, libraryFile);
     }
 

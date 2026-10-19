@@ -56,8 +56,6 @@ public sealed class CheckoutService
     private readonly IFileCopyService _copy;
     private readonly IProcessGuard _processes;
     private readonly ActiveCheckoutStore _activeStore;
-    private readonly IOneDriveSyncMonitor _syncMonitor;
-    private readonly IOneDriveHydrationService _hydrate;
     private readonly RunScorePreferencesService _runScorePrefs;
     private readonly SharedFolderLinkService _links;
     private readonly ICloudLibrarySync _cloud;
@@ -74,13 +72,15 @@ public sealed class CheckoutService
         SharedFolderLinkService? links = null,
         ICloudLibrarySync? cloud = null)
     {
+        // syncMonitor / hydrate kept as optional ctor params for call-site compat; Graph-only
+        // Finish no longer settles via the OneDrive desktop client or Files On-Demand hydrate.
+        _ = syncMonitor;
+        _ = hydrate;
         _paths = paths;
         _locks = locks;
         _copy = copy;
         _processes = processes;
         _activeStore = activeStore;
-        _syncMonitor = syncMonitor ?? new SettlingOneDriveSyncMonitor();
-        _hydrate = hydrate ?? new OneDriveHydrationService();
         _runScorePrefs = runScorePrefs ?? new RunScorePreferencesService();
         _links = links ?? new SharedFolderLinkService();
         _cloud = cloud ?? new NullCloudLibrarySync();
@@ -132,15 +132,14 @@ public sealed class CheckoutService
         // Sidecar primary wins once that file is on disk (after Graph download or a local pack).
 
         var useGraph = _cloud.IsAvailable;
-
-        // Placeholder sessions from a Graph index may only have an empty RUNSCORE until download.
-        var libraryRunScoreEarly = Path.Combine(request.Pack.Path, PathService.RunScoreFolderName);
-        if (!useGraph && !Directory.Exists(libraryRunScoreEarly))
+        if (!useGraph)
         {
             return new CheckoutResult
             {
                 Success = false,
-                Message = $"RUNSCORE folder missing: {libraryRunScoreEarly}"
+                Message =
+                    "Sign in to OneDrive before loading a race. "
+                    + "This laptop does not use the OneDrive desktop app — checkout downloads through this app only."
             };
         }
 
@@ -256,42 +255,19 @@ public sealed class CheckoutService
         PathService.TryMarkHidden(autosavePath);
         TryRemoveAutosaveTombstone(autosavePath);
 
-        // Pull OneDrive Files On-Demand placeholders local before copy (Desktop mode only).
-        if (!useGraph)
-        {
-            statusProgress?.Report("Making sure race files are downloaded…");
-            await _hydrate.HydrateDirectoryAsync(libraryRunScore, statusProgress, cancellationToken);
-            if (libraryEventFile is not null)
-                await _hydrate.HydrateFileAsync(libraryEventFile, statusProgress, cancellationToken);
-            if (Directory.Exists(autosavePath))
-                await _hydrate.HydrateDirectoryAsync(autosavePath, statusProgress, cancellationToken);
-        }
-
+        // Graph-only: Library under C:\S2F\Library is real files from Graph download (or a
+        // prior pull). No OneDrive Files On-Demand hydrate — desktop client is not installed.
         statusProgress?.Report("Copying race files to this laptop…");
         await _copy.CopyDirectoryAsync(libraryRunScore, activeRunScore, progress, cancellationToken);
         Directory.CreateDirectory(activePath);
         if (libraryEventFile is not null)
             File.Copy(libraryEventFile, Path.Combine(activePath, primary), overwrite: true);
 
-        LinkResult dbsLink;
-        string dbsLinkNote;
-        if (useGraph)
-        {
-            statusProgress?.Report("Preparing local DB's folder…");
-            dbsLink = _links.EnsureLocalDbsFolder(activePath, request.Pack.Path);
-            dbsLinkNote = dbsLink.Success
-                ? (dbsLink.Created ? " Active DB's is local; app publishes to OneDrive via Graph." : "")
-                : $" DB's warning: {dbsLink.Message}";
-        }
-        else
-        {
-            // Keep RunScore relative exports on OneDrive via junction.
-            statusProgress?.Report("Linking Active DB's to OneDrive…");
-            dbsLink = _links.EnsureDbsLink(activePath, request.Pack.Path);
-            dbsLinkNote = dbsLink.Success
-                ? (dbsLink.Created ? " Active DB's linked to OneDrive for announcer/backup exports." : "")
-                : $" DB's link warning: {dbsLink.Message}";
-        }
+        statusProgress?.Report("Preparing local DB's folder…");
+        var dbsLink = _links.EnsureLocalDbsFolder(activePath, request.Pack.Path);
+        var dbsLinkNote = dbsLink.Success
+            ? (dbsLink.Created ? " Active DB's is local; app publishes to OneDrive via Graph." : "")
+            : $" DB's warning: {dbsLink.Message}";
 
         // Mid-race failover: apply newer OneDrive RUNSCORE\_autosave only on reclaim/force.
         // Normal checkout must NOT merge leftovers — Finish clears _autosave so post-race
@@ -463,7 +439,18 @@ public sealed class CheckoutService
         }
 
         var useGraph = _cloud.IsAvailable;
-        if (useGraph && !request.SkipGraphDownload)
+        if (!useGraph)
+        {
+            return new CheckoutResult
+            {
+                Success = false,
+                Message =
+                    "Sign in to OneDrive before loading Announcer files. "
+                    + "This laptop does not use the OneDrive desktop app."
+            };
+        }
+
+        if (!request.SkipGraphDownload)
         {
             statusProgress?.Report("Downloading Announcer T&S files…");
             CloudSyncResult pull;
@@ -709,6 +696,9 @@ public sealed class CheckoutService
         IProgress<string>? statusProgress = null,
         CancellationToken cancellationToken = default)
     {
+        // waitForOneDrive ignored — Graph-only Finish; no desktop client settle.
+        _ = waitForOneDrive;
+
         var active = _activeStore.Load();
         if (active is null)
             return new CheckinResult { Success = false, Message = "No Active checkout on this machine." };
@@ -719,6 +709,31 @@ public sealed class CheckoutService
             {
                 Success = false,
                 Message = "Announcer checkout does not upload. Close Timing & Scoring, then tap Done."
+            };
+        }
+
+        // Graph-only: no OneDrive desktop client on race-day laptops. Finish must upload via Graph.
+        if (!_cloud.IsAvailable)
+        {
+            if (active.PendingFinishUploadRelativePaths is { Count: > 0 })
+            {
+                return new CheckinResult
+                {
+                    Success = true,
+                    RetainActiveForCloudRetry = true,
+                    AwaitingOneDriveConfirm = true,
+                    Message =
+                        "Race files from the last Finish are still waiting to upload. "
+                        + "Sign in to OneDrive, then tap Finish again."
+                };
+            }
+
+            return new CheckinResult
+            {
+                Success = false,
+                Message =
+                    "Sign in to OneDrive to Finish. This laptop does not use the OneDrive desktop app — "
+                    + "race files upload through this app only. Your Active checkout is unchanged."
             };
         }
 
@@ -743,61 +758,51 @@ public sealed class CheckoutService
 
         // Diff Active vs Library BEFORE finish:copy — download/checkout timestamps must not
         // drive Graph upload (that was uploading ~100 unchanged RUNSCORE files).
-        IReadOnlyList<string>? uploadRelativePaths = null;
-        if (_cloud.IsAvailable)
-            uploadRelativePaths = FinishUploadPlanner.CollectChangedRelativePaths(active);
+        // Union with any pending paths from a prior Graph fail (Active≈Library on retry).
+        var uploadRelativePaths = FinishUploadPlanner.PlanUploadRelativePaths(active);
 
-        statusProgress?.Report("finish:backup");
-        _paths.EnsureAppMetaFolder(active.LibrarySessionPath);
-        var backupDest = _paths.GetCheckinBackupPath(active.LibrarySessionPath, DateTimeOffset.Now);
-        var libraryRunScore = Path.Combine(active.LibrarySessionPath, PathService.RunScoreFolderName);
-        Directory.CreateDirectory(backupDest);
-        if (Directory.Exists(libraryRunScore))
-            await _copy.CopyDirectoryAsync(libraryRunScore, Path.Combine(backupDest, PathService.RunScoreFolderName), progress, cancellationToken);
-        foreach (var eventName in activeEventNames)
-        {
-            var libraryEventPrior = Path.Combine(active.LibrarySessionPath, eventName);
-            if (File.Exists(libraryEventPrior))
-                File.Copy(libraryEventPrior, Path.Combine(backupDest, eventName), overwrite: true);
-        }
+        // Once we mutate Library toward Active, any failure before Graph success must keep
+        // pending paths — otherwise the next Finish sees Active≈Library and skips upload.
+        var mustRetainCloudPending = uploadRelativePaths.Count > 0
+            || active.PendingFinishUploadRelativePaths is { Count: > 0 };
 
-        statusProgress?.Report("finish:copy");
-        // Full replace into Library (local). Graph upload uses uploadRelativePaths from the
-        // pre-copy Active-vs-Library diff — not these rewritten timestamps.
-        await _copy.CopyDirectoryAsync(activeRunScore, libraryRunScore, progress, cancellationToken);
-        foreach (var eventName in activeEventNames)
-        {
-            var activeEventPath = Path.Combine(active.ActivePath, eventName);
-            var libraryEvent = Path.Combine(active.LibrarySessionPath, eventName);
-            File.Copy(activeEventPath, libraryEvent, overwrite: true);
-        }
-
-        // Clear mid-race autosave ASAP (before the sync wait). Waiting first kept
-        // OneDrive locks on _autosave and made Finish both slow and unable to delete it.
         var autosavePath = active.AutosavePath;
-        statusProgress?.Report("finish:autosave");
-        ClearAutosaveWithRetry(autosavePath);
-        if (_cloud.IsAvailable)
-        {
-            // Best-effort; must not block Finish if Graph is slow.
-            statusProgress?.Report("finish:autosave-cloud");
-            try
-            {
-                await _cloud.ClearRemoteFolderAsync(
-                    autosavePath,
-                    settings.LibraryRoot,
-                    settings.GraphDriveRoot,
-                    cancellationToken);
-            }
-            catch
-            {
-                // continue
-            }
-        }
+        var syncOk = true;
+        var syncMessage = string.Empty;
 
-        // Publish Active DB's into the library session before Graph upload (Graph mode).
-        if (_cloud.IsAvailable)
+        try
         {
+            statusProgress?.Report("finish:backup");
+            _paths.EnsureAppMetaFolder(active.LibrarySessionPath);
+            var backupDest = _paths.GetCheckinBackupPath(active.LibrarySessionPath, DateTimeOffset.Now);
+            var libraryRunScore = Path.Combine(active.LibrarySessionPath, PathService.RunScoreFolderName);
+            Directory.CreateDirectory(backupDest);
+            if (Directory.Exists(libraryRunScore))
+                await _copy.CopyDirectoryAsync(libraryRunScore, Path.Combine(backupDest, PathService.RunScoreFolderName), progress, cancellationToken);
+            foreach (var eventName in activeEventNames)
+            {
+                var libraryEventPrior = Path.Combine(active.LibrarySessionPath, eventName);
+                if (File.Exists(libraryEventPrior))
+                    File.Copy(libraryEventPrior, Path.Combine(backupDest, eventName), overwrite: true);
+            }
+
+            statusProgress?.Report("finish:copy");
+            // Full replace into Library (local). Graph upload uses uploadRelativePaths from the
+            // pre-copy Active-vs-Library diff — not these rewritten timestamps.
+            await _copy.CopyDirectoryAsync(activeRunScore, libraryRunScore, progress, cancellationToken);
+            foreach (var eventName in activeEventNames)
+            {
+                var activeEventPath = Path.Combine(active.ActivePath, eventName);
+                var libraryEvent = Path.Combine(active.LibrarySessionPath, eventName);
+                File.Copy(activeEventPath, libraryEvent, overwrite: true);
+            }
+
+            // Clear local mid-race autosave ASAP (before Graph). Do NOT clear remote _autosave
+            // yet — that burns cellular before race-file PUTs; run it after upload succeeds.
+            statusProgress?.Report("finish:autosave");
+            ClearAutosaveWithRetry(autosavePath);
+
+            // Publish Active DB's into the library session before Graph upload.
             var activeDbs = Path.Combine(active.ActivePath, SharedFolderLinkService.DbsFolderName);
             var libraryDbs = Path.Combine(active.LibrarySessionPath, SharedFolderLinkService.DbsFolderName);
             if (Directory.Exists(activeDbs) && !IsReparsePoint(activeDbs))
@@ -805,15 +810,10 @@ public sealed class CheckoutService
                 Directory.CreateDirectory(libraryDbs);
                 await _copy.MirrorNewerFilesAsync(activeDbs, libraryDbs, cancellationToken: cancellationToken);
             }
-        }
 
-        // Cloud upload BEFORE releasing the lock / clearing Active.
-        // On cellular failure we keep the lock so another laptop cannot take a stale cloud pack.
-        var syncOk = true;
-        var syncMessage = string.Empty;
-        if (_cloud.IsAvailable)
-        {
+            // Cloud upload BEFORE releasing the lock / clearing Active.
             statusProgress?.Report("finish:sync");
+            IReadOnlyList<string>? stillPending = null;
             try
             {
                 using var uploadCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -827,40 +827,87 @@ public sealed class CheckoutService
                     onlyRelativePaths: uploadRelativePaths);
                 syncOk = upload.Success;
                 syncMessage = upload.Message;
+                if (!syncOk)
+                {
+                    // Partial fail → only remaining paths; hard fail / empty list → full planned set.
+                    stillPending = upload.FailedRelativePaths.Count > 0
+                        ? upload.FailedRelativePaths
+                        : uploadRelativePaths;
+                }
             }
-            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException)
             {
                 syncOk = false;
-                syncMessage =
-                    "Cloud upload timed out on cellular. Race files are saved on this laptop — tap Finish again when signal improves.";
+                stillPending = uploadRelativePaths;
+                syncMessage = cancellationToken.IsCancellationRequested
+                    ? "Finish was interrupted before cloud upload finished. Race files are saved on this laptop — tap Finish again."
+                    : "Cloud upload timed out on cellular. Race files are saved on this laptop — tap Finish again when signal improves.";
             }
 
             if (!syncOk)
-            {
-                var autosaveStill = ClearAutosaveWithRetry(autosavePath);
-                return new CheckinResult
-                {
-                    Success = true,
-                    RetainActiveForCloudRetry = true,
-                    AwaitingOneDriveConfirm = true,
-                    AutosaveCleared = autosaveStill,
-                    Message = syncMessage
-                };
-            }
+                return RetainActiveForCloudRetry(active, autosavePath, stillPending, syncMessage);
+
+            // Cloud OK — drop any prior pending list before releasing Active.
+            if (active.PendingFinishUploadRelativePaths is { Count: > 0 })
+                _activeStore.Save(active.WithPendingFinishUpload(null));
         }
-        else if (waitForOneDrive)
+        catch (OperationCanceledException) when (mustRetainCloudPending)
         {
-            statusProgress?.Report("finish:sync");
-            var sync = await _syncMonitor.WaitUntilSettledAsync(
-                active.LibrarySessionPath,
-                TimeSpan.FromSeconds(Math.Max(15, settings.OneDriveSyncWaitSeconds)),
-                statusProgress,
-                cancellationToken);
-            syncOk = sync.Success;
-            syncMessage = sync.Message;
+            return RetainActiveForCloudRetry(
+                active,
+                autosavePath,
+                uploadRelativePaths,
+                cancellationToken.IsCancellationRequested
+                    ? "Finish was interrupted while saving race files. Files are on this laptop — tap Finish again."
+                    : "Finish timed out while saving race files. Files are on this laptop — tap Finish again when signal improves.");
+        }
+        catch (Exception ex) when (mustRetainCloudPending)
+        {
+            return RetainActiveForCloudRetry(
+                active,
+                autosavePath,
+                uploadRelativePaths,
+                "Finish could not finish uploading to OneDrive. Race files are saved on this laptop — tap Finish again.\n\n"
+                + ex.Message);
         }
 
         _locks.Release(active.LibrarySessionPath, holderName);
+
+        // Publish Released lock AFTER local release. UploadSessionAsync (Finish) skips lock
+        // metadata so we do not PUT Active then Released (wastes cellular) and so OneDrive
+        // does not keep a stale Active lock after a successful Finish.
+        if (syncOk)
+        {
+            try
+            {
+                using var lockCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                lockCts.CancelAfter(GraphSyncPolicy.HttpTimeout);
+                await _cloud.UploadCheckoutLockAsync(
+                    active.LibrarySessionPath,
+                    settings.LibraryRoot,
+                    settings.GraphDriveRoot,
+                    lockCts.Token);
+            }
+            catch
+            {
+                // Race files already on OneDrive — next checkout may need soft reclaim.
+            }
+
+            // Remote _autosave clear after race PUTs (bounded budget inside ClearRemoteFolderAsync).
+            statusProgress?.Report("finish:autosave-cloud");
+            try
+            {
+                await _cloud.ClearRemoteFolderAsync(
+                    autosavePath,
+                    settings.LibraryRoot,
+                    settings.GraphDriveRoot,
+                    cancellationToken);
+            }
+            catch
+            {
+                // Local autosave already cleared; leftover cloud overlay is non-fatal.
+            }
+        }
 
         string? activeRemoveError = null;
         if (removeActive)
@@ -909,38 +956,54 @@ public sealed class CheckoutService
             {
                 Success = true,
                 AutosaveCleared = autosaveCleared,
-                AwaitingOneDriveConfirm = !syncOk,
-                Message = syncOk
-                    ? $"Checked in; could not remove Active folder: {activeRemoveError}. Safe to shut down after confirming cloud sync."
-                      + autosaveNote
-                    : $"Checked in; Active folder leftover ({activeRemoveError}). {syncMessage}" + autosaveNote
+                Message =
+                    $"Checked in; could not remove Active folder: {activeRemoveError}. "
+                    + "Race files were uploaded — safe to shut down after closing leftover folders."
+                    + autosaveNote
             };
         }
 
-        if (syncOk)
-        {
-            return new CheckinResult
-            {
-                Success = true,
-                AutosaveCleared = autosaveCleared,
-                Message = _cloud.IsAvailable
-                    ? "Finish complete. Race files were uploaded to OneDrive. You can shut down this laptop."
-                      + autosaveNote
-                    : "Finish complete. Scoped files are on OneDrive and sync looks settled. You can shut down this laptop."
-                      + autosaveNote
-            };
-        }
-
-        // Desktop OneDrive settle failed — Active already cleared; staff confirm cloud icon.
         return new CheckinResult
         {
             Success = true,
             AutosaveCleared = autosaveCleared,
-            AwaitingOneDriveConfirm = true,
             Message =
-                "Finish copied files and released the lock, but OneDrive sync was not confirmed yet. " + syncMessage
-                + " Check the OneDrive cloud icon, then shut down only when it shows synced."
+                "Finish complete. Race files were uploaded to OneDrive. You can shut down this laptop."
                 + autosaveNote
+        };
+    }
+
+    /// <summary>
+    /// Persist pending Graph Finish paths and keep Active + lock. Prefer paths that still
+    /// exist under Library; if none do, keep the planned set so retry cannot no-op.
+    /// </summary>
+    private CheckinResult RetainActiveForCloudRetry(
+        ActiveCheckout active,
+        string autosavePath,
+        IReadOnlyList<string>? stillPending,
+        string message)
+    {
+        var candidates = (stillPending ?? Array.Empty<string>())
+            .Concat(active.PendingFinishUploadRelativePaths ?? Array.Empty<string>())
+            .Where(p => !string.IsNullOrWhiteSpace(p))
+            .Select(FinishUploadPlanner.NormalizeRelative)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var existing = FinishUploadPlanner.ExistingLibraryRelativePaths(
+            active.LibrarySessionPath, candidates);
+        // Prefer on-disk Library paths; fall back to the full candidate set so we never
+        // wipe pending after a Library mutation (Active≈Library trap).
+        var toSave = existing.Count > 0 ? existing : candidates;
+
+        _activeStore.Save(active.WithPendingFinishUpload(toSave.Count > 0 ? toSave : stillPending));
+        var autosaveStill = ClearAutosaveWithRetry(autosavePath);
+        return new CheckinResult
+        {
+            Success = true,
+            RetainActiveForCloudRetry = true,
+            AwaitingOneDriveConfirm = true,
+            AutosaveCleared = autosaveStill,
+            Message = message
         };
     }
 
