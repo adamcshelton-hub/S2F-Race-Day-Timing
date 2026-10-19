@@ -853,19 +853,26 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
         {
             var relative = ToDriveRelative(librarySessionPath, libraryRoot, graphDriveRoot);
             if (relative is null)
+            {
+                RaceDayTrace.Write($"lock upload failed session={librarySessionPath} error=outside-library-root");
                 return new CloudSyncResult { Success = false, Message = "Session path is outside LibraryRoot." };
+            }
 
             var count = await UploadLockMetadataAsync(librarySessionPath, relative, status: null, cancellationToken)
                 .ConfigureAwait(false);
-            return new CloudSyncResult
+            var uploaded = new CloudSyncResult
             {
                 Success = true,
                 FilesTransferred = count,
                 Message = count > 0 ? $"Uploaded {count} lock file(s)." : "No lock files to upload."
             };
+            RaceDayTrace.Write(
+                $"lock upload success={uploaded.Success} files={uploaded.FilesTransferred} session={librarySessionPath} message={uploaded.Message}");
+            return uploaded;
         }
         catch (Exception ex)
         {
+            RaceDayTrace.Write($"lock upload failed session={librarySessionPath} error={ex.GetType().Name}: {ex.Message}");
             return new CloudSyncResult { Success = false, Message = "Lock upload failed: " + ex.Message };
         }
     }
@@ -883,24 +890,36 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
         {
             var relative = ToDriveRelative(librarySessionPath, libraryRoot, graphDriveRoot);
             if (relative is null)
+            {
+                RaceDayTrace.Write($"lock download failed session={librarySessionPath} error=outside-library-root");
                 return new CloudSyncResult { Success = false, Message = "Session path is outside LibraryRoot." };
+            }
 
             var cloud = JoinDrivePath(relative, PathService.AppMetaFolderName + "/_checkout.json");
             var local = new PathService().GetLockPath(librarySessionPath);
             var got = await TryDownloadOptionalFileAsync(cloud, local, cancellationToken).ConfigureAwait(false);
-            return new CloudSyncResult
+            long bytes = 0;
+            if (got && File.Exists(local))
+                bytes = new FileInfo(local).Length;
+            var downloaded = new CloudSyncResult
             {
                 Success = true,
                 FilesTransferred = got ? 1 : 0,
                 Message = got ? "Checkout lock refreshed from OneDrive." : "No checkout lock on OneDrive."
             };
+            RaceDayTrace.Write(
+                $"lock download success={downloaded.Success} files={downloaded.FilesTransferred} bytes={bytes} " +
+                $"local={local} cloud={cloud} message={downloaded.Message}");
+            return downloaded;
         }
         catch (OperationCanceledException)
         {
+            RaceDayTrace.Write($"lock download canceled session={librarySessionPath}");
             throw;
         }
         catch (Exception ex)
         {
+            RaceDayTrace.Write($"lock download failed session={librarySessionPath} error={ex.GetType().Name}: {ex.Message}");
             return new CloudSyncResult { Success = false, Message = "Lock download failed: " + ex.Message };
         }
     }

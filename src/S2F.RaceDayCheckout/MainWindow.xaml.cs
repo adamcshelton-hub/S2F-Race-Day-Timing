@@ -14,6 +14,8 @@ public partial class MainWindow : Window
 {
     private readonly MainViewModel _vm;
     private bool _forceClose;
+    private bool _closePromptOpen;
+    private bool _sessionEnding;
     private bool _adminFocusQueued;
     private string? _lastAdminFocusKey;
 
@@ -23,6 +25,8 @@ public partial class MainWindow : Window
         _vm = new MainViewModel();
         DataContext = _vm;
         _vm.PropertyChanged += ViewModel_PropertyChanged;
+        if (Application.Current is not null)
+            Application.Current.SessionEnding += App_SessionEnding;
     }
 
     private void ViewModel_PropertyChanged(object? sender, PropertyChangedEventArgs e)
@@ -421,17 +425,75 @@ public partial class MainWindow : Window
 
     private void EditRunScoreSop_Click(object sender, RoutedEventArgs e) => _vm.EditRunScoreSop();
 
-    private async void Window_Closing(object? sender, CancelEventArgs e)
+    /// <summary>
+    /// Windows shutdown/logoff. Cancel immediately when a race is checked out so the
+    /// session-end timeout does not kill the app before Finish. The close prompt runs
+    /// after this handler returns.
+    /// </summary>
+    private void App_SessionEnding(object? sender, SessionEndingCancelEventArgs e)
+    {
+        if (_forceClose || !_vm.HasOpenCheckout)
+            return;
+
+        e.Cancel = true;
+        _sessionEnding = true;
+        ScheduleClosePrompt();
+    }
+
+    private void Window_Closing(object? sender, CancelEventArgs e)
     {
         if (_forceClose)
             return;
 
-        e.Cancel = true;
-        var ok = await _vm.ConfirmCloseAsync(this);
-        if (!ok)
+        // No checkout — let the X button and Windows shutdown close the app.
+        if (!_vm.HasOpenCheckout)
             return;
 
-        _forceClose = true;
-        await Dispatcher.InvokeAsync(Close, DispatcherPriority.Background);
+        // Cancel before any dialog. A blocking ShowDialog inside Closing makes Windows
+        // treat the app as hung and force-kill it during shutdown.
+        e.Cancel = true;
+        ScheduleClosePrompt();
+    }
+
+    private void ScheduleClosePrompt()
+    {
+        if (_closePromptOpen)
+            return;
+
+        _closePromptOpen = true;
+        Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() => _ = RunClosePromptAsync()));
+    }
+
+    private async Task RunClosePromptAsync()
+    {
+        try
+        {
+            if (_vm.Busy)
+            {
+                TimerDialog.Alert(
+                    this,
+                    "Still Working",
+                    "Wait until this step finishes, then close the app.");
+                return;
+            }
+
+            var sessionEnding = _sessionEnding;
+            var ok = await _vm.ConfirmCloseAsync(this, sessionEnding);
+            if (!ok)
+                return;
+
+            _forceClose = true;
+            Close();
+        }
+        catch (Exception ex)
+        {
+            TimerDialog.Alert(this, "Couldn't Close", ex.Message);
+        }
+        finally
+        {
+            // Shutdown during the prompt is already cancelled. Drop the flag so the next X is a normal close.
+            _sessionEnding = false;
+            _closePromptOpen = false;
+        }
     }
 }

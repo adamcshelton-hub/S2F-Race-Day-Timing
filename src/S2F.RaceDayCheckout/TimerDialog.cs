@@ -3,6 +3,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Effects;
+using S2F.RaceDayCheckout.Core.Models;
 
 namespace S2F.RaceDayCheckout;
 
@@ -106,7 +107,13 @@ public static class TimerDialog
         return result;
     }
 
-    public static bool Confirm(Window? owner, string title, string message, string yesLabel = "Yes", string noLabel = "No")
+    public static bool Confirm(
+        Window? owner,
+        string title,
+        string message,
+        string yesLabel = "Yes",
+        string noLabel = "No",
+        bool yesIsDanger = false)
     {
         var result = false;
         var window = CreateChromeLess(owner);
@@ -115,7 +122,7 @@ public static class TimerDialog
             message,
             buttons: new[]
             {
-                MakeButton(yesLabel, "PrimaryButton", () => { result = true; window.DialogResult = true; }),
+                MakeButton(yesLabel, yesIsDanger ? "DangerButton" : "PrimaryButton", () => { result = true; window.DialogResult = true; }),
                 MakeButton(noLabel, "SecondaryButton", () => { result = false; window.DialogResult = false; })
             });
         window.Content = DimmedHost(card);
@@ -278,46 +285,83 @@ public static class TimerDialog
         }
     }
 
-    public static TimerCloseChoice AskCloseWhileActive(Window? owner)
+    /// <summary>
+    /// Timing checkout is still open. Finish uploads and releases the lock.
+    /// Close App leaves the checkout on this laptop so a reopen can resume.
+    /// </summary>
+    public static TimerCloseChoice AskCloseWhileActive(
+        Window? owner,
+        bool sessionEnding = false,
+        IReadOnlyList<string>? vendorsStillOpen = null)
     {
         var result = TimerCloseChoice.KeepWorking;
         var window = CreateChromeLess(owner);
+        var staleMinutes = AppSettings.DefaultStaleLockMinutes;
 
-        Button? save = null;
-        Button? stay = null;
-        Button? discard = null;
-
-        save = MakeButton("Save & Close", "SaveButton", () =>
+        var save = MakeButton("Finish & Close", "SaveButton", () =>
         {
             result = TimerCloseChoice.SaveAndClose;
             window.DialogResult = true;
         });
-        stay = MakeButton("Keep Working", "SecondaryButton", () =>
+        var stay = MakeButton("Keep Working", "SecondaryButton", () =>
         {
             result = TimerCloseChoice.KeepWorking;
             window.DialogResult = false;
         });
-        discard = MakeButton("Close Without Saving", "DangerButton", () =>
+        var leave = MakeButton("Close App", "DangerButton", () =>
         {
-            if (!Confirm(window, "Are you sure?",
-                    "Close without saving?\n\nOnly do this if setup staff told you to.",
-                    yesLabel: "Close Without Saving",
-                    noLabel: "Go back"))
+            if (!Confirm(
+                    window,
+                    "Close Without Finishing?",
+                    FormatLeaveCheckoutWarning(staleMinutes, vendorsStillOpen),
+                    yesLabel: "Close App",
+                    noLabel: "Go Back",
+                    yesIsDanger: true))
                 return;
             result = TimerCloseChoice.CloseWithoutSaving;
             window.DialogResult = true;
         });
 
+        var intro = sessionEnding
+            ? "Windows tried to shut down or sign out. That is stopped until you choose below.\n\n"
+            : string.Empty;
+
         var card = BuildCard(
-            "Race still open",
-            "You're still checked out for a race.\n\n"
-            + "Keep this app open while racing — it mirrors live files to OneDrive for failover.\n\n"
-            + "Save your work before closing. If you close without saving, another timer may not be able to use this event.",
-            buttons: new[] { save, stay, discard });
+            "Race Still Checked Out",
+            intro
+            + "This laptop is still checked out for a race.\n\n"
+            + "Keep this app open while racing. It mirrors live files to OneDrive and holds the checkout.\n\n"
+            + "Finish & Close saves the race and lets another laptop check it out.\n\n"
+            + "Close App leaves the checkout on this laptop and stops the live mirror until you open this app again. "
+            + $"After about {staleMinutes} minutes another laptop can take this race.",
+            buttons: new[] { save, stay, leave });
 
         window.Content = DimmedHost(card);
         window.ShowDialog();
         return result;
+    }
+
+    private static string FormatLeaveCheckoutWarning(int staleMinutes, IReadOnlyList<string>? vendorsStillOpen)
+    {
+        var message =
+            "The race stays checked out on this laptop. Nothing new is uploaded.\n\n"
+            + "The live mirror stops until you open this app again. "
+            + $"After about {staleMinutes} minutes another laptop can take this race.";
+
+        if (vendorsStillOpen is { Count: > 0 })
+        {
+            message +=
+                "\n\nStill open: " + string.Join(", ", vendorsStillOpen) + ".\n\n"
+                + "Those programs keep running after this app closes. "
+                + "Another laptop can take the race while you are still scoring.";
+        }
+        else
+        {
+            message += "\n\nRunScore and Timing & Scoring are closed.";
+        }
+
+        message += "\n\nOnly close if you will reopen this app, or setup staff told you to leave.";
+        return message;
     }
 
     /// <summary>
@@ -532,7 +576,7 @@ public static class TimerDialog
     /// Announcer close: no Finish/upload. Leave Active so Timing &amp; Scoring keeps its files,
     /// or Done to clear this laptop only.
     /// </summary>
-    public static TimerCloseChoice AskCloseWhileAnnouncerActive(Window? owner)
+    public static TimerCloseChoice AskCloseWhileAnnouncerActive(Window? owner, bool sessionEnding = false)
     {
         var result = TimerCloseChoice.KeepWorking;
         var window = CreateChromeLess(owner);
@@ -553,9 +597,14 @@ public static class TimerDialog
             window.DialogResult = true;
         });
 
+        var intro = sessionEnding
+            ? "Windows tried to shut down or sign out. That is stopped until you choose below.\n\n"
+            : string.Empty;
+
         var card = BuildCard(
-            "Announcer files still open",
-            "This announcer copy stays on this laptop only. Closing the app does not upload anything and does not affect the timing laptop.\n\n"
+            "Announcer Files Still Open",
+            intro
+            + "This announcer copy stays on this laptop only. Closing the app does not upload anything and does not affect the timing laptop.\n\n"
             + "Timing & Scoring can stay open if you close the app.\n\n"
             + "Tap Done only when you are finished — that removes the announcer files from this laptop.",
             buttons: new[] { done, stay, leave });

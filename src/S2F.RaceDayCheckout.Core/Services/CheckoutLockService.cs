@@ -51,8 +51,9 @@ public sealed class CheckoutLockService
             var json = File.ReadAllText(path);
             return JsonSerializer.Deserialize<CheckoutLock>(json, JsonOptions);
         }
-        catch
+        catch (Exception ex)
         {
+            RaceDayTrace.Write($"lock read failed path={path} error={ex.GetType().Name}: {ex.Message}");
             return null;
         }
     }
@@ -135,6 +136,8 @@ public sealed class CheckoutLockService
         };
 
         WriteLockWithRetry(librarySessionPath, lockInfo);
+        RaceDayTrace.Write(
+            $"lock acquire emergency={emergency} path={librarySessionPath} lock={RaceDayTrace.FormatLock(lockInfo)}");
         AppendHistory(librarySessionPath, new LockHistoryEntry
         {
             At = now,
@@ -151,12 +154,25 @@ public sealed class CheckoutLockService
     {
         var existing = TryRead(libraryEventPath);
         if (existing is null || existing.Status != LockLifecycleStatus.Active)
+        {
+            RaceDayTrace.Write(
+                $"lock heartbeat skipped path={libraryEventPath} reason={(existing is null ? "missing" : "status-" + existing.Status)} " +
+                $"ours={_machine.MachineId} lock={RaceDayTrace.FormatLock(existing)}");
             return existing;
+        }
+
         if (!string.Equals(existing.MachineId, _machine.MachineId, StringComparison.OrdinalIgnoreCase))
+        {
+            RaceDayTrace.Write(
+                $"lock heartbeat skipped path={libraryEventPath} reason=machine-mismatch " +
+                $"ours={_machine.MachineId} oursMachine={_machine.MachineName} oursUser={_machine.WindowsUser} " +
+                $"lock={RaceDayTrace.FormatLock(existing)}");
             return existing;
+        }
 
         existing.LastSeenAt = _clock();
         WriteLockWithRetry(libraryEventPath, existing);
+        RaceDayTrace.Write($"lock heartbeat wrote path={libraryEventPath} lock={RaceDayTrace.FormatLock(existing)}");
         return existing;
     }
 
@@ -197,6 +213,8 @@ public sealed class CheckoutLockService
         existing.LastSeenAt = _clock();
         existing.ReclaimReason = reason;
         WriteLockWithRetry(libraryEventPath, existing);
+        RaceDayTrace.Write(
+            $"lock release path={libraryEventPath} reason={reason} lock={RaceDayTrace.FormatLock(existing)}");
         AppendHistory(libraryEventPath, new LockHistoryEntry
         {
             At = existing.LastSeenAt,
@@ -256,9 +274,10 @@ public sealed class CheckoutLockService
             {
                 Thread.Sleep(80 * (i + 1));
             }
-            catch (IOException)
+            catch (IOException ex)
             {
                 // Last attempt — don't fail Finish/checkout solely on lock write (race files already saved).
+                RaceDayTrace.Write($"lock write failed path={path} error={ex.Message}");
                 return;
             }
         }
