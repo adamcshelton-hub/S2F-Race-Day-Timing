@@ -192,37 +192,36 @@ public sealed class SharedFolderLinkService
 
     /// <summary>
     /// Delete Active tree safely: drop DB's reparse link first so recursive delete
-    /// cannot walk into OneDrive DB's. Retries, then renames aside if a handle is still open
-    /// (Close Local Copy must not leave the timer stuck after RSServer exits).
+    /// cannot walk into OneDrive DB's. Retries, then renames aside if a handle is still open.
+    /// Returns false when files remain locked (Windows often cannot rename a folder that
+    /// still has an open handle) — callers should still clear local checkout state.
     /// </summary>
-    public void DeleteActiveTreeSafe(string activeSessionPath)
+    public bool DeleteActiveTreeSafe(string activeSessionPath)
     {
         if (string.IsNullOrWhiteSpace(activeSessionPath) || !Directory.Exists(activeSessionPath))
-            return;
+            return true;
 
         RemoveDbsLinkIfPresent(activeSessionPath);
         ClearReadOnlyRecursive(activeSessionPath);
 
-        Exception? last = null;
         for (var attempt = 1; attempt <= 4; attempt++)
         {
             try
             {
                 if (!Directory.Exists(activeSessionPath))
-                    return;
+                    return true;
                 TryDeleteContentsBestEffort(activeSessionPath);
                 Directory.Delete(activeSessionPath, recursive: true);
-                return;
+                return true;
             }
-            catch (Exception ex)
+            catch
             {
-                last = ex;
                 Thread.Sleep(250 * attempt);
                 ClearReadOnlyRecursive(activeSessionPath);
             }
         }
 
-        // Rename out of Active so the app can drop checkout state even if a file is locked.
+        // Rename out of Active when possible so the path is free for the next race.
         var tombstone = activeSessionPath.TrimEnd('\\', '/') + PathService.ActivePendingDeleteSuffix;
         try
         {
@@ -237,14 +236,16 @@ public sealed class SharedFolderLinkService
             try { Directory.Delete(tombstone, recursive: true); }
             catch
             {
-                // Leftover hidden folder is OK — Active path is free for the next race.
+                // Leftover hidden folder is OK — Active path is free.
             }
+
+            return !Directory.Exists(activeSessionPath);
         }
-        catch (Exception ex)
+        catch
         {
-            throw new IOException(
-                "Could not clear the local Active folder: " + (last?.Message ?? ex.Message),
-                ex);
+            // Locked folder on Windows — leave remnant; AbandonLocalActive still clears active.json.
+            PathService.TryMarkHidden(activeSessionPath);
+            return false;
         }
     }
 

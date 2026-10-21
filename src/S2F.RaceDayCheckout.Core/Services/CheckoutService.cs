@@ -583,26 +583,18 @@ public sealed class CheckoutService
             };
         }
 
-        try
-        {
-            if (Directory.Exists(active.ActivePath))
-                _links.DeleteActiveTreeSafe(active.ActivePath);
-        }
-        catch (Exception ex)
-        {
-            return new CheckinResult
-            {
-                Success = false,
-                Message = "Could not clear the announcer folder: " + ex.Message
-            };
-        }
+        var filesCleared = true;
+        if (Directory.Exists(active.ActivePath))
+            filesCleared = _links.DeleteActiveTreeSafe(active.ActivePath);
 
         _activeStore.Save(null);
         return new CheckinResult
         {
             Success = true,
             AutosaveCleared = true,
-            Message = "Done. Announcer files were removed from this laptop. Nothing was uploaded."
+            Message = filesCleared
+                ? "Done. Announcer files were removed from this laptop. Nothing was uploaded."
+                : "Done (checkout cleared). Some Active files are still locked — close Timing & Scoring, then delete the leftover folder under RaceDay\\Active if it remains."
         };
     }
 
@@ -634,20 +626,19 @@ public sealed class CheckoutService
             }
         }
 
+        var filesCleared = true;
         try
         {
             if (Directory.Exists(active.ActivePath))
-                _links.DeleteActiveTreeSafe(active.ActivePath);
+                filesCleared = _links.DeleteActiveTreeSafe(active.ActivePath);
         }
-        catch (Exception ex)
+        catch
         {
-            return new CheckinResult
-            {
-                Success = false,
-                Message = "Could not clear the local Active folder: " + ex.Message
-            };
+            filesCleared = false;
         }
 
+        // Always drop local checkout state — do not leave the timer stuck on takeover UI
+        // because RSServer still holds a handle on Active\RUNSCORE.
         _activeStore.Save(null);
 
         if (active.Role == CheckoutRole.Timing)
@@ -660,8 +651,9 @@ public sealed class CheckoutService
         {
             Success = true,
             AutosaveCleared = true,
-            Message =
-                "Local copy closed. Nothing was uploaded and the other laptop's checkout lock was left alone."
+            Message = filesCleared
+                ? "Local copy closed. Nothing was uploaded and the other laptop's checkout lock was left alone."
+                : "Local copy closed (checkout cleared). Some Active files are still locked — close RunScore, then delete the leftover folder under RaceDay\\Active if it remains."
         };
     }
 

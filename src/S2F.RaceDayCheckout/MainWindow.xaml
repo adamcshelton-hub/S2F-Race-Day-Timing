@@ -199,13 +199,10 @@
                           <Setter Property="Foreground" Value="{StaticResource MutedBrush}"/>
                           <Setter Property="FontWeight" Value="Normal"/>
                           <Style.Triggers>
+                            <!-- Checked out stays muted/grey — not danger/accent (those read as "pick me"). -->
                             <DataTrigger Binding="{Binding IsActivelyCheckedOut}" Value="True">
-                              <Setter Property="Foreground" Value="{StaticResource DangerBrush}"/>
-                              <Setter Property="FontWeight" Value="SemiBold"/>
-                            </DataTrigger>
-                            <DataTrigger Binding="{Binding IsLockStale}" Value="True">
-                              <Setter Property="Foreground" Value="{StaticResource AccentBrush}"/>
-                              <Setter Property="FontWeight" Value="SemiBold"/>
+                              <Setter Property="Foreground" Value="{StaticResource MutedBrush}"/>
+                              <Setter Property="FontWeight" Value="Normal"/>
                             </DataTrigger>
                           </Style.Triggers>
                         </Style>

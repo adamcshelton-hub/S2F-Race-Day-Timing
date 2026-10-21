@@ -4137,7 +4137,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 matched.Add(entry);
         }
 
-        // Timing: Folders → Checked Out → Available so section headers read top-to-bottom.
+        // Timing: Folders → Available → Checked Out (in-use races stay out of the way).
         if (ShowSessionLock)
             matched.Sort(CompareSessionListOrder);
 
@@ -4157,7 +4157,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     }
 
     private static int SessionSectionRank(EventPackInfo entry) =>
-        entry.IsNavigationFolder ? 0 : entry.IsActivelyCheckedOut ? 1 : 2;
+        entry.IsNavigationFolder ? 0 : entry.IsActivelyCheckedOut ? 2 : 1;
 
     private void ConfigureSessionListGrouping()
     {

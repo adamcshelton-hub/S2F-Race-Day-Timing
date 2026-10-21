@@ -97,11 +97,33 @@ public sealed class EventPackInfo
             if (!IsActivelyCheckedOut || Lock is null)
                 return "Available";
 
+            var who = FormatLockWho(Lock);
+            // Present tense — the lock is still Active (even when heartbeat is stale).
+            // Soft take-over is available when the other laptop looks idle, not "was" (past).
             if (IsLockStale)
-                return $"Can Take Over · was {Lock.HolderName} @ {Lock.MachineName}";
+                return $"Open on {who} · Soft Take Over Available";
 
-            return $"Checked Out · {Lock.HolderName} @ {Lock.MachineName}";
+            return $"Checked Out · {who}";
         }
+    }
+
+    /// <summary>
+    /// Holder is usually the PC name (same as <see cref="CheckoutLock.MachineName"/>) —
+    /// never show "NAME @ NAME".
+    /// </summary>
+    public static string FormatLockWho(CheckoutLock lockInfo)
+    {
+        var holder = lockInfo.HolderName?.Trim() ?? string.Empty;
+        var machine = lockInfo.MachineName?.Trim() ?? string.Empty;
+        if (holder.Length == 0 && machine.Length == 0)
+            return "another laptop";
+        if (holder.Length == 0)
+            return machine;
+        if (machine.Length == 0)
+            return holder;
+        if (string.Equals(holder, machine, StringComparison.OrdinalIgnoreCase))
+            return holder;
+        return $"{holder} on {machine}";
     }
 }
 

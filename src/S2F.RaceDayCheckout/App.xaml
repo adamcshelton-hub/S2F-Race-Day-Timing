@@ -125,25 +125,25 @@
       </Setter>
     </Style>
 
-    <!-- Race-day event rows: checked-out events get a warm tint so they read as in-use. -->
+    <!-- Race-day event rows: checked-out = grey/inactive (not a CTA — Available stays primary). -->
     <Style x:Key="SessionListBoxItem" TargetType="ListBoxItem" BasedOn="{StaticResource StepListBoxItem}">
       <Style.Triggers>
         <DataTrigger Binding="{Binding IsActivelyCheckedOut}" Value="True">
           <Setter Property="Template">
             <Setter.Value>
               <ControlTemplate TargetType="ListBoxItem">
-                <Border x:Name="Bd" Background="#FFF8E8" CornerRadius="6"
-                        BorderBrush="#E6C35C" BorderThickness="1" Padding="12,7">
-                  <ContentPresenter/>
+                <Border x:Name="Bd" Background="#F0F0F0" CornerRadius="6"
+                        BorderBrush="#C8C8C8" BorderThickness="1" Padding="12,7">
+                  <ContentPresenter Opacity="0.85"/>
                 </Border>
                 <ControlTemplate.Triggers>
                   <Trigger Property="IsMouseOver" Value="True">
-                    <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource AccentBrush}"/>
+                    <Setter TargetName="Bd" Property="BorderBrush" Value="#A8A8A8"/>
                   </Trigger>
                   <Trigger Property="IsSelected" Value="True">
-                    <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource AccentBrush}"/>
+                    <Setter TargetName="Bd" Property="BorderBrush" Value="#888888"/>
                     <Setter TargetName="Bd" Property="BorderThickness" Value="2"/>
-                    <Setter TargetName="Bd" Property="Background" Value="#FFF4E5"/>
+                    <Setter TargetName="Bd" Property="Background" Value="#E8E8E8"/>
                   </Trigger>
                 </ControlTemplate.Triggers>
               </ControlTemplate>
