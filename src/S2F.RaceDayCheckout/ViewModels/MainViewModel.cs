@@ -6,6 +6,7 @@ using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Data;
 using System.Windows.Threading;
 using S2F.RaceDayCheckout.Core.Models;
 using S2F.RaceDayCheckout.Core.Services;
@@ -111,6 +112,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private bool _lockTakenOverPromptOpen;
     /// <summary>After we detect a lost lock, skip cloud writes until user Close Local / Force.</summary>
     private bool _cloudWritesBlockedUntilResolved;
+    /// <summary>Takeover confirms from SelectSession (before pack download) — reused by CheckoutAsync for the same path only.</summary>
+    private bool _checkoutConfirmForce;
+    private bool _checkoutConfirmEmergency;
+    private string? _checkoutReclaimReason;
+    private string? _checkoutConfirmSessionPath;
     private string? _adminOffice;
     /// <summary>Under Admin → Edit Current Event → Past Races only (bucket / year). Separate from race-day browse.</summary>
     private string _adminPastRacesRelative = string.Empty;
@@ -163,6 +169,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         VisibleOffices = new ObservableCollection<string>();
         Sessions = new ObservableCollection<EventPackInfo>();
         VisibleSessions = new ObservableCollection<EventPackInfo>();
+        SessionListView = CollectionViewSource.GetDefaultView(VisibleSessions);
         EventFiles = new ObservableCollection<string>();
         AdminOffices = new ObservableCollection<string>();
         AdminSessions = new ObservableCollection<EventPackInfo>();
@@ -289,6 +296,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public ObservableCollection<EventPackInfo> Sessions { get; }
     /// <summary>Session / Past Races list after race-day search filter (UI).</summary>
     public ObservableCollection<EventPackInfo> VisibleSessions { get; }
+    /// <summary>Grouped view of <see cref="VisibleSessions"/> (Checked Out / Available when Timing).</summary>
+    public ICollectionView SessionListView { get; }
     public ObservableCollection<string> EventFiles { get; }
     public ObservableCollection<string> AdminOffices { get; }
     public ObservableCollection<EventPackInfo> AdminSessions { get; }
@@ -1240,14 +1249,13 @@ public sealed class MainViewModel : INotifyPropertyChanged
             return;
         }
 
+        // Contested lock: cheap lock refresh + Force/soft Take Over before the full pack download
+        // (Cancel must not burn cellular). CheckoutAsync reuses the confirms if still needed.
+        ClearPendingCheckoutTakeoverConfirm();
         if (session.Lock is { Status: LockLifecycleStatus.Active }
-            && !string.Equals(session.Lock.MachineId, _machine.MachineId, StringComparison.OrdinalIgnoreCase))
-        {
-            Alert(
-                "Already checked out",
-                $"This event is already checked out by {session.Lock.HolderName} on {session.Lock.MachineName}.");
+            && !string.Equals(session.Lock.MachineId, _machine.MachineId, StringComparison.OrdinalIgnoreCase)
+            && !await ConfirmTakeoverBeforeSessionDownloadAsync(session).ConfigureAwait(true))
             return;
-        }
 
         SelectedSession = session;
         _sessionPackPulled = false;
@@ -1390,6 +1398,120 @@ public sealed class MainViewModel : INotifyPropertyChanged
         _ = CheckoutAsync();
     }
 
+    /// <summary>
+    /// Refresh <c>_checkout.json</c> only, then Force / soft Take Over before the session pack download.
+    /// </summary>
+    private async Task<bool> ConfirmTakeoverBeforeSessionDownloadAsync(EventPackInfo session)
+    {
+        SetBusy("Checking event", "Seeing who has this race…");
+        try
+        {
+            if (_cloud.IsAvailable)
+            {
+                try
+                {
+                    using var cts = new CancellationTokenSource(GraphSyncPolicy.HttpTimeout);
+                    await _cloud.DownloadCheckoutLockAsync(
+                        session.Path,
+                        _settings.LibraryRoot,
+                        _settings.GraphDriveRoot,
+                        cts.Token).ConfigureAwait(true);
+                }
+                catch (Exception ex)
+                {
+                    RaceDayTrace.Write(
+                        $"pre-checkout lock refresh failed path={session.Path} error={ex.GetType().Name}: {ex.Message}");
+                }
+            }
+
+            var eval = _locks.EvaluateAcquire(session.Path, _settings);
+            if (eval.Outcome is not (LockAcquireOutcome.BlockedAlive or LockAcquireOutcome.NeedsEmergencyConfirm))
+                return true;
+
+            ClearBusy();
+            if (eval.Outcome == LockAcquireOutcome.BlockedAlive)
+            {
+                if (!TryConfirmForceTakeover(eval, out var reason))
+                    return false;
+                _checkoutConfirmForce = true;
+                _checkoutReclaimReason = reason;
+                _checkoutConfirmSessionPath = session.Path;
+                return true;
+            }
+
+            if (!TryConfirmSoftTakeover(eval, out var softReason))
+                return false;
+            _checkoutConfirmEmergency = true;
+            _checkoutReclaimReason = softReason;
+            _checkoutConfirmSessionPath = session.Path;
+            return true;
+        }
+        finally
+        {
+            if (Busy && !BusyNeedsAcknowledge)
+                ClearBusy();
+        }
+    }
+
+    private void ClearPendingCheckoutTakeoverConfirm()
+    {
+        _checkoutConfirmForce = false;
+        _checkoutConfirmEmergency = false;
+        _checkoutReclaimReason = null;
+        _checkoutConfirmSessionPath = null;
+    }
+
+    private bool TryConfirmForceTakeover(LockAcquireResult eval, out string? reason)
+    {
+        reason = null;
+        var holder = eval.Lock?.HolderName ?? "another timer";
+        var machine = eval.Lock?.MachineName ?? "another laptop";
+        var lastSeen = eval.Lock?.LastSeenAt.ToLocalTime().ToString("g") ?? "unknown";
+        if (!TimerDialog.Confirm(
+                OwnerWindow,
+                "Already in Use",
+                $"Someone else is already using this event.\n\n"
+                + $"{holder} on {machine}\nLast seen {lastSeen}\n\n"
+                + "Only use Force Take Over if that laptop truly cannot finish (crash, power loss, or you're the only timer left).\n\n"
+                + "Force Take Over requires the Admin PIN.",
+                yesLabel: "Force Take Over…",
+                noLabel: "Cancel"))
+            return false;
+
+        var pin = PromptPin("Enter Admin PIN to force take-over:");
+        if (pin is null)
+            return false;
+        if (!string.Equals(pin, AppSettings.DefaultAdminPin, StringComparison.Ordinal))
+        {
+            Alert("Wrong PIN", "Admin PIN did not match. Event was not taken over.");
+            return false;
+        }
+
+        reason = "Force take-over (Admin PIN) — other laptop still looked alive";
+        return true;
+    }
+
+    private bool TryConfirmSoftTakeover(LockAcquireResult eval, out string? reason)
+    {
+        reason = null;
+        var holder = eval.Lock?.HolderName ?? "another timer";
+        var machine = eval.Lock?.MachineName ?? "another laptop";
+        var lastSeen = eval.Lock?.LastSeenAt.ToLocalTime().ToString("g") ?? "unknown";
+        if (!TimerDialog.Confirm(
+                OwnerWindow,
+                "Take Over Event?",
+                $"This event was checked out by {holder} on {machine}.\n"
+                + $"Last seen {lastSeen} — that laptop looks offline (crashed or shut down).\n\n"
+                + "Take over on this laptop?\n\n"
+                + "We'll load the race from OneDrive and apply any newer live autosave files from the other machine.",
+                yesLabel: "Take Over",
+                noLabel: "Cancel"))
+            return false;
+
+        reason = "Emergency reclaim — other laptop unavailable";
+        return true;
+    }
+
     public async Task CheckoutAsync()
     {
         if (SelectedSession is null)
@@ -1411,61 +1533,39 @@ public sealed class MainViewModel : INotifyPropertyChanged
         try
         {
             var eval = _locks.EvaluateAcquire(SelectedSession.Path, _settings);
-            string? reason = null;
-            var confirmEmergency = false;
+            var samePendingSession = !string.IsNullOrWhiteSpace(_checkoutConfirmSessionPath)
+                && string.Equals(
+                    _checkoutConfirmSessionPath,
+                    SelectedSession.Path,
+                    StringComparison.OrdinalIgnoreCase);
+            var confirmForce = samePendingSession && _checkoutConfirmForce;
+            var confirmEmergency = samePendingSession && _checkoutConfirmEmergency;
+            var reason = samePendingSession ? _checkoutReclaimReason : null;
+            ClearPendingCheckoutTakeoverConfirm();
 
-            var confirmForce = false;
-
-            if (eval.Outcome == LockAcquireOutcome.BlockedAlive)
+            // Force confirm also satisfies a later soft/stale outcome after the pack download.
+            if (confirmForce && eval.Outcome == LockAcquireOutcome.NeedsEmergencyConfirm)
             {
-                ClearBusy();
-                var holder = eval.Lock?.HolderName ?? "another timer";
-                var machine = eval.Lock?.MachineName ?? "another laptop";
-                var lastSeen = eval.Lock?.LastSeenAt.ToLocalTime().ToString("g") ?? "unknown";
-                if (!TimerDialog.Confirm(
-                        OwnerWindow,
-                        "Already in Use",
-                        $"Someone else is already using this event.\n\n"
-                        + $"{holder} on {machine}\nLast seen {lastSeen}\n\n"
-                        + "Only use Force Take Over if that laptop truly cannot finish (crash, power loss, or you're the only timer left).\n\n"
-                        + "Force Take Over requires the Admin PIN.",
-                        yesLabel: "Force Take Over…",
-                        noLabel: "Cancel"))
-                    return;
-
-                var pin = PromptPin("Enter Admin PIN to force take-over:");
-                if (pin is null)
-                    return;
-                if (!string.Equals(pin, AppSettings.DefaultAdminPin, StringComparison.Ordinal))
-                {
-                    Alert("Wrong PIN", "Admin PIN did not match. Event was not taken over.");
-                    return;
-                }
-
-                SetBusy("Loading event", "Force take-over — recovering race…");
-                reason = "Force take-over (Admin PIN) — other laptop still looked alive";
-                confirmForce = true;
+                confirmEmergency = true;
+                reason ??= "Force take-over (Admin PIN) — other laptop still looked alive";
             }
 
-            if (eval.Outcome == LockAcquireOutcome.NeedsEmergencyConfirm)
+            if (eval.Outcome == LockAcquireOutcome.BlockedAlive && !confirmForce)
             {
                 ClearBusy();
-                var holder = eval.Lock?.HolderName ?? "another timer";
-                var machine = eval.Lock?.MachineName ?? "another laptop";
-                var lastSeen = eval.Lock?.LastSeenAt.ToLocalTime().ToString("g") ?? "unknown";
-                if (!TimerDialog.Confirm(
-                        OwnerWindow,
-                        "Take Over Event?",
-                        $"This event was checked out by {holder} on {machine}.\n"
-                        + $"Last seen {lastSeen} — that laptop looks offline (crashed or shut down).\n\n"
-                        + "Take over on this laptop?\n\n"
-                        + "We'll load the race from OneDrive and apply any newer live autosave files from the other machine.",
-                        yesLabel: "Take Over",
-                        noLabel: "Cancel"))
+                if (!TryConfirmForceTakeover(eval, out reason))
                     return;
-                SetBusy("Loading event", "Recovering race…");
-                reason = "Emergency reclaim — other laptop unavailable";
+                confirmForce = true;
+                SetBusy("Loading event", "Force take-over — recovering race…");
+            }
+
+            if (eval.Outcome == LockAcquireOutcome.NeedsEmergencyConfirm && !confirmEmergency)
+            {
+                ClearBusy();
+                if (!TryConfirmSoftTakeover(eval, out reason))
+                    return;
                 confirmEmergency = true;
+                SetBusy("Loading event", "Recovering race…");
             }
 
             var progress = new Progress<CopyProgress>(p =>
@@ -4021,7 +4121,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 VisibleOffices.Add(name);
         }
 
-        VisibleSessions.Clear();
+        var matched = new List<EventPackInfo>();
         foreach (var entry in Sessions)
         {
             if (q.Length == 0
@@ -4030,8 +4130,41 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 || (entry.ParentEvent?.Contains(q, StringComparison.OrdinalIgnoreCase) ?? false)
                 || (entry.PrimaryEventFile?.Contains(q, StringComparison.OrdinalIgnoreCase) ?? false)
                 || (entry.SecondaryEventSummary?.Contains(q, StringComparison.OrdinalIgnoreCase) ?? false))
-                VisibleSessions.Add(entry);
+                matched.Add(entry);
         }
+
+        // Timing: Folders → Checked Out → Available so section headers read top-to-bottom.
+        if (ShowSessionLock)
+            matched.Sort(CompareSessionListOrder);
+
+        VisibleSessions.Clear();
+        foreach (var entry in matched)
+            VisibleSessions.Add(entry);
+
+        ConfigureSessionListGrouping();
+    }
+
+    private static int CompareSessionListOrder(EventPackInfo a, EventPackInfo b)
+    {
+        var rank = SessionSectionRank(a).CompareTo(SessionSectionRank(b));
+        if (rank != 0)
+            return rank;
+        return string.Compare(a.DisplayName, b.DisplayName, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static int SessionSectionRank(EventPackInfo entry) =>
+        entry.IsNavigationFolder ? 0 : entry.IsActivelyCheckedOut ? 1 : 2;
+
+    private void ConfigureSessionListGrouping()
+    {
+        SessionListView.GroupDescriptions.Clear();
+        if (ShowSessionLock)
+        {
+            SessionListView.GroupDescriptions.Add(
+                new PropertyGroupDescription(nameof(EventPackInfo.ListSection)));
+        }
+
+        SessionListView.Refresh();
     }
 
     private void ClearRaceDayListFilter()

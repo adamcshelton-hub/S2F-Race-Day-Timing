@@ -99,6 +99,60 @@
       <Setter Property="Background" Value="{StaticResource SaveBrush}"/>
     </Style>
 
+    <Style x:Key="StepListBoxItem" TargetType="ListBoxItem">
+      <Setter Property="Padding" Value="0"/>
+      <Setter Property="Margin" Value="0,0,0,4"/>
+      <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ListBoxItem">
+            <Border x:Name="Bd" Background="{StaticResource CardBrush}" CornerRadius="6"
+                    BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Padding="12,7">
+              <ContentPresenter/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource AccentBrush}"/>
+              </Trigger>
+              <Trigger Property="IsSelected" Value="True">
+                <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource AccentBrush}"/>
+                <Setter TargetName="Bd" Property="BorderThickness" Value="2"/>
+                <Setter TargetName="Bd" Property="Background" Value="#FFF4E5"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <!-- Race-day event rows: checked-out events get a warm tint so they read as in-use. -->
+    <Style x:Key="SessionListBoxItem" TargetType="ListBoxItem" BasedOn="{StaticResource StepListBoxItem}">
+      <Style.Triggers>
+        <DataTrigger Binding="{Binding IsActivelyCheckedOut}" Value="True">
+          <Setter Property="Template">
+            <Setter.Value>
+              <ControlTemplate TargetType="ListBoxItem">
+                <Border x:Name="Bd" Background="#FFF8E8" CornerRadius="6"
+                        BorderBrush="#E6C35C" BorderThickness="1" Padding="12,7">
+                  <ContentPresenter/>
+                </Border>
+                <ControlTemplate.Triggers>
+                  <Trigger Property="IsMouseOver" Value="True">
+                    <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource AccentBrush}"/>
+                  </Trigger>
+                  <Trigger Property="IsSelected" Value="True">
+                    <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource AccentBrush}"/>
+                    <Setter TargetName="Bd" Property="BorderThickness" Value="2"/>
+                    <Setter TargetName="Bd" Property="Background" Value="#FFF4E5"/>
+                  </Trigger>
+                </ControlTemplate.Triggers>
+              </ControlTemplate>
+            </Setter.Value>
+          </Setter>
+        </DataTrigger>
+      </Style.Triggers>
+    </Style>
+
     <Style x:Key="StepListBox" TargetType="ListBox">
       <Setter Property="Background" Value="Transparent"/>
       <Setter Property="BorderThickness" Value="0"/>
@@ -106,35 +160,7 @@
       <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Disabled"/>
       <!-- Pixel scroll — item-based jump feels too fast with tall card rows. -->
       <Setter Property="ScrollViewer.CanContentScroll" Value="False"/>
-      <Setter Property="ItemContainerStyle">
-        <Setter.Value>
-          <Style TargetType="ListBoxItem">
-            <Setter Property="Padding" Value="0"/>
-            <Setter Property="Margin" Value="0,0,0,4"/>
-            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
-            <Setter Property="Template">
-              <Setter.Value>
-                <ControlTemplate TargetType="ListBoxItem">
-                  <Border x:Name="Bd" Background="{StaticResource CardBrush}" CornerRadius="6"
-                          BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Padding="12,7">
-                    <ContentPresenter/>
-                  </Border>
-                  <ControlTemplate.Triggers>
-                    <Trigger Property="IsMouseOver" Value="True">
-                      <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource AccentBrush}"/>
-                    </Trigger>
-                    <Trigger Property="IsSelected" Value="True">
-                      <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource AccentBrush}"/>
-                      <Setter TargetName="Bd" Property="BorderThickness" Value="2"/>
-                      <Setter TargetName="Bd" Property="Background" Value="#FFF4E5"/>
-                    </Trigger>
-                  </ControlTemplate.Triggers>
-                </ControlTemplate>
-              </Setter.Value>
-            </Setter>
-          </Style>
-        </Setter.Value>
-      </Setter>
+      <Setter Property="ItemContainerStyle" Value="{StaticResource StepListBoxItem}"/>
     </Style>
   </Application.Resources>
 </Application>

@@ -154,10 +154,22 @@
           <Grid>
             <ListBox x:Name="SessionList"
                      Style="{StaticResource StepListBox}"
-                     ItemsSource="{Binding VisibleSessions}"
+                     ItemContainerStyle="{StaticResource SessionListBoxItem}"
+                     ItemsSource="{Binding SessionListView}"
                      SelectedItem="{Binding SelectedSession}"
                      Visibility="{Binding HasSessions, Converter={StaticResource BoolVis}}"
                      MouseDoubleClick="Session_DoubleClick">
+              <ListBox.GroupStyle>
+                <GroupStyle>
+                  <GroupStyle.HeaderTemplate>
+                    <DataTemplate>
+                      <TextBlock Text="{Binding Name}" FontSize="13" FontWeight="Bold"
+                                 Foreground="{StaticResource MutedBrush}"
+                                 Margin="2,14,0,8"/>
+                    </DataTemplate>
+                  </GroupStyle.HeaderTemplate>
+                </GroupStyle>
+              </ListBox.GroupStyle>
               <ListBox.ItemTemplate>
                 <DataTemplate>
                   <!-- Single-line row (matches Admin Events density). -->
@@ -180,8 +192,25 @@
                                TextTrimming="CharacterEllipsis" MaxWidth="220"
                                Visibility="{Binding DataContext.IsAnnouncerRole, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolVis}}"/>
                     <TextBlock Grid.Column="2" Text="{Binding DisplayLock}" VerticalAlignment="Center"
-                               Foreground="{StaticResource MutedBrush}" FontSize="11" Margin="12,0,0,0"
-                               Visibility="{Binding DataContext.ShowSessionLock, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolVis}}"/>
+                               FontSize="11" Margin="12,0,0,0"
+                               Visibility="{Binding DataContext.ShowSessionLock, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolVis}}">
+                      <TextBlock.Style>
+                        <Style TargetType="TextBlock">
+                          <Setter Property="Foreground" Value="{StaticResource MutedBrush}"/>
+                          <Setter Property="FontWeight" Value="Normal"/>
+                          <Style.Triggers>
+                            <DataTrigger Binding="{Binding IsActivelyCheckedOut}" Value="True">
+                              <Setter Property="Foreground" Value="{StaticResource DangerBrush}"/>
+                              <Setter Property="FontWeight" Value="SemiBold"/>
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding IsLockStale}" Value="True">
+                              <Setter Property="Foreground" Value="{StaticResource AccentBrush}"/>
+                              <Setter Property="FontWeight" Value="SemiBold"/>
+                            </DataTrigger>
+                          </Style.Triggers>
+                        </Style>
+                      </TextBlock.Style>
+                    </TextBlock>
                   </Grid>
                 </DataTemplate>
               </ListBox.ItemTemplate>

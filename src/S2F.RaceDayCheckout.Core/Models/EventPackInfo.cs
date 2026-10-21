@@ -53,6 +53,40 @@ public sealed class EventPackInfo
     public string PreRacePath => System.IO.Path.Combine(Path, "Pre-Race");
     public string RunScorePath => System.IO.Path.Combine(Path, "RUNSCORE");
 
+    /// <summary>Active checkout lock held by someone (not a Past Races folder row).</summary>
+    public bool IsActivelyCheckedOut =>
+        !IsNavigationFolder
+        && Lock is { Status: LockLifecycleStatus.Active };
+
+    /// <summary>
+    /// Active lock older than <see cref="AppSettings.DefaultStaleLockMinutes"/> — soft take-over eligible.
+    /// </summary>
+    public bool IsLockStale
+    {
+        get
+        {
+            if (!IsActivelyCheckedOut || Lock is null)
+                return false;
+            var age = DateTimeOffset.UtcNow - Lock.LastSeenAt;
+            return age > TimeSpan.FromMinutes(AppSettings.DefaultStaleLockMinutes);
+        }
+    }
+
+    /// <summary>
+    /// Race-day list section label (Title Case). Used when Timing shows lock grouping.
+    /// </summary>
+    public string ListSection
+    {
+        get
+        {
+            if (IsNavigationFolder)
+                return "Folders";
+            if (IsActivelyCheckedOut)
+                return "Checked Out";
+            return "Available";
+        }
+    }
+
     public string DisplayLock
     {
         get
@@ -60,16 +94,13 @@ public sealed class EventPackInfo
             if (IsNavigationFolder)
                 return "Folder";
 
-            if (Lock is null || Lock.Status != LockLifecycleStatus.Active)
+            if (!IsActivelyCheckedOut || Lock is null)
                 return "Available";
 
-            // Match AppSettings.StaleLockMinutes default — list should not look "free" after a crash.
-            var staleAfter = TimeSpan.FromMinutes(AppSettings.DefaultStaleLockMinutes);
-            var age = DateTimeOffset.UtcNow - Lock.LastSeenAt;
-            if (age > staleAfter)
-                return $"Stale — was {Lock.HolderName} @ {Lock.MachineName} (can take over)";
+            if (IsLockStale)
+                return $"Can Take Over · was {Lock.HolderName} @ {Lock.MachineName}";
 
-            return $"{Lock.HolderName} @ {Lock.MachineName}";
+            return $"Checked Out · {Lock.HolderName} @ {Lock.MachineName}";
         }
     }
 }
