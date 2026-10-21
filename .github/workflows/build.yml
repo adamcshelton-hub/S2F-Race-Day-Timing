@@ -15,8 +15,8 @@ jobs:
   test:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: "8.0.x"
       - name: Test
@@ -33,8 +33,8 @@ jobs:
       matrix:
         rid: [win-x64, win-arm64]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: "8.0.x"
 
@@ -149,7 +149,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "vpk pack failed with exit $LASTEXITCODE" }
 
       - name: Upload pack artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: velopack-${{ matrix.rid }}
           path: releases/${{ matrix.rid }}/
@@ -159,20 +159,20 @@ jobs:
     if: github.event_name == 'release'
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: "8.0.x"
       - name: Install vpk
         run: dotnet tool install -g vpk --version 1.2.161
 
       - name: Download x64
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: velopack-win-x64
           path: releases/win-x64
       - name: Download arm64
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: velopack-win-arm64
           path: releases/win-arm64
