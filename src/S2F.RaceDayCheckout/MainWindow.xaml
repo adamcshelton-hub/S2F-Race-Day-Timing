@@ -48,26 +48,18 @@
           <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <StackPanel Grid.Row="0" Margin="0,0,0,16">
-          <TextBlock Text="{Binding StepTitle}" FontSize="28" FontWeight="SemiBold"/>
+        <Grid Grid.Row="0" Margin="0,0,0,16">
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="Auto"/>
+          </Grid.ColumnDefinitions>
+          <StackPanel>
+          <TextBlock Text="{Binding StepTitle}" FontSize="28" FontWeight="SemiBold"
+                     TextTrimming="CharacterEllipsis"/>
           <TextBlock Text="{Binding StepSubtitle}" Foreground="{StaticResource MutedBrush}"
                      FontSize="15" Margin="0,6,0,0" TextWrapping="Wrap"/>
-          <DockPanel Margin="0,14,0,0" LastChildFill="False"
-                     Visibility="{Binding ShowRolePicker, Converter={StaticResource BoolVis}}">
-            <!-- Signed-in: compact status in the blank space to the right of role toggle -->
-            <Border DockPanel.Dock="Right" CornerRadius="8" Padding="14,10" MaxWidth="420"
-                    BorderThickness="1"
-                    Background="{Binding GraphReadyBannerBackground}"
-                    BorderBrush="{Binding GraphReadyBannerBorder}"
-                    VerticalAlignment="Center"
-                    Visibility="{Binding ShowGraphReadyInline, Converter={StaticResource BoolVis}}">
-              <StackPanel>
-                <TextBlock FontWeight="SemiBold" FontSize="13" Text="{Binding GraphReadyLabel}"/>
-                <TextBlock Text="{Binding GraphReadyInlineDetail}" FontSize="12" TextWrapping="Wrap"
-                           Foreground="{StaticResource MutedBrush}" Margin="0,2,0,0"/>
-              </StackPanel>
-            </Border>
-            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+          <StackPanel Orientation="Horizontal" Margin="0,14,0,0" VerticalAlignment="Center"
+                      Visibility="{Binding ShowRolePicker, Converter={StaticResource BoolVis}}">
               <Button Content="Main Timing Laptop" MinWidth="200" Margin="0,0,10,0" Click="RoleTiming_Click">
                 <Button.Style>
                   <Style TargetType="Button" BasedOn="{StaticResource SecondaryButton}">
@@ -94,9 +86,22 @@
                   </Style>
                 </Button.Style>
               </Button>
+          </StackPanel>
+          </StackPanel>
+          <!-- Signed-in status on the title row, top-right — does not push the office list down. -->
+          <Border Grid.Column="1" CornerRadius="8" Padding="14,8" Margin="20,2,0,0" MaxWidth="340"
+                  BorderThickness="1"
+                  Background="{Binding GraphReadyBannerBackground}"
+                  BorderBrush="{Binding GraphReadyBannerBorder}"
+                  VerticalAlignment="Top" HorizontalAlignment="Right"
+                  Visibility="{Binding ShowGraphReadyInline, Converter={StaticResource BoolVis}}">
+            <StackPanel>
+              <TextBlock FontWeight="SemiBold" FontSize="13" Text="{Binding GraphReadyLabel}"/>
+              <TextBlock Text="{Binding GraphReadyInlineDetail}" FontSize="12" TextWrapping="Wrap"
+                         Foreground="{StaticResource MutedBrush}" Margin="0,2,0,0"/>
             </StackPanel>
-          </DockPanel>
-        </StackPanel>
+          </Border>
+        </Grid>
 
         <!-- OFFICE — signed-out banner (full width) + office list -->
         <DockPanel Grid.Row="1"

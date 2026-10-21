@@ -79,6 +79,10 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private readonly DispatcherTimer _mirrorTimer;
     private readonly DispatcherTimer _sessionLockPollTimer;
     private readonly SemaphoreSlim _heartbeatUploadGate = new(1, 1);
+    /// <summary>Canceled when Finish is about to release the lock, so an in-flight heartbeat cannot rewrite it.</summary>
+    private CancellationTokenSource _heartbeatCts = new();
+    private int _suppressLockPublish;
+    private bool _heartbeatGateHeldForFinish;
     private readonly SemaphoreSlim _sessionLockPollGate = new(1, 1);
     /// <summary>Offices / Past Races paths already Graph-indexed this run (cellular: don't re-walk).</summary>
     private readonly HashSet<string> _graphIndexedOffices = new(StringComparer.OrdinalIgnoreCase);
@@ -1031,11 +1035,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
             : "Sign in to OneDrive to begin. This laptop does not use the OneDrive desktop app — "
               + "you cannot choose an office or load a race until you are signed in.";
 
-    /// <summary>Compact account line for the inline ready chip (office step, signed in).</summary>
+    /// <summary>Compact account line for the header-row ready chip (office step, signed in).</summary>
     public string GraphReadyInlineDetail =>
         $"Signed in as {_graphAuth.AccountEmail ?? "OneDrive"}";
 
-    /// <summary>Signed-in chip beside role toggle — does not push the office list down.</summary>
+    /// <summary>Signed-in chip on the page-title row, top-right — does not push the office list down.</summary>
     public bool ShowGraphReadyInline => IsOfficeStep && IsGraphSignedIn;
 
     /// <summary>Full-width sign-in banner — only when signed out, so staff cannot miss it.</summary>
@@ -1644,7 +1648,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
             {
                 await ShowBusyResultAsync(
                     "Couldn't load event",
-                    "We couldn't load this event. Try again or ask setup staff for help.");
+                    string.IsNullOrWhiteSpace(result.Message)
+                        ? "We couldn't load this event. Try again or ask setup staff for help."
+                        : result.Message);
                 return;
             }
 
@@ -1740,6 +1746,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
             // continue Finish even if drain fails
         }
 
+        var pausedHeartbeat = false;
         try
         {
             // 1) Fail fast if the RunScore/T&S window is still open.
@@ -1781,6 +1788,30 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 }
             }
 
+            SetFinishProgress("2 · Saving your race", "Confirming the checkout lock…");
+            // Drain any in-flight lock heartbeat before Check-in releases the lock.
+            // A late Active PUT was landing after the Released upload and leaving
+            // the other laptop showing Checked Out.
+            pausedHeartbeat = true;
+            await PauseHeartbeatForFinishAsync().ConfigureAwait(true);
+            // The RunScore wait can outlast the check at the start of Finish.
+            // Re-read the lock once heartbeats are quiet, before we release it.
+            switch (await CheckLockOwnershipAsync(caller: "finish-release").ConfigureAwait(true))
+            {
+                case LockCloudVerdict.TakenOver:
+                    RaceDayTrace.Write("lock takeover prompt from finish-release");
+                    ResumeHeartbeatAfterFinish();
+                    pausedHeartbeat = false;
+                    ClearBusy();
+                    await HandleLockTakenOverAsync().ConfigureAwait(true);
+                    return;
+                case LockCloudVerdict.Unconfirmed:
+                    await ShowBusyResultAsync(
+                        "Couldn't Confirm Checkout",
+                        "OneDrive didn't confirm this laptop still holds the race. Nothing was uploaded. Try Finish again.");
+                    return;
+            }
+
             SetFinishProgress("2 · Saving your race", "Starting file save to OneDrive…");
             var copyProgress = new Progress<CopyProgress>(p =>
                 SetFinishProgress(
@@ -1813,7 +1844,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
             {
                 await ShowBusyResultAsync(
                     "Couldn't finish",
-                    "We couldn't finish saving. Try again or ask setup staff for help.");
+                    string.IsNullOrWhiteSpace(result.Message)
+                        ? "We couldn't finish saving. Try again or ask setup staff for help."
+                        : result.Message);
                 return;
             }
 
@@ -1872,6 +1905,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
         finally
         {
+            if (pausedHeartbeat)
+                ResumeHeartbeatAfterFinish();
             _mirror.Resume();
             _mirrorTimer.Start();
             if (Busy && !BusyNeedsAcknowledge)
@@ -4517,74 +4552,146 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     private async Task HeartbeatAsync()
     {
-        var active = _activeStore.Load();
-        if (active is null || active.Role == CheckoutRole.Announcer)
+        if (Volatile.Read(ref _suppressLockPublish) > 0)
             return;
 
-        switch (await CheckLockOwnershipAsync(caller: "heartbeat").ConfigureAwait(true))
+        // One heartbeat at a time, and Finish waits on this same gate so a lock
+        // download/PUT cannot overlap the Released upload.
+        if (!await _heartbeatUploadGate.WaitAsync(0).ConfigureAwait(true))
+            return;
+
+        var promptTakenOver = false;
+        try
         {
-            case LockCloudVerdict.TakenOver:
-                if (IsLockTakenOverSnoozed)
-                {
-                    RaceDayTrace.Write("lock takeover prompt snoozed — banner on Active");
+            if (Volatile.Read(ref _suppressLockPublish) > 0)
+                return;
+
+            var active = _activeStore.Load();
+            if (active is null || active.Role == CheckoutRole.Announcer)
+                return;
+
+            var ct = _heartbeatCts.Token;
+            switch (await CheckLockOwnershipAsync(ct, caller: "heartbeat").ConfigureAwait(true))
+            {
+                case LockCloudVerdict.TakenOver:
+                    if (IsLockTakenOverSnoozed)
+                    {
+                        RaceDayTrace.Write("lock takeover prompt snoozed — banner on Active");
+                        return;
+                    }
+
+                    // Prompt after the gate is released — the dialog pumps the UI,
+                    // and Finish must be able to wait out this tick. Do not return
+                    // here: return would skip the prompt that follows this try.
+                    promptTakenOver = true;
+                    break;
+                case LockCloudVerdict.Unconfirmed:
+                    RaceDayTrace.Write("lock heartbeat upload skipped reason=unconfirmed");
                     return;
+            }
+
+            if (!promptTakenOver
+                && Volatile.Read(ref _suppressLockPublish) == 0
+                && !ct.IsCancellationRequested)
+            {
+                try { _locks.Heartbeat(active.LibrarySessionPath); }
+                catch (Exception ex)
+                {
+                    RaceDayTrace.Write($"lock heartbeat exception error={ex.GetType().Name}: {ex.Message}");
                 }
 
-                RaceDayTrace.Write("lock takeover prompt from heartbeat");
-                await HandleLockTakenOverAsync().ConfigureAwait(true);
-                return;
-            case LockCloudVerdict.Unconfirmed:
-                RaceDayTrace.Write("lock heartbeat upload skipped reason=unconfirmed");
-                return;
-        }
+                if (Volatile.Read(ref _suppressLockPublish) > 0 || ct.IsCancellationRequested)
+                    return;
 
-        try { _locks.Heartbeat(active.LibrarySessionPath); }
+                if (_cloud.IsAvailable)
+                {
+                    // Tiny lock JSON only — never UploadFolderAsync(._checkin) (history + backup trees).
+                    var lockPath = _paths.GetLockPath(active.LibrarySessionPath);
+                    if (!File.Exists(lockPath))
+                    {
+                        RaceDayTrace.Write($"lock heartbeat upload skipped reason=missing-file path={lockPath}");
+                    }
+                    else if (!_locks.ThisMachineHoldsActiveLock(active.LibrarySessionPath))
+                    {
+                        // Re-check after local heartbeat write — never upload if we no longer own.
+                        RaceDayTrace.Write("lock heartbeat upload skipped reason=lost-ownership-after-write");
+                    }
+                    else
+                    {
+                        var sessionPath = active.LibrarySessionPath;
+                        var libraryRoot = _settings.LibraryRoot;
+                        var driveRoot = _settings.GraphDriveRoot;
+                        using var uploadCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                        uploadCts.CancelAfter(GraphSyncPolicy.HttpTimeout);
+                        await _cloud.UploadCheckoutLockAsync(sessionPath, libraryRoot, driveRoot, uploadCts.Token)
+                            .ConfigureAwait(true);
+                    }
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            RaceDayTrace.Write("lock heartbeat canceled");
+        }
         catch (Exception ex)
         {
             RaceDayTrace.Write($"lock heartbeat exception error={ex.GetType().Name}: {ex.Message}");
         }
-
-        if (!_cloud.IsAvailable)
-            return;
-
-        // Tiny lock JSON only — never UploadFolderAsync(._checkin) (history + backup trees).
-        var lockPath = _paths.GetLockPath(active.LibrarySessionPath);
-        if (!File.Exists(lockPath))
+        finally
         {
-            RaceDayTrace.Write($"lock heartbeat upload skipped reason=missing-file path={lockPath}");
-            return;
+            _heartbeatUploadGate.Release();
         }
 
-        // Re-check after local heartbeat write — never upload if we no longer own.
-        if (!_locks.ThisMachineHoldsActiveLock(active.LibrarySessionPath))
+        if (promptTakenOver && Volatile.Read(ref _suppressLockPublish) == 0)
         {
-            RaceDayTrace.Write("lock heartbeat upload skipped reason=lost-ownership-after-write");
-            return;
+            RaceDayTrace.Write("lock takeover prompt from heartbeat");
+            await HandleLockTakenOverAsync().ConfigureAwait(true);
+        }
+    }
+
+    /// <summary>
+    /// Stop lock heartbeats and wait out any in-flight download/PUT before Finish
+    /// writes Released. Holds the gate until <see cref="ResumeHeartbeatAfterFinish"/>.
+    /// </summary>
+    private async Task PauseHeartbeatForFinishAsync()
+    {
+        _heartbeatTimer.Stop();
+        Interlocked.Increment(ref _suppressLockPublish);
+        try { _heartbeatCts.Cancel(); }
+        catch (ObjectDisposedException) { }
+
+        _heartbeatGateHeldForFinish = await _heartbeatUploadGate
+            .WaitAsync(TimeSpan.FromSeconds(40))
+            .ConfigureAwait(true);
+        if (!_heartbeatGateHeldForFinish)
+            RaceDayTrace.Write("lock heartbeat drain timed out before finish release");
+    }
+
+    private void ResumeHeartbeatAfterFinish()
+    {
+        var held = _heartbeatGateHeldForFinish;
+        _heartbeatGateHeldForFinish = false;
+        if (held)
+        {
+            try { _heartbeatUploadGate.Release(); }
+            catch (SemaphoreFullException) { }
         }
 
-        var sessionPath = active.LibrarySessionPath;
-        var libraryRoot = _settings.LibraryRoot;
-        var driveRoot = _settings.GraphDriveRoot;
-        // Skip tick if prior lock upload still running (weak cell must not stack).
-        if (!_heartbeatUploadGate.Wait(0))
-            return;
+        if (Volatile.Read(ref _suppressLockPublish) > 0)
+            Interlocked.Decrement(ref _suppressLockPublish);
 
-        _ = Task.Run(async () =>
+        // Fresh token for the next tick. Dispose the canceled one only when no
+        // heartbeat is still inside the gate (timeout means it might be).
+        var previous = _heartbeatCts;
+        _heartbeatCts = new CancellationTokenSource();
+        if (held)
         {
-            try
-            {
-                using var cts = new CancellationTokenSource(GraphSyncPolicy.HttpTimeout);
-                await _cloud.UploadCheckoutLockAsync(sessionPath, libraryRoot, driveRoot, cts.Token);
-            }
-            catch (Exception ex)
-            {
-                RaceDayTrace.Write($"lock heartbeat upload exception error={ex.GetType().Name}: {ex.Message}");
-            }
-            finally
-            {
-                _heartbeatUploadGate.Release();
-            }
-        });
+            try { previous.Dispose(); }
+            catch (ObjectDisposedException) { }
+        }
+
+        if (!_heartbeatTimer.IsEnabled)
+            _heartbeatTimer.Start();
     }
 
     private async Task HandleLockTakenOverAsync()
