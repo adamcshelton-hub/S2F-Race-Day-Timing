@@ -704,7 +704,7 @@ public class CheckoutServiceTests
 
         public virtual Task<CloudSyncResult> UploadCheckoutLockAsync(
             string librarySessionPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
-            Task.FromResult(new CloudSyncResult { Success = true });
+            Task.FromResult(new CloudSyncResult { Success = true, FilesTransferred = 1 });
 
         public Task<CloudSyncResult> DownloadCheckoutLockAsync(
             string librarySessionPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
@@ -813,7 +813,8 @@ public class CheckoutServiceTests
             string librarySessionPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default)
         {
             LockUploadCalls++;
-            return Task.FromResult(new CloudSyncResult { Success = true });
+            // Finish treats FilesTransferred==0 as "not published" and retries — stubs must report a PUT.
+            return Task.FromResult(new CloudSyncResult { Success = true, FilesTransferred = 1 });
         }
 
         public override Task<CloudSyncResult> ClearRemoteFolderAsync(
@@ -1391,7 +1392,7 @@ public class CheckoutServiceTests
             string librarySessionPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default)
         {
             LockUploads++;
-            return Task.FromResult(new CloudSyncResult { Success = true });
+            return Task.FromResult(new CloudSyncResult { Success = true, FilesTransferred = 1 });
         }
 
         public Task<CloudSyncResult> DownloadCheckoutLockAsync(
