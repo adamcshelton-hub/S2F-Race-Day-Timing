@@ -10,6 +10,8 @@ namespace S2F.RaceDayCheckout.Core.Services;
 /// overlay <c>RUNSCORE\_autosave</c>. This service only pushes those small Backup
 /// artifacts into Library <c>_autosave</c> (and Graph). Never mirrors Active RUNSCORE.
 /// </para>
+/// Graph publish retries until confirmed: MirrorNewer alone is not enough — after a failed
+/// PUT the local files match Backup so a naive "only publish what just copied" never retries.
 /// Also heals mangled siblings beside Backup (missing trailing-slash registry bug).
 /// Requires the desktop app to stay open (not a Windows service).
 /// </summary>
@@ -26,6 +28,16 @@ public sealed class AutosaveMirrorService
     private readonly Func<CancellationToken, Task<bool>>? _stillOwnsLockAsync;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private volatile bool _paused;
+
+    /// <summary>Local paths that still need a successful Graph PUT this process lifetime.</summary>
+    private readonly HashSet<string> _pendingCloudPublish = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Fingerprint of last successful mid-race PUT (path → length + mtime).
+    /// Cleared on process restart so a cold start re-publishes any leftover _autosave once.
+    /// </summary>
+    private readonly Dictionary<string, (long Length, long MtimeTicks)> _publishedFingerprint =
+        new(StringComparer.OrdinalIgnoreCase);
 
     public AutosaveMirrorService(
         IFileCopyService copy,
@@ -108,17 +120,20 @@ public sealed class AutosaveMirrorService
                     activeDbs, libraryDbs, cancellationToken: cancellationToken);
             }
 
-            // Exact paths just landed locally — Graph PUTs only these (not the whole overlay tree).
-            var publishPaths = healedAutosave
-                .Concat(autosaveCopied)
-                .Concat(dbsCopied)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
+            EnqueuePublish(healedAutosave);
+            EnqueuePublish(autosaveCopied);
+            EnqueuePublish(dbsCopied);
+            // Catch files already in _autosave that never got a confirmed Graph PUT
+            // (failed prior tick, or app restarted with leftover overlay on disk).
+            EnqueueUnpublishedAutosaveFiles(active.AutosavePath);
+
+            var publishPaths = SnapshotPendingPublish();
 
             // Release gate before Graph so the next local mirror tick is never blocked by cellular.
             _gate.Release();
             released = true;
 
+            // Skip Graph when local mirror copied nothing AND nothing is pending — cellular.
             if (_cloud.IsAvailable && publishPaths.Count > 0)
                 await PublishMidRaceCloudAsync(publishPaths, cancellationToken).ConfigureAwait(false);
         }
@@ -129,8 +144,49 @@ public sealed class AutosaveMirrorService
         }
     }
 
+    private void EnqueuePublish(IEnumerable<string> paths)
+    {
+        foreach (var path in paths)
+        {
+            if (!string.IsNullOrWhiteSpace(path))
+                _pendingCloudPublish.Add(path);
+        }
+    }
+
+    private void EnqueueUnpublishedAutosaveFiles(string autosavePath)
+    {
+        if (!Directory.Exists(autosavePath))
+            return;
+
+        foreach (var file in Directory.EnumerateFiles(autosavePath, "*", SearchOption.AllDirectories))
+        {
+            if (NeedsCloudPublish(file))
+                _pendingCloudPublish.Add(file);
+        }
+    }
+
+    private bool NeedsCloudPublish(string file)
+    {
+        try
+        {
+            var info = new FileInfo(file);
+            if (!info.Exists)
+                return false;
+            if (!_publishedFingerprint.TryGetValue(file, out var prior))
+                return true;
+            return prior.Length != info.Length || prior.MtimeTicks != info.LastWriteTimeUtc.Ticks;
+        }
+        catch
+        {
+            return true;
+        }
+    }
+
+    private List<string> SnapshotPendingPublish() =>
+        _pendingCloudPublish.Where(File.Exists).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+
     private async Task PublishMidRaceCloudAsync(
-        IReadOnlyList<string> localFilesJustCopied,
+        IReadOnlyList<string> localFilesToPublish,
         CancellationToken cancellationToken)
     {
         try
@@ -138,15 +194,43 @@ public sealed class AutosaveMirrorService
             using var publishCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             publishCts.CancelAfter(GraphSyncPolicy.MidRacePublishBudget);
             var settings = _settings();
-            await _cloud.UploadLocalFilesAsync(
-                localFilesJustCopied,
+            var result = await _cloud.UploadLocalFilesAsync(
+                localFilesToPublish,
                 settings.LibraryRoot,
                 settings.GraphDriveRoot,
                 publishCts.Token).ConfigureAwait(false);
+
+            if (result.Success)
+                MarkPublished(localFilesToPublish);
+            // Failure: leave pending + fingerprints unchanged so the next tick retries.
         }
         catch
         {
             // Weak signal — next mirror tick retries; local Active/Backup/autosave remain authoritative.
+        }
+    }
+
+    private void MarkPublished(IReadOnlyList<string> paths)
+    {
+        foreach (var path in paths)
+        {
+            try
+            {
+                if (!File.Exists(path))
+                {
+                    _pendingCloudPublish.Remove(path);
+                    _publishedFingerprint.Remove(path);
+                    continue;
+                }
+
+                var info = new FileInfo(path);
+                _publishedFingerprint[path] = (info.Length, info.LastWriteTimeUtc.Ticks);
+                _pendingCloudPublish.Remove(path);
+            }
+            catch
+            {
+                // Keep pending — next tick retries.
+            }
         }
     }
 

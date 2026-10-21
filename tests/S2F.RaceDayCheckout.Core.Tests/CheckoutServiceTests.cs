@@ -499,7 +499,76 @@ public class CheckoutServiceTests
         Assert.Equal(
             "live-autosave",
             File.ReadAllText(Path.Combine(forced.Active!.ActivePath, "RUNSCORE", "ENTRIES.FRM")));
+        Assert.Equal(
+            "live-autosave",
+            File.ReadAllText(Path.Combine(forced.Active.BackupPath, "ENTRIES.FRM")));
         Assert.Contains("autosave", forced.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Checkout_SoftReclaim_ConfirmEmergency_PullsAutosaveEvenIfOutcomeAlreadyHandled()
+    {
+        var (packPath, libraryRoot) = CreateFlatPack();
+        File.WriteAllText(Path.Combine(packPath, "RUNSCORE", "ENTRIES.FRM"), "stale-base");
+        File.SetLastWriteTimeUtc(Path.Combine(packPath, "RUNSCORE", "ENTRIES.FRM"), DateTime.UtcNow.AddMinutes(5));
+
+        var raceDay = Path.Combine(Path.GetTempPath(), "s2f-rd-" + Guid.NewGuid().ToString("N"));
+        var settings = new AppSettings
+        {
+            LibraryRoot = libraryRoot,
+            RaceDayRoot = raceDay,
+            DisplayName = "Adam",
+            StaleLockMinutes = AppSettings.DefaultStaleLockMinutes
+        };
+        var paths = new PathService();
+        var t0 = DateTimeOffset.Parse("2026-10-16T12:00:00Z");
+        new CheckoutLockService(paths, new OtherMachine(), () => t0)
+            .Acquire(packPath, "Memphis", "2026 - Sample Event", "2026 - Sample Event", "Other",
+                new[] { "RUNSCORE" }, primaryEventFile: "Sample Event.event");
+
+        var locks = new CheckoutLockService(
+            paths, new FakeMachine(), () => t0.AddMinutes(AppSettings.DefaultStaleLockMinutes + 1));
+        var cloud = new AutosaveOverlayCloudSync(packPath);
+        var service = new CheckoutService(
+            paths, locks, new FileCopyService(),
+            new NoProcesses(), new ActiveCheckoutStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json")),
+            new InstantSync(), cloud: cloud);
+
+        var result = await service.CheckoutAsync(new CheckoutRequest
+        {
+            Pack = PackInfo(packPath, "Memphis", "2026 - Sample Event"),
+            Settings = settings,
+            HolderName = "Adam",
+            ConfirmEmergencyReclaim = true,
+            EmergencyReason = "Other laptop unavailable",
+            SkipGraphDownload = true
+        });
+
+        Assert.True(result.Success, result.Message);
+        Assert.True(cloud.OverlayDownloadCalls > 0);
+        Assert.Equal(
+            "live-autosave",
+            File.ReadAllText(Path.Combine(result.Active!.ActivePath, "RUNSCORE", "ENTRIES.FRM")));
+    }
+
+    [Theory]
+    [InlineData(LockAcquireOutcome.NeedsEmergencyConfirm, false, false, true)]
+    [InlineData(LockAcquireOutcome.SameMachineReclaim, false, false, true)]
+    [InlineData(LockAcquireOutcome.BlockedAlive, true, false, true)]
+    [InlineData(LockAcquireOutcome.BlockedAlive, false, true, true)]
+    [InlineData(LockAcquireOutcome.Acquired, false, false, false)]
+    public void IsLiveAutosaveReclaim_CoversAllTakeoverPaths(
+        LockAcquireOutcome outcome, bool force, bool soft, bool expect)
+    {
+        var request = new CheckoutRequest
+        {
+            Pack = PackInfo(Path.GetTempPath(), "Memphis", "x"),
+            Settings = new AppSettings(),
+            HolderName = "Adam",
+            ConfirmForceTakeover = force,
+            ConfirmEmergencyReclaim = soft
+        };
+        Assert.Equal(expect, CheckoutService.IsLiveAutosaveReclaim(outcome, request));
     }
 
     [Fact]

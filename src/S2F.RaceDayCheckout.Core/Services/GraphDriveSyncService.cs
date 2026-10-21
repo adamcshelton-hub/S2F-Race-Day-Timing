@@ -979,22 +979,37 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
                 var cloudRel = ToDriveRelative(local, libraryRoot, graphDriveRoot);
                 if (cloudRel is null)
                     continue;
-                jobs.Add(new UploadJob(local, cloudRel, "mid-race"));
+                jobs.Add(new UploadJob(local, cloudRel, "mid-race", SessionRelativePath: local));
             }
 
             if (jobs.Count == 0)
-                return new CloudSyncResult { Success = true, Message = "No mid-race files to upload." };
+            {
+                // Do not report success when callers passed real files that were all filtered
+                // (size / path) — AutosaveMirrorService would clear pending and never retry.
+                var anyStillOnDisk = localFilePaths.Any(p =>
+                    !string.IsNullOrWhiteSpace(p) && File.Exists(p));
+                return new CloudSyncResult
+                {
+                    Success = !anyStillOnDisk,
+                    Message = anyStillOnDisk
+                        ? "Mid-race files were skipped (size/path) — will retry."
+                        : "No mid-race files to upload."
+                };
+            }
 
             await using var gate = new AdaptiveTransferGate(
                 GraphSyncPolicy.UploadParallelism,
                 GraphSyncPolicy.UploadParallelismFloor);
             var result = await UploadJobsParallelAsync(jobs, gate, status: null, cancellationToken)
                 .ConfigureAwait(false);
+            // Partial failure must not look like success — AutosaveMirrorService retries pending paths.
             return new CloudSyncResult
             {
-                Success = true,
+                Success = result.Failed == 0,
                 FilesTransferred = result.Succeeded,
-                Message = $"Uploaded {result.Succeeded} mid-race file(s)."
+                Message = result.Failed == 0
+                    ? $"Uploaded {result.Succeeded} mid-race file(s)."
+                    : $"Uploaded {result.Succeeded}; {result.Failed} mid-race file(s) failed — will retry."
             };
         }
         catch (Exception ex)

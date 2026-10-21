@@ -269,62 +269,31 @@ public sealed class CheckoutService
             ? (dbsLink.Created ? " Active DB's is local; app publishes to OneDrive via Graph." : "")
             : $" DB's warning: {dbsLink.Message}";
 
-        // Mid-race failover: overlay OneDrive RUNSCORE\_autosave only on reclaim/force.
-        // Normal checkout must NOT merge leftovers — Finish clears _autosave so post-race
-        // OneDrive edits are not overwritten by stale mid-race mirrors.
+        // Mid-race failover: overlay OneDrive RUNSCORE\_autosave only on reclaim/force/
+        // same-machine reclaim. Normal checkout must NOT merge leftovers — Finish clears
+        // _autosave so post-race OneDrive edits are not overwritten by stale mid-race mirrors.
         // Graph pack download skips _autosave on cellular — reclaim must pull that folder
         // even when SkipGraphDownload left the base pack on disk.
-        var reclaim =
-            eval.Outcome is LockAcquireOutcome.NeedsEmergencyConfirm or LockAcquireOutcome.SameMachineReclaim
-            || request.ConfirmForceTakeover;
-        if (reclaim && useGraph)
-        {
-            statusProgress?.Report("Downloading live autosave from OneDrive…");
-            try
-            {
-                using var overlayCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                overlayCts.CancelAfter(GraphSyncPolicy.MidRacePublishBudget);
-                await _cloud.DownloadSessionAsync(
-                    request.Pack.Path,
-                    request.Settings.LibraryRoot,
-                    request.Settings.GraphDriveRoot,
+        var reclaim = IsLiveAutosaveReclaim(eval.Outcome, request);
+        var autosaveMerged = reclaim
+            ? await ApplyLiveAutosaveOverlayAsync(
+                    request,
+                    autosavePath,
+                    activeRunScore,
+                    backupPath,
+                    useGraph,
+                    progress,
                     statusProgress,
-                    overlayCts.Token,
-                    SessionDownloadOptions.ForReclaimAutosaveOverlay());
-            }
-            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-            {
-                // Weak cell — merge whatever is already local under Library \_autosave.
-            }
-            catch
-            {
-                // Non-fatal — merge local overlay if present.
-            }
-        }
-
-        var autosaveMerged = 0;
-        if (reclaim
-            && Directory.Exists(autosavePath)
-            && Directory.EnumerateFiles(autosavePath, "*", SearchOption.AllDirectories).Any())
-        {
-            statusProgress?.Report("Applying live autosave from OneDrive…");
-            var mergeProgress = new Progress<CopyProgress>(p =>
-            {
-                autosaveMerged = (int)p.FilesCopied;
-                progress?.Report(p);
-            });
-            // Force overlay (not newer-only): Graph downloads stamp mtime=now on the base pack,
-            // so MirrorNewerFiles would skip the live mid-race files.
-            await _copy.OverlayAllFilesAsync(autosavePath, activeRunScore, mergeProgress, cancellationToken);
-            // Seed local Backup so RunScore alternate folder also has the recovered files.
-            await _copy.MirrorNewerFilesAsync(activeRunScore, backupPath, cancellationToken: cancellationToken);
-        }
+                    cancellationToken)
+            : 0;
 
         var scoped = new List<string> { PathService.RunScoreFolderName };
         if (!string.IsNullOrWhiteSpace(primary))
             scoped.Add(primary);
         var emergency =
-            eval.Outcome == LockAcquireOutcome.NeedsEmergencyConfirm || request.ConfirmForceTakeover;
+            eval.Outcome == LockAcquireOutcome.NeedsEmergencyConfirm
+            || request.ConfirmEmergencyReclaim
+            || request.ConfirmForceTakeover;
         _locks.Acquire(
             request.Pack.Path,
             request.Pack.Office,
@@ -400,16 +369,18 @@ public sealed class CheckoutService
         }
 
         var failoverNote = autosaveMerged > 0
-            ? $" Applied {autosaveMerged} newer autosave file(s) from OneDrive."
-            : reclaim && Directory.Exists(autosavePath)
-                ? " No newer autosave files were found on OneDrive (recovery may be limited to last Finish)."
+            ? $" Applied {autosaveMerged} live autosave file(s) from OneDrive into Active + Backup."
+            : reclaim
+                ? " No live autosave files were found on OneDrive (recovery may be limited to last Finish)."
                 : "";
 
         var reclaimLead = request.ConfirmForceTakeover
             ? "Force take-over succeeded. RUNSCORE + primary .event are local under Active."
             : emergency
                 ? "Emergency reclaim succeeded. RUNSCORE + primary .event are local under Active."
-                : null;
+                : eval.Outcome == LockAcquireOutcome.SameMachineReclaim && autosaveMerged > 0
+                    ? "Same-machine reclaim succeeded. Live autosave was re-applied under Active."
+                    : null;
 
         return new CheckoutResult
         {
@@ -1092,6 +1063,76 @@ public sealed class CheckoutService
         {
             return false;
         }
+    }
+
+    /// <summary>
+    /// Soft/force/same-machine reclaim must pull and apply Graph <c>RUNSCORE\_autosave</c>.
+    /// </summary>
+    public static bool IsLiveAutosaveReclaim(LockAcquireOutcome outcome, CheckoutRequest request) =>
+        outcome is LockAcquireOutcome.NeedsEmergencyConfirm or LockAcquireOutcome.SameMachineReclaim
+        || request.ConfirmForceTakeover
+        || request.ConfirmEmergencyReclaim;
+
+    /// <summary>
+    /// Download OneDrive <c>_autosave</c> (when Graph is up), then force-overlay onto Active RUNSCORE
+    /// and Backup so RunScore alternate-save sees the recovered entries/results.
+    /// </summary>
+    private async Task<int> ApplyLiveAutosaveOverlayAsync(
+        CheckoutRequest request,
+        string autosavePath,
+        string activeRunScore,
+        string backupPath,
+        bool useGraph,
+        IProgress<CopyProgress>? progress,
+        IProgress<string>? statusProgress,
+        CancellationToken cancellationToken)
+    {
+        if (useGraph)
+        {
+            statusProgress?.Report("Downloading live autosave from OneDrive…");
+            try
+            {
+                using var overlayCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                overlayCts.CancelAfter(GraphSyncPolicy.MidRacePublishBudget);
+                await _cloud.DownloadSessionAsync(
+                    request.Pack.Path,
+                    request.Settings.LibraryRoot,
+                    request.Settings.GraphDriveRoot,
+                    statusProgress,
+                    overlayCts.Token,
+                    SessionDownloadOptions.ForReclaimAutosaveOverlay()).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                // Weak cell — merge whatever is already local under Library \_autosave.
+            }
+            catch
+            {
+                // Non-fatal — merge local overlay if present.
+            }
+        }
+
+        if (!Directory.Exists(autosavePath)
+            || !Directory.EnumerateFiles(autosavePath, "*", SearchOption.AllDirectories).Any())
+            return 0;
+
+        statusProgress?.Report("Applying live autosave from OneDrive…");
+        var merged = 0;
+        var mergeProgress = new Progress<CopyProgress>(p =>
+        {
+            merged = (int)p.FilesCopied;
+            progress?.Report(p);
+        });
+        // Force overlay (not newer-only): Graph downloads stamp mtime=now on the base pack,
+        // so MirrorNewerFiles would skip the live mid-race files.
+        await _copy.OverlayAllFilesAsync(autosavePath, activeRunScore, mergeProgress, cancellationToken)
+            .ConfigureAwait(false);
+        // Seed Backup from the same overlay — RunScore alternate-save must see recovered files
+        // even when this laptop's prior Backup is newer by mtime.
+        Directory.CreateDirectory(backupPath);
+        await _copy.OverlayAllFilesAsync(autosavePath, backupPath, cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+        return merged;
     }
 
     private static void TryDeleteAutosaveTree(string autosavePath)

@@ -1011,6 +1011,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
             Status = Active.Role == CheckoutRole.Announcer
                 ? "Announcer T&S files loaded — tap Done when you're finished."
                 : "Checked out — finish before starting another event.";
+            // Do not wait for the first mirror timer tick — push Backup → _autosave → Graph now.
+            if (Active.Role == CheckoutRole.Timing)
+                KickAutosaveMirror();
             return;
         }
 
@@ -1595,6 +1598,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
             Active = result.Active;
             Step = WizardStep.Active;
             Status = string.Empty;
+            KickAutosaveMirror();
 
             // One-shot warnings: reclaim/autosave recovery, or prefs written while RSServer was already open.
             if (confirmEmergency || confirmForce
@@ -4552,6 +4556,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
             Step = WizardStep.Active;
             _cloudWritesBlockedUntilResolved = false;
             _mirror.Resume();
+            KickAutosaveMirror();
             Status = string.Empty;
             await ShowBusyResultAsync("Force take-over complete", result.Message).ConfigureAwait(true);
         }
@@ -4564,6 +4569,25 @@ public sealed class MainViewModel : INotifyPropertyChanged
             if (Busy && !BusyNeedsAcknowledge)
                 ClearBusy();
         }
+    }
+
+    /// <summary>
+    /// Push Backup → Library \_autosave → Graph immediately (do not wait for the mirror timer).
+    /// Critical so another laptop's force takeover can see live overlay files.
+    /// </summary>
+    private void KickAutosaveMirror()
+    {
+        if (Active is null || Active.Role != CheckoutRole.Timing)
+            return;
+        if (_cloudWritesBlockedUntilResolved)
+            return;
+
+        _mirror.Resume();
+        _ = Task.Run(async () =>
+        {
+            try { await _mirror.MirrorOnceAsync().ConfigureAwait(false); }
+            catch { /* next timer tick retries */ }
+        });
     }
 
     private static string? PromptPin(string message)
