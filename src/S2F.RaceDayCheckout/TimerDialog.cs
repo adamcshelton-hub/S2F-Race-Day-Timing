@@ -164,7 +164,7 @@ public static class TimerDialog
                 $"{who} on {where} now holds this event.\n\n"
                 + "This laptop must not upload or Finish — that would overwrite their work.\n\n"
                 + "Close Local Copy clears Active on this machine only (close RunScore / Timing & Scoring first).\n\n"
-                + "Force Take Over requires the Admin PIN and reclaims the race here.",
+                + "Force Take Over requires the Admin PIN and reclaims the race here. Close RunScore so live entries can be applied.",
                 buttons: new[] { closeLocal, force });
         }
 
@@ -172,7 +172,7 @@ public static class TimerDialog
         {
             cardHost.Content = BuildAdminPinCard(
                 title: "Force Take Over",
-                message: "Enter the Admin PIN to reclaim this race on this laptop.",
+                message: "Enter the Admin PIN to reclaim this race on this laptop.\n\nClose RunScore if it is open — live Entries cannot overwrite a locked file.",
                 confirmLabel: "Force Take Over",
                 onConfirmValidPin: _ =>
                 {
@@ -219,7 +219,7 @@ public static class TimerDialog
                 $"Someone else is already using this event.\n\n"
                 + $"{holderName} on {machineName}\nLast seen {lastSeenLocal}\n\n"
                 + "Only use Force Take Over if that laptop truly cannot finish (crash, power loss, or you're the only timer left).\n\n"
-                + "Force Take Over requires the Admin PIN.",
+                + "Force Take Over requires the Admin PIN. Close RunScore on this laptop so live entries from the other machine can be applied.",
                 buttons: new[] { force, cancel });
         }
 
@@ -227,7 +227,7 @@ public static class TimerDialog
         {
             cardHost.Content = BuildAdminPinCard(
                 title: "Force Take Over",
-                message: "Enter the Admin PIN to take over this event.",
+                message: "Enter the Admin PIN to take over this event.\n\nClose RunScore on this laptop if it is open — live Entries cannot overwrite a locked file.",
                 confirmLabel: "Force Take Over",
                 onConfirmValidPin: _ =>
                 {

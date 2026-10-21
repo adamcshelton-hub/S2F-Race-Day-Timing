@@ -50,20 +50,19 @@ public class FileCopyServiceTests
         File.WriteAllText(locked, "old-entries");
         File.WriteAllText(free, "old-finish");
 
-        await using var hold = new FileStream(
-            locked, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
-        try
+        await using (var hold = new FileStream(
+            locked, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
         {
             var copied = await new FileCopyService().OverlayAllFilesAsync(src, dst);
             Assert.Contains(copied, p => p.EndsWith("Finish.FN2", StringComparison.OrdinalIgnoreCase));
             Assert.DoesNotContain(copied, p => p.EndsWith("ENTRIES.dta", StringComparison.OrdinalIgnoreCase));
             Assert.Equal("new-finish", File.ReadAllText(free));
-            Assert.Equal("old-entries", File.ReadAllText(locked));
+            // Still holding the exclusive lock — read via the open stream, not File.ReadAllText.
+            hold.Position = 0;
+            using var reader = new StreamReader(hold, leaveOpen: true);
+            Assert.Equal("old-entries", reader.ReadToEnd());
         }
-        finally
-        {
-            await hold.DisposeAsync();
-            try { Directory.Delete(root, recursive: true); } catch { /* temp */ }
-        }
+
+        try { Directory.Delete(root, recursive: true); } catch { /* temp */ }
     }
 }

@@ -1510,7 +1510,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 $"This event was checked out by {holder} on {machine}.\n"
                 + $"Last seen {lastSeen} — that laptop looks offline (crashed or shut down).\n\n"
                 + "Take over on this laptop?\n\n"
-                + "We'll load the race from OneDrive and apply any newer live autosave files from the other machine.",
+                + "We'll load the race from OneDrive and apply any newer live autosave files from the other machine.\n\n"
+                + "Close RunScore on this laptop first so Entries and other live files can be written.",
                 yesLabel: "Take Over",
                 noLabel: "Cancel"))
             return false;
@@ -1574,6 +1575,15 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 confirmEmergency = true;
                 SetBusy("Loading event", "Recovering race…");
             }
+
+            // Live _autosave overlay cannot overwrite Entries.DTA while RSServer holds it.
+            var needsLiveOverlay = confirmForce || confirmEmergency
+                || eval.Outcome == LockAcquireOutcome.SameMachineReclaim;
+            if (needsLiveOverlay
+                && !await EnsureVendorsClosedForLiveOverlayAsync(
+                        confirmForce ? "Force Take Over" : "Recovering Race")
+                    .ConfigureAwait(true))
+                return;
 
             var progress = new Progress<CopyProgress>(p =>
                 ProgressText = p.FilesCopied > 0 ? $"Copying race files… ({p.FilesCopied})" : "Getting your race ready…");
@@ -1700,7 +1710,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
             if (wait.Kind == BlockingWaitKind.StillRunning)
             {
-                if (!await OfferEndOrphanedRunScoreAfterWaitAsync(wait.ProcessNames, forFinish: true)
+                if (!await OfferEndOrphanedRunScoreAfterWaitAsync(wait.ProcessNames, purpose: "Finish")
                         .ConfigureAwait(true))
                     return;
 
@@ -4586,7 +4596,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 result = _checkout.AbandonLocalActive(requireVendorsClosed: true);
             }
             else if (wait.Kind == BlockingWaitKind.StillRunning
-                     && await OfferEndOrphanedRunScoreAfterWaitAsync(wait.ProcessNames, forFinish: false)
+                     && await OfferEndOrphanedRunScoreAfterWaitAsync(wait.ProcessNames, purpose: "Close Local Copy")
                          .ConfigureAwait(true))
             {
                 result = _checkout.AbandonLocalActive(requireVendorsClosed: true);
@@ -4631,10 +4641,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
     /// After a normal wait with no RunScore window: offer to end headless RSServer only.
     /// Never auto-kills — timer must confirm. Refuses if Timing &amp; Scoring is in the list.
     /// </summary>
+    /// <param name="purpose">Title Case action label: Finish, Close Local Copy, or Take Over.</param>
     /// <returns>True when leftovers were cleared (or ended successfully).</returns>
     private async Task<bool> OfferEndOrphanedRunScoreAfterWaitAsync(
         IReadOnlyList<string> processNames,
-        bool forFinish)
+        string purpose)
     {
         var names = string.Join(", ", processNames);
         if (!ProcessGuard.AreOnlyRunScoreProcesses(processNames))
@@ -4655,16 +4666,16 @@ public sealed class MainViewModel : INotifyPropertyChanged
             "RunScore's window is closed, but a background process is still running ("
             + names + ").\n\n"
             + "We already waited for a normal shutdown. You can end the leftover RSServer so "
-            + (forFinish ? "Finish" : "Close Local Copy")
+            + purpose
             + " can continue — only if you are sure RunScore is closed.\n\n"
             + "Ending RSServer unlocks race files on this laptop.",
             yesLabel: "End RSServer",
-            noLabel: forFinish ? "Cancel Finish" : "Not Now",
+            noLabel: "Cancel " + purpose,
             yesIsDanger: true);
 
         if (!end)
         {
-            if (forFinish)
+            if (string.Equals(purpose, "Finish", StringComparison.Ordinal))
             {
                 await ShowBusyResultAsync(
                     "Finish Paused",
@@ -4677,7 +4688,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
 
         SetBusy(
-            forFinish ? "Saving your race" : "Close Local Copy",
+            purpose == "Finish" ? "Saving your race" : purpose,
             "Ending leftover RSServer…");
         var kill = await Task.Run(() => _processGuard.TryEndHeadlessRunScoreProcesses())
             .ConfigureAwait(true);
@@ -4691,8 +4702,79 @@ public sealed class MainViewModel : INotifyPropertyChanged
         return true;
     }
 
+    /// <summary>
+    /// Soft/force/same-machine reclaim overlays Graph <c>_autosave</c> onto Active RUNSCORE.
+    /// RSServer often locks Entries.DTA — gate like Finish so the overlay can write.
+    /// </summary>
+    /// <returns>False when the timer cancelled or vendors are still open.</returns>
+    private async Task<bool> EnsureVendorsClosedForLiveOverlayAsync(string busyTitle)
+    {
+        var blocking = _processGuard.GetBlockingProcessNames();
+        if (blocking.Count == 0)
+            return true;
+
+        var names = string.Join(", ", blocking);
+        ClearBusy();
+        if (!TimerDialog.Confirm(
+                OwnerWindow,
+                "Close RunScore First",
+                "Live race files from the other laptop (including Entries) cannot be applied while "
+                + "RunScore or Timing & Scoring is open on this laptop.\n\n"
+                + $"Still open: {names}\n\n"
+                + "Close them now, then Continue. We will wait briefly for RunScore to exit "
+                + "(and can End leftover RSServer if the window is already closed).",
+                yesLabel: "Continue",
+                noLabel: "Cancel Take Over"))
+            return false;
+
+        SetBusy(busyTitle, "Waiting for RunScore to exit so live files can be applied…");
+        var wait = await _processGuard.WaitForBlockingClearedAsync(
+                TimeSpan.FromSeconds(25),
+                new Progress<string>(s => ProgressText = s))
+            .ConfigureAwait(true);
+
+        if (wait.Kind == BlockingWaitKind.WindowStillOpen)
+        {
+            var still = string.Join(", ", wait.ProcessNames);
+            await ShowBusyResultAsync(
+                    "Still open",
+                    "Close RunScore (and Timing & Scoring) first, then try Take Over again.\n\n"
+                    + $"Still open: {still}")
+                .ConfigureAwait(true);
+            return false;
+        }
+
+        if (wait.Kind == BlockingWaitKind.StillRunning)
+        {
+            if (!await OfferEndOrphanedRunScoreAfterWaitAsync(wait.ProcessNames, purpose: "Take Over")
+                    .ConfigureAwait(true))
+                return false;
+
+            wait = await _processGuard.WaitForBlockingClearedAsync(
+                    TimeSpan.FromSeconds(8),
+                    new Progress<string>(s => ProgressText = s))
+                .ConfigureAwait(true);
+            if (wait.Kind != BlockingWaitKind.Cleared)
+            {
+                var still = string.Join(", ", wait.ProcessNames);
+                await ShowBusyResultAsync(
+                        "Still open",
+                        "A timing process is still running"
+                        + $" ({still}).\n\nClose it (or End RSServer if offered), then try Take Over again.")
+                    .ConfigureAwait(true);
+                return false;
+            }
+        }
+
+        SetBusy(busyTitle, "Getting your race ready…");
+        return true;
+    }
+
     private async Task ForceReclaimAfterLockTakenAsync(ActiveCheckout active)
     {
+        if (!await EnsureVendorsClosedForLiveOverlayAsync("Force Take Over").ConfigureAwait(true))
+            return;
+
         SelectedSession = new EventPackInfo
         {
             Office = active.Office,
