@@ -28,12 +28,21 @@ Admin → **Check for updates** forces a check anytime.
 
 ## Publish a release (ops)
 
+Bump `Version` and `InformationalVersion` together in `src/S2F.RaceDayCheckout/S2F.RaceDayCheckout.csproj`, commit on `main` as `Ship vX.Y.Z: …`, then:
+
 ```bash
-# Tag + publish a GitHub Release (CI packs both arches and uploads Velopack assets)
-git tag v0.3.0
-git push origin v0.3.0
-# Then create the Release for that tag in GitHub (or gh release create v0.3.0)
+# PATH: agents often need this — gh lives at ~/.local/bin/gh
+export PATH="$HOME/.local/bin:$PATH"
+
+git push origin HEAD
+git tag v0.5.7
+git push origin v0.5.7
+# Published Release is required — a tag alone does not upload signed Velopack assets
+gh release create v0.5.7 --title "v0.5.7" --notes "## Summary
+- …"
 ```
+
+Cursor agents: see `.cursor/rules/ship-release.mdc` for the full checklist.
 
 CI (`build.yml`):
 
