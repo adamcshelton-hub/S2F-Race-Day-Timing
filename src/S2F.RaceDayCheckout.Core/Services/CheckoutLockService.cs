@@ -88,7 +88,7 @@ public sealed class CheckoutLockService
                 Outcome = LockAcquireOutcome.BlockedAlive,
                 Lock = existing,
                 Message =
-                    $"Checked out by {existing.HolderName} on {existing.MachineName} since {existing.CheckedOutAt.ToLocalTime():g} (last seen {existing.LastSeenAt.ToLocalTime():g})."
+                    $"Checked out by {EventPackInfo.FormatLockWho(existing)} since {existing.CheckedOutAt.ToLocalTime():g} (last seen {existing.LastSeenAt.ToLocalTime():g})."
             };
         }
 
@@ -97,7 +97,7 @@ public sealed class CheckoutLockService
             Outcome = LockAcquireOutcome.NeedsEmergencyConfirm,
             Lock = existing,
             Message =
-                $"Lock looks stale (last seen {existing.LastSeenAt.ToLocalTime():g} by {existing.HolderName} on {existing.MachineName}). Confirm the other laptop is out before Emergency reclaim."
+                $"Lock looks stale (last seen {existing.LastSeenAt.ToLocalTime():g} by {EventPackInfo.FormatLockWho(existing)}). Confirm the other laptop is out before Emergency reclaim."
         };
     }
 

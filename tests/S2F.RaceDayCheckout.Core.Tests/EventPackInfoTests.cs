@@ -13,6 +13,9 @@ public class EventPackInfoTests
             MachineName = "BECKBARRETT3C75"
         };
         Assert.Equal("BECKBARRETT3C75", EventPackInfo.FormatLockWho(lockInfo));
+        Assert.Equal(
+            "BECKBARRETT3C75",
+            EventPackInfo.FormatLockWho("BECKBARRETT3C75", "BECKBARRETT3C75"));
     }
 
     [Fact]

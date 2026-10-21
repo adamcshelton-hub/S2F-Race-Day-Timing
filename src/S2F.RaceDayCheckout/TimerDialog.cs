@@ -4,6 +4,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Effects;
 using S2F.RaceDayCheckout.Core.Models;
+using S2F.RaceDayCheckout.Core.Services;
 
 namespace S2F.RaceDayCheckout;
 
@@ -136,22 +137,157 @@ public static class TimerDialog
     }
 
     /// <summary>
+    /// Soft/force takeover cannot overlay live Entries while RunScore / T&amp;S hold file locks.
+    /// Full-screen dim blocks switching to those apps — close only what is actually open, then Continue.
+    /// </summary>
+    /// <param name="stillOpen">Process names currently blocking (shown in the body).</param>
+    /// <param name="closeRunScore">Returns status text after attempting to close RunScore.</param>
+    /// <param name="closeTimingAndScoring">Returns status text after attempting to close T&amp;S.</param>
+    /// <param name="refreshStillOpen">Optional: re-list blockers after a close attempt (updates the body).</param>
+    public static bool ConfirmCloseVendorsForTakeover(
+        Window? owner,
+        IReadOnlyList<string> stillOpen,
+        Func<string>? closeRunScore = null,
+        Func<string>? closeTimingAndScoring = null,
+        Func<IReadOnlyList<string>>? refreshStillOpen = null)
+    {
+        var result = false;
+        var window = CreateChromeLess(owner);
+        var names = stillOpen is { Count: > 0 }
+            ? string.Join(", ", stillOpen)
+            : "RunScore or Timing & Scoring";
+        var needRunScore = stillOpen.Any(ProcessGuard.IsRunScoreProcess);
+        var needTimingAndScoring = stillOpen.Any(ProcessGuard.IsTimingAndScoringProcess);
+
+        var stillOpenBlock = new TextBlock
+        {
+            Text = "Still open: " + names,
+            FontSize = 15,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = Brush("AccentBrush"),
+            TextAlignment = TextAlignment.Center,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 0, 0, 10)
+        };
+        var statusBlock = new TextBlock
+        {
+            Text = string.Empty,
+            FontSize = 14,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = Brush("AccentBrush"),
+            TextAlignment = TextAlignment.Center,
+            TextWrapping = TextWrapping.Wrap,
+            Visibility = Visibility.Collapsed,
+            Margin = new Thickness(0, 0, 0, 8)
+        };
+
+        var closeHint = needRunScore || needTimingAndScoring
+            ? "Use the close button(s) below (this screen covers the desktop), then tap Continue. "
+            : "Then tap Continue. ";
+
+        var stack = new StackPanel();
+        stack.Children.Add(new TextBlock
+        {
+            Text = "Close RunScore First",
+            FontSize = 26,
+            FontWeight = FontWeights.Bold,
+            TextAlignment = TextAlignment.Center,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 0, 0, 14)
+        });
+        stack.Children.Add(new TextBlock
+        {
+            Text = "Live race files from the other laptop (including Entries) cannot be applied while "
+                + "RunScore or Timing & Scoring is open on this laptop.\n\n"
+                + closeHint
+                + "We wait briefly for RunScore to exit "
+                + "(and can End leftover RSServer if the window is already closed).",
+            FontSize = 16,
+            Foreground = Brush("MutedBrush"),
+            TextAlignment = TextAlignment.Center,
+            TextWrapping = TextWrapping.Wrap,
+            LineHeight = 24,
+            Margin = new Thickness(0, 0, 0, 8)
+        });
+        stack.Children.Add(stillOpenBlock);
+        stack.Children.Add(statusBlock);
+
+        var buttonPanel = new StackPanel { Margin = new Thickness(0, 12, 0, 0) };
+
+        void AddButton(Button button)
+        {
+            if (buttonPanel.Children.Count > 0)
+                button.Margin = new Thickness(0, 10, 0, 0);
+            buttonPanel.Children.Add(button);
+        }
+
+        void RefreshStillOpenLine()
+        {
+            if (refreshStillOpen is null)
+                return;
+
+            var current = refreshStillOpen();
+            stillOpenBlock.Text = current is { Count: > 0 }
+                ? "Still open: " + string.Join(", ", current)
+                : "RunScore and Timing & Scoring look closed.";
+        }
+
+        // Only offer close for what is actually running — do not show both when only RSServer is open.
+        if (needRunScore && closeRunScore is not null)
+        {
+            AddButton(MakeButton("Close RunScore", "PrimaryButton", () =>
+            {
+                statusBlock.Text = "Closing RunScore…";
+                statusBlock.Visibility = Visibility.Visible;
+                statusBlock.Text = closeRunScore();
+                RefreshStillOpenLine();
+            }));
+        }
+
+        if (needTimingAndScoring && closeTimingAndScoring is not null)
+        {
+            AddButton(MakeButton("Close Timing & Scoring", "PrimaryButton", () =>
+            {
+                statusBlock.Text = "Closing Timing & Scoring…";
+                statusBlock.Visibility = Visibility.Visible;
+                statusBlock.Text = closeTimingAndScoring();
+                RefreshStillOpenLine();
+            }));
+        }
+
+        AddButton(MakeButton("Continue", "SaveButton", () =>
+        {
+            result = true;
+            window.DialogResult = true;
+        }));
+        AddButton(MakeButton("Cancel Take Over", "SecondaryButton", () =>
+        {
+            result = false;
+            window.DialogResult = false;
+        }));
+
+        stack.Children.Add(buttonPanel);
+        window.Content = DimmedHost(StyleCard(stack));
+        window.ShowDialog();
+        return result;
+    }
+
+    /// <summary>
     /// Soft/force takeover happened elsewhere while this laptop still has Active.
     /// Job is clean local shutdown only — reclaim is the normal event-list Force/soft Take Over flow.
     /// </summary>
-    /// <param name="closeRunScore">Returns status text after attempting to close RunScore.</param>
-    /// <param name="closeTimingAndScoring">Returns status text after attempting to close T&amp;S.</param>
+    /// <param name="who">Already-deduped lock holder label (see <see cref="EventPackInfo.FormatLockWho"/>).</param>
+    /// <param name="closeRunScore">Returns status text after attempting to close RunScore. Pass null when RS is not open.</param>
+    /// <param name="closeTimingAndScoring">Returns status text after attempting to close T&amp;S. Pass null when T&amp;S is not open.</param>
     public static TimerLockTakenOverChoice AskLockTakenOver(
         Window? owner,
-        string holderName,
-        string machineName,
+        string who,
         Func<string>? closeRunScore = null,
         Func<string>? closeTimingAndScoring = null)
     {
         var choice = TimerLockTakenOverChoice.Dismissed;
         var window = CreateChromeLess(owner);
-        var who = string.IsNullOrWhiteSpace(holderName) ? "Another timer" : holderName.Trim();
-        var where = string.IsNullOrWhiteSpace(machineName) ? "another laptop" : machineName.Trim();
+        var holder = string.IsNullOrWhiteSpace(who) ? "Another timer" : who.Trim();
         var cardHost = new ContentControl
         {
             HorizontalAlignment = HorizontalAlignment.Center,
@@ -169,6 +305,10 @@ public static class TimerDialog
             Margin = new Thickness(0, 0, 0, 8)
         };
 
+        var closeHint = closeRunScore is not null || closeTimingAndScoring is not null
+            ? "Close open timing apps below, then Close Local Copy. "
+            : "Close Local Copy when ready. ";
+
         var stack = new StackPanel();
         stack.Children.Add(new TextBlock
         {
@@ -181,9 +321,9 @@ public static class TimerDialog
         });
         stack.Children.Add(new TextBlock
         {
-            Text = $"{who} on {where} now holds this event.\n\n"
+            Text = $"{holder} now holds this event.\n\n"
                 + "This laptop must not upload or Finish — that would overwrite their work.\n\n"
-                + "Close RunScore and Timing & Scoring, then Close Local Copy. "
+                + closeHint
                 + "If you need this race back later, pick it from the event list and use Force Take Over there.",
             FontSize = 16,
             Foreground = Brush("MutedBrush"),
@@ -244,14 +384,15 @@ public static class TimerDialog
     /// <summary>
     /// Select-session force take-over: warning + Admin PIN in one branded overlay.
     /// </summary>
+    /// <param name="who">Already-deduped lock holder label (see <see cref="EventPackInfo.FormatLockWho"/>).</param>
     public static bool ConfirmForceTakeoverWithAdminPin(
         Window? owner,
-        string holderName,
-        string machineName,
+        string who,
         string lastSeenLocal)
     {
         var confirmed = false;
         var window = CreateChromeLess(owner);
+        var holder = string.IsNullOrWhiteSpace(who) ? "another laptop" : who.Trim();
         var cardHost = new ContentControl
         {
             HorizontalAlignment = HorizontalAlignment.Center,
@@ -269,7 +410,7 @@ public static class TimerDialog
             cardHost.Content = BuildCard(
                 "Already in Use",
                 $"Someone else is already using this event.\n\n"
-                + $"{holderName} on {machineName}\nLast seen {lastSeenLocal}\n\n"
+                + $"{holder}\nLast seen {lastSeenLocal}\n\n"
                 + "Only use Force Take Over if that laptop truly cannot finish (crash, power loss, or you're the only timer left).\n\n"
                 + "Force Take Over requires the Admin PIN. Close RunScore on this laptop so live entries from the other machine can be applied.",
                 buttons: new[] { force, cancel });

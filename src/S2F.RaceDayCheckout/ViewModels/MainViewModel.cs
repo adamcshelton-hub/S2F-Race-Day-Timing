@@ -1524,11 +1524,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private bool TryConfirmForceTakeover(LockAcquireResult eval, out string? reason)
     {
         reason = null;
-        var holder = eval.Lock?.HolderName ?? "another timer";
-        var machine = eval.Lock?.MachineName ?? "another laptop";
+        var who = eval.Lock is null
+            ? "another laptop"
+            : EventPackInfo.FormatLockWho(eval.Lock);
         var lastSeen = eval.Lock?.LastSeenAt.ToLocalTime().ToString("g") ?? "unknown";
         // Warning + Admin PIN stay in one branded overlay (no bounce to a separate Admin window).
-        if (!TimerDialog.ConfirmForceTakeoverWithAdminPin(OwnerWindow, holder, machine, lastSeen))
+        if (!TimerDialog.ConfirmForceTakeoverWithAdminPin(OwnerWindow, who, lastSeen))
             return false;
 
         reason = "Force take-over (Admin PIN) — other laptop still looked alive";
@@ -1538,13 +1539,14 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private bool TryConfirmSoftTakeover(LockAcquireResult eval, out string? reason)
     {
         reason = null;
-        var holder = eval.Lock?.HolderName ?? "another timer";
-        var machine = eval.Lock?.MachineName ?? "another laptop";
+        var who = eval.Lock is null
+            ? "another laptop"
+            : EventPackInfo.FormatLockWho(eval.Lock);
         var lastSeen = eval.Lock?.LastSeenAt.ToLocalTime().ToString("g") ?? "unknown";
         if (!TimerDialog.Confirm(
                 OwnerWindow,
                 "Take Over Event?",
-                $"This event was checked out by {holder} on {machine}.\n"
+                $"This event was checked out by {who}.\n"
                 + $"Last seen {lastSeen} — that laptop looks offline (crashed or shut down).\n\n"
                 + "Take over on this laptop?\n\n"
                 + "We'll load the race from OneDrive and apply any newer live autosave files from the other machine.\n\n"
@@ -1826,22 +1828,28 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 return;
             }
 
-            var officeAfterFinish = Active?.Office ?? SelectedOffice;
             Active = null;
             SelectedSession = null;
             SelectedEventFile = null;
+            LoadOffices();
 
             var returnToAdmin = _finishReturnsToAdmin;
             _finishReturnsToAdmin = false;
             if (returnToAdmin)
             {
-                LoadOffices();
                 EnterAdminSetup("Finish complete — ready for the next setup.");
+            }
+            else if (Offices.Count == 1)
+            {
+                // One office — open its list (cheap when already cached). Multi-office: stay on picker
+                // so Finish does not re-index events over cellular.
+                await SelectOfficeAsync(Offices[0]);
+                Status = string.Empty;
             }
             else
             {
-                // Back to that office's event list (not the office picker), when we know which office.
-                await ReturnToRaceDayOfficeListAsync(officeAfterFinish).ConfigureAwait(true);
+                Step = WizardStep.Office;
+                Status = string.Empty;
             }
 
             // AwaitingOneDriveConfirm here means RetainActiveForCloudRetry was already handled above.
@@ -2752,11 +2760,15 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 return;
             }
 
-            var officeAfterDone = Active?.Office ?? SelectedOffice;
             Active = null;
             SelectedSession = null;
             SelectedEventFile = null;
-            await ReturnToRaceDayOfficeListAsync(officeAfterDone).ConfigureAwait(true);
+            LoadOffices();
+            if (Offices.Count == 1)
+                await SelectOfficeAsync(Offices[0]).ConfigureAwait(true);
+            else
+                Step = WizardStep.Office;
+            Status = string.Empty;
             await ShowBusyResultAsync("Done", result.Message).ConfigureAwait(true);
         }
         catch (Exception ex)
@@ -4601,12 +4613,19 @@ public sealed class MainViewModel : INotifyPropertyChanged
         _lockTakenOverPromptOpen = true;
         try
         {
+            var who = other is null
+                ? "Another timer"
+                : EventPackInfo.FormatLockWho(other);
+            var blocking = _processGuard.GetBlockingProcessNames();
             var choice = TimerDialog.AskLockTakenOver(
                 OwnerWindow,
-                other?.HolderName ?? "Another timer",
-                other?.MachineName ?? "another laptop",
-                closeRunScore: () => _processGuard.TryCloseRunScoreForAbandonedCheckout().Message,
-                closeTimingAndScoring: () => _processGuard.TryCloseTimingAndScoringForAbandonedCheckout().Message);
+                who,
+                closeRunScore: blocking.Any(ProcessGuard.IsRunScoreProcess)
+                    ? () => _processGuard.TryCloseRunScoreForAbandonedCheckout().Message
+                    : null,
+                closeTimingAndScoring: blocking.Any(ProcessGuard.IsTimingAndScoringProcess)
+                    ? () => _processGuard.TryCloseTimingAndScoringForAbandonedCheckout().Message
+                    : null);
             RaceDayTrace.Write($"lock takeover choice={choice}");
 
             if (choice == TimerLockTakenOverChoice.CloseLocalCopy)
@@ -4718,7 +4737,6 @@ public sealed class MainViewModel : INotifyPropertyChanged
             return;
         }
 
-        var officeAfterClose = Active?.Office ?? SelectedOffice;
         Active = null;
         SelectedSession = null;
         SelectedEventFile = null;
@@ -4726,35 +4744,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
         SetCloudWritesBlocked(false);
         ClearLockTakenOverSnooze();
         _mirror.Resume();
-        await ReturnToRaceDayOfficeListAsync(officeAfterClose).ConfigureAwait(true);
-        Status = result.Message;
-    }
-
-    /// <summary>
-    /// After Finish / Done / Close Local Copy — reopen that office's event list when known;
-    /// otherwise single-office auto-advance or the office picker.
-    /// </summary>
-    private async Task ReturnToRaceDayOfficeListAsync(string? preferredOffice)
-    {
         LoadOffices();
-        var office = preferredOffice?.Trim();
-        if (!string.IsNullOrEmpty(office)
-            && Offices.Any(o => string.Equals(o, office, StringComparison.OrdinalIgnoreCase)))
-        {
-            await SelectOfficeAsync(office).ConfigureAwait(true);
-            Status = string.Empty;
-            return;
-        }
-
         if (Offices.Count == 1)
-        {
             await SelectOfficeAsync(Offices[0]).ConfigureAwait(true);
-            Status = string.Empty;
-            return;
-        }
-
-        Step = WizardStep.Office;
-        Status = string.Empty;
+        else
+            Step = WizardStep.Office;
+        Status = result.Message;
     }
 
     /// <summary>
@@ -4833,18 +4828,14 @@ public sealed class MainViewModel : INotifyPropertyChanged
         if (blocking.Count == 0)
             return true;
 
-        var names = string.Join(", ", blocking);
         ClearBusy();
-        if (!TimerDialog.Confirm(
+        // Full-screen dim blocks Alt-Tab to RS — close vendors from this overlay (same as lost-lock).
+        if (!TimerDialog.ConfirmCloseVendorsForTakeover(
                 OwnerWindow,
-                "Close RunScore First",
-                "Live race files from the other laptop (including Entries) cannot be applied while "
-                + "RunScore or Timing & Scoring is open on this laptop.\n\n"
-                + $"Still open: {names}\n\n"
-                + "Close them now, then Continue. We will wait briefly for RunScore to exit "
-                + "(and can End leftover RSServer if the window is already closed).",
-                yesLabel: "Continue",
-                noLabel: "Cancel Take Over"))
+                blocking,
+                closeRunScore: () => _processGuard.TryCloseRunScoreForAbandonedCheckout().Message,
+                closeTimingAndScoring: () => _processGuard.TryCloseTimingAndScoringForAbandonedCheckout().Message,
+                refreshStillOpen: () => _processGuard.GetBlockingProcessNames()))
             return false;
 
         SetBusy(busyTitle, "Waiting for RunScore to exit so live files can be applied…");

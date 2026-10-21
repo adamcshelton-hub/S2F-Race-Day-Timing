@@ -146,12 +146,16 @@ public sealed class EventPackInfo
 
     /// <summary>
     /// Holder is usually the PC name (same as <see cref="CheckoutLock.MachineName"/>) —
-    /// never show "NAME @ NAME".
+    /// never show "NAME on NAME".
     /// </summary>
-    public static string FormatLockWho(CheckoutLock lockInfo)
+    public static string FormatLockWho(CheckoutLock lockInfo) =>
+        FormatLockWho(lockInfo.HolderName, lockInfo.MachineName);
+
+    /// <summary>Same dedupe for dialogs that only have the two strings.</summary>
+    public static string FormatLockWho(string? holderName, string? machineName)
     {
-        var holder = lockInfo.HolderName?.Trim() ?? string.Empty;
-        var machine = lockInfo.MachineName?.Trim() ?? string.Empty;
+        var holder = holderName?.Trim() ?? string.Empty;
+        var machine = machineName?.Trim() ?? string.Empty;
         if (holder.Length == 0 && machine.Length == 0)
             return "another laptop";
         if (holder.Length == 0)
