@@ -168,6 +168,125 @@ public sealed class ProcessGuard : IProcessGuard
                || processName.Contains("rsserver", StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>
+    /// True when every name in <paramref name="blockingNames"/> is a RunScore process
+    /// (safe to offer End RSServer — never for Timing &amp; Scoring / Orbits alone).
+    /// </summary>
+    public static bool AreOnlyRunScoreProcesses(IReadOnlyList<string> blockingNames) =>
+        blockingNames.Count > 0 && blockingNames.All(IsRunScoreProcess);
+
+    /// <summary>
+    /// End headless RunScore processes only (RSServer / RSClient / RunScore with no main window).
+    /// Refuses if any RunScore window is still open — timer must close the UI themselves.
+    /// </summary>
+    public EndHeadlessRunScoreResult TryEndHeadlessRunScoreProcesses()
+    {
+        var matches = EnumerateMatching(IsRunScoreProcess);
+        if (matches.Count == 0)
+        {
+            return new EndHeadlessRunScoreResult
+            {
+                Success = true,
+                Message = "No RunScore background process was running."
+            };
+        }
+
+        if (matches.Any(m => m.HasMainWindow))
+        {
+            var open = matches.Where(m => m.HasMainWindow).Select(m => m.Name)
+                .Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(n => n).ToList();
+            return new EndHeadlessRunScoreResult
+            {
+                Success = false,
+                Message = "RunScore still has a window open (" + string.Join(", ", open)
+                          + "). Close it first, then try again."
+            };
+        }
+
+        var ended = new List<string>();
+        var failed = new List<string>();
+        try
+        {
+            foreach (var process in Process.GetProcesses())
+            {
+                try
+                {
+                    if (!IsRunScoreProcess(process.ProcessName))
+                        continue;
+
+                    var hasWindow = false;
+                    try { hasWindow = process.MainWindowHandle != IntPtr.Zero; }
+                    catch { /* treat as headless */ }
+
+                    if (hasWindow)
+                        continue;
+
+                    var name = process.ProcessName;
+                    try
+                    {
+                        process.Kill(entireProcessTree: false);
+                        ended.Add(name);
+                    }
+                    catch
+                    {
+                        failed.Add(name);
+                    }
+                }
+                catch
+                {
+                    // access denied / exited
+                }
+                finally
+                {
+                    process.Dispose();
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            return new EndHeadlessRunScoreResult
+            {
+                Success = false,
+                Message = "Could not end RunScore background process: " + ex.Message
+            };
+        }
+
+        if (failed.Count > 0 && ended.Count == 0)
+        {
+            return new EndHeadlessRunScoreResult
+            {
+                Success = false,
+                EndedProcessNames = ended,
+                Message = "Could not end " + string.Join(", ", failed.Distinct(StringComparer.OrdinalIgnoreCase))
+                          + ". Use Task Manager if needed."
+            };
+        }
+
+        // Confirm they are gone (Kill is async on Windows).
+        Thread.Sleep(500);
+        var still = GetRunScoreProcessNames();
+        if (still.Count > 0)
+        {
+            return new EndHeadlessRunScoreResult
+            {
+                Success = false,
+                EndedProcessNames = ended,
+                Message = "Tried to end leftover RunScore, but still detected: "
+                          + string.Join(", ", still)
+                          + ". Use Task Manager if needed."
+            };
+        }
+
+        return new EndHeadlessRunScoreResult
+        {
+            Success = true,
+            EndedProcessNames = ended.Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(n => n).ToList(),
+            Message = ended.Count == 0
+                ? "No RunScore background process was running."
+                : "Ended leftover RunScore (" + string.Join(", ", ended.Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(n => n)) + ")."
+        };
+    }
+
     private readonly record struct ProcessMatch(string Name, bool HasMainWindow);
 
     private static IReadOnlyList<ProcessMatch> EnumerateMatching(Func<string, bool> match)
@@ -213,4 +332,11 @@ public sealed class ProcessGuard : IProcessGuard
 
         return found;
     }
+}
+
+public sealed class EndHeadlessRunScoreResult
+{
+    public bool Success { get; init; }
+    public string Message { get; init; } = string.Empty;
+    public IReadOnlyList<string> EndedProcessNames { get; init; } = Array.Empty<string>();
 }

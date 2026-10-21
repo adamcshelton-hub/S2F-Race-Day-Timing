@@ -872,6 +872,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
                     "2 · Saving your race",
                     "Restoring office RunScore preferences…");
                 return;
+            case "finish:lock":
+                SetFinishProgress(
+                    "2 · Saving your race",
+                    "Releasing the checkout lock on OneDrive…");
+                return;
             case "finish:autosave":
                 SetFinishProgress(
                     "2 · Saving your race",
@@ -1696,14 +1701,23 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
             if (wait.Kind == BlockingWaitKind.StillRunning)
             {
-                var names = string.Join(", ", wait.ProcessNames);
-                await ShowBusyResultAsync(
-                    "Still open",
-                    "The RunScore window is closed, but a background process is still running"
-                    + (wait.ProcessNames.Any(ProcessGuard.IsRunScoreProcess) ? " (RSServer)." : ".")
-                    + $"\n\nStill detected: {names}\n\n"
-                    + "Wait a few seconds and tap Finish again. If it keeps happening, end it in Task Manager.");
-                return;
+                if (!await OfferEndOrphanedRunScoreAfterWaitAsync(wait.ProcessNames, forFinish: true)
+                        .ConfigureAwait(true))
+                    return;
+
+                // Confirm clear after optional End RSServer, then continue Finish.
+                wait = await _processGuard.WaitForBlockingClearedAsync(
+                    TimeSpan.FromSeconds(8),
+                    new Progress<string>(s => SetFinishProgress("1 · Waiting for RunScore", s)));
+                if (wait.Kind != BlockingWaitKind.Cleared)
+                {
+                    var names = string.Join(", ", wait.ProcessNames);
+                    await ShowBusyResultAsync(
+                        "Still open",
+                        "A timing process is still running"
+                        + $" ({names}).\n\nClose it (or End RSServer if offered), then tap Finish again.");
+                    return;
+                }
             }
 
             SetFinishProgress("2 · Saving your race", "Starting file save to OneDrive…");
@@ -2301,7 +2315,52 @@ public sealed class MainViewModel : INotifyPropertyChanged
             await ProbeSessionEventNamesAsync(sessions.Select(s => s.Path).ToList(), EventNamesCacheKey(office))
                 .ConfigureAwait(true);
 
+        // Timing list reads local _checkout.json — pull Graph locks for any Active rows so
+        // another laptop's Finish (Released) is not stuck as "Checked Out" on this machine.
+        if (IsTimingRole)
+            await RefreshActiveSessionLocksFromGraphAsync(sessions).ConfigureAwait(true);
+
         LoadSessions(office);
+    }
+
+    /// <summary>
+    /// Cellular-cheap: only sessions that look Active locally (usually 0–1). Parallel tiny GETs.
+    /// </summary>
+    private async Task RefreshActiveSessionLocksFromGraphAsync(IReadOnlyList<EventPackInfo> sessions)
+    {
+        if (!_cloud.IsAvailable || sessions.Count == 0)
+            return;
+
+        var activePaths = sessions
+            .Where(s => !s.IsNavigationFolder && s.IsActivelyCheckedOut)
+            .Select(s => s.Path)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (activePaths.Count == 0)
+            return;
+
+        try
+        {
+            using var cts = new CancellationTokenSource(GraphSyncPolicy.OfficeListBudget);
+            var libraryRoot = _settings.LibraryRoot;
+            var driveRoot = _settings.GraphDriveRoot;
+            await Task.WhenAll(activePaths.Select(async path =>
+            {
+                try
+                {
+                    await _cloud.DownloadCheckoutLockAsync(path, libraryRoot, driveRoot, cts.Token)
+                        .ConfigureAwait(false);
+                }
+                catch
+                {
+                    // Weak cell — keep local lock; Soft Take Over still works from stale Active.
+                }
+            })).ConfigureAwait(false);
+        }
+        catch
+        {
+            // Budget / cancel — list still usable from local locks.
+        }
     }
 
     private async Task PreparePastRacesListAsync()
@@ -4466,6 +4525,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
             {
                 result = _checkout.AbandonLocalActive(requireVendorsClosed: true);
             }
+            else if (wait.Kind == BlockingWaitKind.StillRunning
+                     && await OfferEndOrphanedRunScoreAfterWaitAsync(wait.ProcessNames, forFinish: false)
+                         .ConfigureAwait(true))
+            {
+                result = _checkout.AbandonLocalActive(requireVendorsClosed: true);
+            }
             else if (!TimerDialog.Confirm(
                     OwnerWindow,
                     "Vendors Still Open",
@@ -4500,6 +4565,70 @@ public sealed class MainViewModel : INotifyPropertyChanged
         else
             Step = WizardStep.Office;
         Status = result.Message;
+    }
+
+    /// <summary>
+    /// After a normal wait with no RunScore window: offer to end headless RSServer only.
+    /// Never auto-kills — timer must confirm. Refuses if Timing &amp; Scoring is in the list.
+    /// </summary>
+    /// <returns>True when leftovers were cleared (or ended successfully).</returns>
+    private async Task<bool> OfferEndOrphanedRunScoreAfterWaitAsync(
+        IReadOnlyList<string> processNames,
+        bool forFinish)
+    {
+        var names = string.Join(", ", processNames);
+        if (!ProcessGuard.AreOnlyRunScoreProcesses(processNames))
+        {
+            await ShowBusyResultAsync(
+                "Still open",
+                "The app window is closed, but a background process is still running.\n\n"
+                + $"Still detected: {names}\n\n"
+                + "Close Timing & Scoring (or other timing apps), wait a few seconds, then try again.")
+                .ConfigureAwait(true);
+            return false;
+        }
+
+        ClearBusy();
+        var end = TimerDialog.Confirm(
+            OwnerWindow,
+            "Leftover RSServer",
+            "RunScore's window is closed, but a background process is still running ("
+            + names + ").\n\n"
+            + "We already waited for a normal shutdown. You can end the leftover RSServer so "
+            + (forFinish ? "Finish" : "Close Local Copy")
+            + " can continue — only if you are sure RunScore is closed.\n\n"
+            + "Ending RSServer unlocks race files on this laptop.",
+            yesLabel: "End RSServer",
+            noLabel: forFinish ? "Cancel Finish" : "Not Now",
+            yesIsDanger: true);
+
+        if (!end)
+        {
+            if (forFinish)
+            {
+                await ShowBusyResultAsync(
+                    "Finish Paused",
+                    "Finish was cancelled while RSServer was still running in the background.\n\n"
+                    + "Tap Finish again when RunScore has fully exited, or choose End RSServer when offered.")
+                    .ConfigureAwait(true);
+            }
+
+            return false;
+        }
+
+        SetBusy(
+            forFinish ? "Saving your race" : "Close Local Copy",
+            "Ending leftover RSServer…");
+        var kill = await Task.Run(() => _processGuard.TryEndHeadlessRunScoreProcesses())
+            .ConfigureAwait(true);
+        if (!kill.Success)
+        {
+            await ShowBusyResultAsync("Could Not End RSServer", kill.Message).ConfigureAwait(true);
+            return false;
+        }
+
+        Status = kill.Message;
+        return true;
     }
 
     private async Task ForceReclaimAfterLockTakenAsync(ActiveCheckout active)

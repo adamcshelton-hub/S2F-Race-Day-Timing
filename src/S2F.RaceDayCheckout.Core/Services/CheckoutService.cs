@@ -868,21 +868,34 @@ public sealed class CheckoutService
         // Publish Released lock AFTER local release. UploadSessionAsync (Finish) skips lock
         // metadata so we do not PUT Active then Released (wastes cellular) and so OneDrive
         // does not keep a stale Active lock after a successful Finish.
+        var lockPublished = false;
         if (syncOk)
         {
-            try
+            statusProgress?.Report("finish:lock");
+            // Retry — a silent miss leaves every other laptop showing Checked Out until soft take-over.
+            for (var attempt = 1; attempt <= 3 && !lockPublished; attempt++)
             {
-                using var lockCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                lockCts.CancelAfter(GraphSyncPolicy.HttpTimeout);
-                await _cloud.UploadCheckoutLockAsync(
-                    active.LibrarySessionPath,
-                    settings.LibraryRoot,
-                    settings.GraphDriveRoot,
-                    lockCts.Token);
-            }
-            catch
-            {
-                // Race files already on OneDrive — next checkout may need soft reclaim.
+                try
+                {
+                    using var lockCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                    lockCts.CancelAfter(GraphSyncPolicy.HttpTimeout);
+                    var lockPut = await _cloud.UploadCheckoutLockAsync(
+                        active.LibrarySessionPath,
+                        settings.LibraryRoot,
+                        settings.GraphDriveRoot,
+                        lockCts.Token);
+                    lockPublished = lockPut.Success && lockPut.FilesTransferred > 0;
+                    if (!lockPublished && attempt < 3)
+                        await Task.Delay(400 * attempt, cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                {
+                    // Per-attempt timeout — retry.
+                }
+                catch
+                {
+                    // Next attempt.
+                }
             }
 
             // Remote _autosave clear after race PUTs (bounded budget inside ClearRemoteFolderAsync).
@@ -941,6 +954,9 @@ public sealed class CheckoutService
             ? string.Empty
             : " Live autosave files could not be fully removed — ask setup to delete RUNSCORE\\_autosave before the next race.";
         autosaveNote += prefsNote;
+        var lockNote = syncOk && !lockPublished
+            ? " Checkout lock may still look Active on other laptops until they Refresh Events or Soft Take Over — ask setup if it sticks."
+            : string.Empty;
 
         if (activeRemoveError is not null)
         {
@@ -952,6 +968,7 @@ public sealed class CheckoutService
                     $"Checked in; could not remove Active folder: {activeRemoveError}. "
                     + "Race files were uploaded — safe to shut down after closing leftover folders."
                     + autosaveNote
+                    + lockNote
             };
         }
 
@@ -962,6 +979,7 @@ public sealed class CheckoutService
             Message =
                 "Finish complete. Race files were uploaded to OneDrive. You can shut down this laptop."
                 + autosaveNote
+                + lockNote
         };
     }
 

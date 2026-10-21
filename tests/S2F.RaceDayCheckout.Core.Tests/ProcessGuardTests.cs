@@ -31,4 +31,26 @@ public class ProcessGuardTests
         Assert.Equal(BlockingWaitKind.Cleared, result.Kind);
         Assert.Empty(result.ProcessNames);
     }
+
+    [Theory]
+    [InlineData(new[] { "RSServer" }, true)]
+    [InlineData(new[] { "RSServer", "RSClient" }, true)]
+    [InlineData(new[] { "RSServer", "TimingAndScoring" }, false)]
+    [InlineData(new[] { "TimingAndScoring64" }, false)]
+    [InlineData(new string[0], false)]
+    public void AreOnlyRunScoreProcesses_GatesEndOrphanOffer(string[] names, bool expected) =>
+        Assert.Equal(expected, ProcessGuard.AreOnlyRunScoreProcesses(names));
+
+    [Fact]
+    public void TryEndHeadlessRunScoreProcesses_NoOpWhenNoneRunning()
+    {
+        var guard = new ProcessGuard();
+        // Never kill a live race-day RSServer from unit tests.
+        if (guard.GetRunScoreProcessNames().Count > 0)
+            return;
+
+        var result = guard.TryEndHeadlessRunScoreProcesses();
+        Assert.True(result.Success);
+        Assert.Contains("No RunScore", result.Message, StringComparison.OrdinalIgnoreCase);
+    }
 }
