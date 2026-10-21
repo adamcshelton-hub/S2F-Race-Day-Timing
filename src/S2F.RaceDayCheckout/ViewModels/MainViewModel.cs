@@ -1257,12 +1257,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
             return;
         }
 
-        // Contested lock: cheap lock refresh + Force/soft Take Over before the full pack download
-        // (Cancel must not burn cellular). CheckoutAsync reuses the confirms if still needed.
+        // Always refresh Graph lock + Force/soft Take Over BEFORE the full pack download.
+        // Do not gate on session.Lock from the list — Laptop 2 often has no local _checkout.json
+        // yet, so the row looks Available and we used to burn a pack download first.
         ClearPendingCheckoutTakeoverConfirm();
-        if (session.Lock is { Status: LockLifecycleStatus.Active }
-            && !string.Equals(session.Lock.MachineId, _machine.MachineId, StringComparison.OrdinalIgnoreCase)
-            && !await ConfirmTakeoverBeforeSessionDownloadAsync(session).ConfigureAwait(true))
+        if (!await ConfirmTakeoverBeforeSessionDownloadAsync(session).ConfigureAwait(true))
             return;
 
         SelectedSession = session;
@@ -2315,36 +2314,36 @@ public sealed class MainViewModel : INotifyPropertyChanged
             await ProbeSessionEventNamesAsync(sessions.Select(s => s.Path).ToList(), EventNamesCacheKey(office))
                 .ConfigureAwait(true);
 
-        // Timing list reads local _checkout.json — pull Graph locks for any Active rows so
-        // another laptop's Finish (Released) is not stuck as "Checked Out" on this machine.
+        // Timing: pull each session's tiny _checkout.json so Checked Out is accurate even when
+        // this laptop never held the race (local Library had no lock file → looked Available).
         if (IsTimingRole)
-            await RefreshActiveSessionLocksFromGraphAsync(sessions).ConfigureAwait(true);
+            await RefreshSessionLocksFromGraphAsync(sessions).ConfigureAwait(true);
 
         LoadSessions(office);
     }
 
     /// <summary>
-    /// Cellular-cheap: only sessions that look Active locally (usually 0–1). Parallel tiny GETs.
+    /// One office only — parallel GETs of <c>._checkin/_checkout.json</c> (not the race pack).
     /// </summary>
-    private async Task RefreshActiveSessionLocksFromGraphAsync(IReadOnlyList<EventPackInfo> sessions)
+    private async Task RefreshSessionLocksFromGraphAsync(IReadOnlyList<EventPackInfo> sessions)
     {
         if (!_cloud.IsAvailable || sessions.Count == 0)
             return;
 
-        var activePaths = sessions
-            .Where(s => !s.IsNavigationFolder && s.IsActivelyCheckedOut)
+        var paths = sessions
+            .Where(s => !s.IsNavigationFolder)
             .Select(s => s.Path)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
-        if (activePaths.Count == 0)
+        if (paths.Count == 0)
             return;
 
         try
         {
-            using var cts = new CancellationTokenSource(GraphSyncPolicy.OfficeListBudget);
+            using var cts = new CancellationTokenSource(GraphSyncPolicy.OfficeSessionsBudget);
             var libraryRoot = _settings.LibraryRoot;
             var driveRoot = _settings.GraphDriveRoot;
-            await Task.WhenAll(activePaths.Select(async path =>
+            await Task.WhenAll(paths.Select(async path =>
             {
                 try
                 {
@@ -2353,13 +2352,13 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 }
                 catch
                 {
-                    // Weak cell — keep local lock; Soft Take Over still works from stale Active.
+                    // Weak cell — leave local lock as-is; SelectSession still re-checks before download.
                 }
             })).ConfigureAwait(false);
         }
         catch
         {
-            // Budget / cancel — list still usable from local locks.
+            // Budget / cancel — list still usable; SelectSession re-checks before pack download.
         }
     }
 
