@@ -9,8 +9,11 @@ publish/
 .idea/
 *.DotSettings.user
 
-# Cursor local plans / agent notes — not part of the product
-.cursor/
+# Cursor local plans / agent notes — not part of the product.
+# Track shared agent rules so new clones/sessions get ship/VM/sync guidance.
+.cursor/*
+!.cursor/rules/
+!.cursor/rules/**
 
 # Local Squarespace how-to drafts (paste from disk; not shipped in the app)
 docs/

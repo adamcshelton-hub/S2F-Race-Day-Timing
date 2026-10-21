@@ -1,0 +1,42 @@
+---
+description: Title Case for UI titles, buttons, and major links (not sentence case)
+globs: src/S2F.RaceDayCheckout/**/*.{xaml,cs}
+alwaysApply: true
+---
+
+# UI Title Case
+
+S2F Race Day Timing uses **Title Case** for titles, buttons, tabs, and major links — not sentence case.
+
+## Apply Title Case to
+
+- Window / page titles (`StepTitle`, window `Title`)
+- Buttons (`Content=…`)
+- Admin tabs and header links (`Admin`, `Setup New Event`, …)
+- Primary list-row choices that act like actions (`One Race`, `Templates Folder`)
+- Dialog primary/secondary action buttons
+
+## Do not Title-Case
+
+- Body copy, subtitles, breadcrumbs that are instructional sentences, status lines, tooltips, error messages
+- Field helper text under inputs
+- File/path names and product strings that must match disk (`RUNSCORE`, `.event`)
+
+## Conventions
+
+- Capitalize principal words; keep short closed-class words lowercase unless first/last: *a, an, the, and, or, but, for, to, of, in, on, with*
+- Verb particles in labels are capitalized: **Sign In**, **Sign Out**, **Check for Updates**
+- Keep product/proper nouns as branded: OneDrive, RunScore, Timing & Scoring, Past Races, Admin
+- Prefer **Setup** (not “Set Up”) in short tab/button labels already used in this app
+
+## Examples
+
+| Avoid (sentence case) | Use (Title Case) |
+| --- | --- |
+| Create event | Create Event |
+| Choose another event | Choose Another Event |
+| Refresh events | Refresh Events |
+| Browse race files | Browse Race Files |
+| Sign in to OneDrive | Sign In to OneDrive |
+| Admin settings | Admin Settings |
+| Choose your office | Choose Your Office |

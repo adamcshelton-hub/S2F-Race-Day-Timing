@@ -1,0 +1,34 @@
+---
+description: Cellular-first networking — minimize Graph/OneDrive traffic for race-day laptops
+alwaysApply: true
+---
+
+# Cellular-first sync (hard constraint)
+
+Race-day laptops often run on **cellular hotspot**. Treat bandwidth and latency as scarce.
+
+## Rules of thumb
+
+1. **Least internet that still gets the job done.** Prefer local disk; hit Graph only when local data is missing or the user explicitly syncs that step.
+2. **One folder tree at a time.** Never walk the full Library on refresh.
+   - Landing / sign-in / Admin “Refresh offices”: **probe known office folder names only** at GraphDriveRoot (usually My files / empty root — never confuse the Explorer “Start 2 - Personal” sync label with a Graph subfolder). Never `children` on an unbounded root dump.
+   - After office selection: index **that office’s events only** (live offices).
+   - **Past Races**: one folder level per tap (office bucket → year → race). Never recurse the archive.
+   - Checkout: Graph has **no folder ZIP** on personal OneDrive — enumerate the session, then **parallel file downloads** (8 at a time, throttle floor 2). Keep Logs/Events; skip _autosave. 3‑minute budget (`SessionDownloadBudget` — do not wrap in Finish’s 90s).
+   - Finish: upload **Active-vs-Library content diffs** (not mtime-since-checkout); parallel PUTs same gate as download. Keep Logs/Events; skip _autosave. Coarse progress, not every filename.
+   - Mid-race: **Backup overlay only** (RS alternate Save entries/results) → `RUNSCORE\_autosave` → Graph. Never full Active RUNSCORE. Skip Graph publish when local mirror copied nothing.
+3. **Do not re-list what we already have.** If local session placeholders exist for an office, skip Graph re-index until Admin refresh or a deliberate “reload events” action.
+4. **Never stall race day for cloud.** Hard budgets (office list / office sessions / Finish), skip Logs/Events, retain Active on upload failure, Finish retries — cellular must not block checkout or leave the laptop unusable. Startup must not deep-index events behind a blocking Busy overlay.
+5. **No speculative prefetch.** No background full-library sync, no indexing sibling offices “just in case.”
+6. **Never “download the library.”** Office refresh = empty local folders (or one children list). Event index = RUNSCORE placeholders for one office. File bytes only on checkout of one session. A partial `C:\S2F\Library` from an old full crawl is not trustworthy completeness — do not treat “some offices exist” as “sync finished.”
+7. **Past Races moves.** Staff move finished events on OneDrive into Past Races. On the next Graph index of the **old office only**, prune local session folders that are no longer on that remote list. Never prune after a timed-out/partial list. Protect Active checkout path. New home appears when Past Races is opened and indexed.
+
+## When changing Graph / checkout / library UI
+
+Ask: “On a weak cell connection, does this add list/download calls the timer doesn’t need right now?” If yes, cut it or gate it behind the user’s next selection.
+
+## Dev note — VM OneDrive vs Library cache
+
+On Adam’s Windows VM, `C:\Users\adam\OneDrive` is the same tree as online My files. Agents may **read it only to learn folder layout** (Past Races → office bucket → year → race, etc.).
+
+**Do not** copy, rsync, robocopy, or otherwise mirror that OneDrive tree into `C:\S2F\Library`. Library is filled only by the app’s Graph path: office placeholders → one-level / one-office index → one session download on checkout.

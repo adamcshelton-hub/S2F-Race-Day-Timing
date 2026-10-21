@@ -1,0 +1,27 @@
+---
+description: After Graph/checkout/Finish changes, proactively audit and propose cellular speed wins
+alwaysApply: true
+---
+
+# Sync speed audit (hard habit)
+
+Cellular-first is not only “fewer calls.” It is **faster useful transfers** and **never uploading/downloading work we already decided against**.
+
+When changing Graph, checkout, Finish, mid-race mirror, heartbeat, library index, or Past Races browse — **in the same turn**, before calling the task done:
+
+## Must run this checklist
+
+1. **Parallelism both ways** — session download and Finish/mid-race upload use the shared transfer gate (default 8, floor 2, 429/503 backoff). Do not leave a new path serial “for simplicity.”
+2. **Upload/download set = real content** — Finish = Active-vs-Library size/hash (or explicit path list), never mtime-since-checkout. Mid-race = **Backup overlay only** → `RUNSCORE\_autosave` (RS alternate Save entries/results). Never mirror Active RUNSCORE into `_autosave`.
+3. **Fail-fast budgets match the op** — checkout pull uses `SessionDownloadBudget`; Finish uses `FinishUploadBudget`. Do not wrap a long op in a shorter unrelated budget.
+4. **Tiny metadata stays tiny** — heartbeat / lock publish = `_checkout.json` (and history if needed), not a full `._checkin` folder walk. Skip mid-race Graph publish when the local mirror copied **zero** files.
+5. **List cheaply** — children requests use `$select` for id/name/folder/file/size. No unbounded root dumps (see cellular-first-sync).
+6. **Challenge drift** — if code or UI copy implies “full pack mid-race” or “upload everything touched,” fix it or call it out; do not only explain the tax.
+
+## Same-turn output
+
+Propose remaining wins in this path (even if out of scope to implement now). Prefer shipping the obvious P0/P1 win in the same change when it is local and low-risk.
+
+## Prompt cue from Adam
+
+If he says “audit sync speed” or touches these files without saying it — still run the checklist. Do not wait for him to ask “can we parallelize?” or “why full autosave?”

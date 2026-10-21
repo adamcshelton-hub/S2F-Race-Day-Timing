@@ -1,0 +1,75 @@
+---
+description: Commit, push, and ship a Velopack patch release (version bump, tag, gh release, CI)
+alwaysApply: true
+---
+
+# Ship / release (patch)
+
+When Adam says **commit/push and release a patch** (or similar), do the full path below. Do not stop at commit-only unless he asks.
+
+## Tooling on this Mac
+
+- Repo: `https://github.com/adamcshelton-hub/S2F-Race-Day-Timing` (`origin` on `main`).
+- **`gh` is often missing from agent PATH.** Prefer:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+  Binary lives at `~/.local/bin/gh`. Config: `~/.config/gh/hosts.yml` (user `adamcshelton-hub`). Do not dig the whole home disk for `gh`. Homebrew/`brew` may also be absent from agent shells — do not block on installing them.
+- Git HTTPS auth already works via macOS keychain; `git push` and `gh` use that.
+
+## Version bump
+
+1. Read current version from `src/S2F.RaceDayCheckout/S2F.RaceDayCheckout.csproj` (`Version` + `InformationalVersion` — keep them equal).
+2. Patch bump both (e.g. `0.5.6` → `0.5.7`). Include the csproj in the same commit as the ship.
+
+## Commit message style
+
+Match recent `main` history:
+
+```text
+Ship v0.5.7: short why in one line.
+
+Optional second paragraph with one or two concrete bullets of behavior.
+```
+
+Examples on `main`: `Ship v0.5.6: …`, `Ship v0.5.5: …`.
+
+## Push + GitHub Release (required for signed Velopack)
+
+A **tag alone is not enough**. CI uploads signed packs only on a **published** GitHub Release (`release` event in `.github/workflows/build.yml`).
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+# after commit on main:
+git push origin HEAD
+git tag v0.5.7          # match Version
+git push origin v0.5.7
+gh release create v0.5.7 --title "v0.5.7" --notes "$(cat <<'EOF'
+## Summary
+- Bullet of user-facing change
+- Bullet of user-facing change
+
+EOF
+)"
+```
+
+Return the release URL: `https://github.com/adamcshelton-hub/S2F-Race-Day-Timing/releases/tag/v0.5.7`
+
+## Verify CI
+
+```bash
+gh run list --limit 5
+# Expect: event=release for vX.Y.Z (pack + Azure Artifact Signing + upload)
+# And often a parallel event=push on main
+gh run view <id> --json status,conclusion,url
+```
+
+Release run must reach **success** before in-app update / installers on the Release page are trustworthy. Main-push packs are CI artifacts only (not the published update channel).
+
+## Do not
+
+- Force-push `main` or move release tags.
+- Publish a release just to show a **dev** build on the VM (use `.cursor/rules/vm-dev-launch.mdc`).
+- Skip the version bump or ship with mismatched `Version` / tag / release title.
