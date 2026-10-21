@@ -249,6 +249,13 @@ public partial class MainWindow : Window
         _vm.ReloadFromDisk(); // pick up local office placeholders created above
         _vm.RefreshGraphLandingStatus();
 
+        // Updates before office Graph / setup prompts — if a version is available the timer must
+        // see Download, Restart & Install before they can click into an event.
+        await UpdateService.CheckForUpdatesQuietAsync(
+            _vm.HasActive,
+            this,
+            msg => _vm.Status = msg);
+
         // Optional: confirm which offices exist on OneDrive (does not block showing the list).
         try
         {
@@ -263,12 +270,6 @@ public partial class MainWindow : Window
         {
             _vm.Status = "OneDrive office check skipped: " + ex.Message;
         }
-
-        // Updates first so a new version isn't hidden behind setup dialogs / silent failures.
-        await UpdateService.CheckForUpdatesQuietAsync(
-            _vm.HasActive,
-            this,
-            msg => _vm.Status = msg);
 
         // Once per machine: official Notepad++ installer → C:\Program Files\Notepad++.
         // Skipped when that exe is already there, and when this build has no bundled installer.

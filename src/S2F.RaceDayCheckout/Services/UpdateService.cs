@@ -21,8 +21,9 @@ public static class UpdateService
         RuntimeInformation.ProcessArchitecture == Architecture.Arm64 ? "win-arm64" : "win-x64";
 
     /// <summary>
-    /// Startup check. Always tells the user when an update is available (even if Finish is required first).
-    /// Failures set <paramref name="setStatus"/> instead of failing silently.
+    /// Startup check. When an update exists, prompt immediately (before any download) so the
+    /// timer cannot race ahead into checkout while a silent download is still running.
+    /// One click downloads, then restarts to install — unless a race is still checked out.
     /// </summary>
     public static async Task CheckForUpdatesQuietAsync(
         bool hasActiveCheckout,
@@ -39,41 +40,15 @@ public static class UpdateService
             }
 
             setStatus?.Invoke($"Checking for updates… (v{FormatVersion(mgr.CurrentVersion)})");
-            var update = await mgr.CheckForUpdatesAsync();
+            var update = await mgr.CheckForUpdatesAsync().ConfigureAwait(true);
             if (update is null)
             {
                 setStatus?.Invoke($"v{FormatVersion(mgr.CurrentVersion)} — up to date");
                 return;
             }
 
-            var target = FormatVersion(update.TargetFullRelease.Version);
-            setStatus?.Invoke($"Downloading update v{target}…");
-            await mgr.DownloadUpdatesAsync(update);
-
-            if (hasActiveCheckout)
-            {
-                await Application.Current.Dispatcher.InvokeAsync(() =>
-                    TimerDialog.Alert(
-                        owner,
-                        "Update ready",
-                        $"Version {target} is downloaded.\n\n"
-                        + "Finish this race first, then restart the app to install the update."));
-                setStatus?.Invoke($"v{target} ready — Finish race, then restart to update");
-                return;
-            }
-
-            var apply = await Application.Current.Dispatcher.InvokeAsync(() =>
-                TimerDialog.Confirm(
-                    owner,
-                    "Update ready",
-                    $"Version {target} is ready.\n\nYou're on v{FormatVersion(mgr.CurrentVersion)}. Restart now to update?",
-                    yesLabel: "Restart & update",
-                    noLabel: "Later"));
-
-            if (apply)
-                mgr.ApplyUpdatesAndRestart(update.TargetFullRelease);
-            else
-                setStatus?.Invoke($"v{target} ready — use Check for updates on the main screen when convenient");
+            await OfferDownloadAndInstallAsync(mgr, update, hasActiveCheckout, owner, setStatus)
+                .ConfigureAwait(true);
         }
         catch (Exception ex)
         {
@@ -91,7 +66,7 @@ public static class UpdateService
         {
             progress = TimerDialog.ShowProgress(
                 owner,
-                "Checking for updates",
+                "Checking for Updates",
                 "Looking for a newer version…");
             // Let the overlay paint before the network call blocks the UI feel.
             await Application.Current.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Loaded);
@@ -108,40 +83,19 @@ public static class UpdateService
             }
 
             progress.SetMessage($"Checking GitHub… (v{FormatVersion(mgr.CurrentVersion)}, {CurrentChannel})");
-            var update = await mgr.CheckForUpdatesAsync();
+            var update = await mgr.CheckForUpdatesAsync().ConfigureAwait(true);
+            progress.Dispose();
+            progress = null;
+
             if (update is null)
             {
-                progress.Dispose();
-                progress = null;
                 TimerDialog.Alert(owner, "Updates",
                     $"You're on the latest version (v{FormatVersion(mgr.CurrentVersion)}) for {CurrentChannel}.");
                 return;
             }
 
-            var target = FormatVersion(update.TargetFullRelease.Version);
-            var downloadProgress = progress;
-            downloadProgress.SetMessage($"Downloading update v{target}…");
-            await mgr.DownloadUpdatesAsync(update, percent =>
-                downloadProgress.SetMessage($"Downloading update v{target}… ({percent}%)"));
-
-            progress.Dispose();
-            progress = null;
-
-            if (hasActiveCheckout)
-            {
-                TimerDialog.Alert(owner, "Update downloaded",
-                    $"Version {target} is ready, but an event is still checked out.\n\n"
-                    + "Finish the race first, then restart the app to update.");
-                return;
-            }
-
-            if (TimerDialog.Confirm(owner, "Update ready",
-                    $"Version {target} is ready.\n\nYou're on v{FormatVersion(mgr.CurrentVersion)}. Restart now to update?",
-                    yesLabel: "Restart & update",
-                    noLabel: "Later"))
-            {
-                mgr.ApplyUpdatesAndRestart(update.TargetFullRelease);
-            }
+            await OfferDownloadAndInstallAsync(mgr, update, hasActiveCheckout, owner, setStatus: null)
+                .ConfigureAwait(true);
         }
         catch (Exception ex)
         {
@@ -153,6 +107,99 @@ public static class UpdateService
         {
             progress?.Dispose();
             Interlocked.Exchange(ref _interactiveCheckRunning, 0);
+        }
+    }
+
+    /// <summary>
+    /// Prompt first (no silent download). On accept: progress overlay → download → restart
+    /// (or download-only when a race is still checked out).
+    /// </summary>
+    private static async Task OfferDownloadAndInstallAsync(
+        UpdateManager mgr,
+        UpdateInfo update,
+        bool hasActiveCheckout,
+        Window? owner,
+        Action<string>? setStatus)
+    {
+        var current = FormatVersion(mgr.CurrentVersion);
+        var target = FormatVersion(update.TargetFullRelease.Version);
+
+        bool accept;
+        if (hasActiveCheckout)
+        {
+            accept = await Application.Current.Dispatcher.InvokeAsync(() =>
+                TimerDialog.Confirm(
+                    owner,
+                    "Update Available",
+                    $"Version {target} is available (you're on v{current}).\n\n"
+                    + "A race is still checked out on this laptop, so we cannot restart yet.\n\n"
+                    + "Download now, then Finish the race and restart to install?",
+                    yesLabel: "Download for Later",
+                    noLabel: "Not Now"));
+        }
+        else
+        {
+            accept = await Application.Current.Dispatcher.InvokeAsync(() =>
+                TimerDialog.Confirm(
+                    owner,
+                    "Update Available",
+                    $"Version {target} is available (you're on v{current}).\n\n"
+                    + "Download, restart, and install now? Stay on this screen until it finishes.",
+                    yesLabel: "Download, Restart & Install",
+                    noLabel: "Not Now"));
+        }
+
+        if (!accept)
+        {
+            setStatus?.Invoke($"v{target} available — use Check for Updates when ready");
+            return;
+        }
+
+        TimerDialog.ProgressSession? progress = null;
+        try
+        {
+            progress = await Application.Current.Dispatcher.InvokeAsync(() =>
+                TimerDialog.ShowProgress(
+                    owner,
+                    "Downloading Update",
+                    $"Downloading v{target}…"));
+            await Application.Current.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Loaded);
+
+            var downloadProgress = progress;
+            await mgr.DownloadUpdatesAsync(update, percent =>
+                downloadProgress.SetMessage($"Downloading v{target}… ({percent}%)")).ConfigureAwait(true);
+
+            progress.Dispose();
+            progress = null;
+
+            if (hasActiveCheckout)
+            {
+                await Application.Current.Dispatcher.InvokeAsync(() =>
+                    TimerDialog.Alert(
+                        owner,
+                        "Update Downloaded",
+                        $"Version {target} is downloaded.\n\n"
+                        + "Finish this race, then restart the app to install the update."));
+                setStatus?.Invoke($"v{target} ready — Finish race, then restart to update");
+                return;
+            }
+
+            // One-click path: no second confirm — restart and install immediately.
+            setStatus?.Invoke($"Installing v{target}…");
+            mgr.ApplyUpdatesAndRestart(update.TargetFullRelease);
+        }
+        catch (Exception ex)
+        {
+            progress?.Dispose();
+            progress = null;
+            var msg = "Couldn't download the update.\n\n" + ShortError(ex);
+            await Application.Current.Dispatcher.InvokeAsync(() =>
+                TimerDialog.Alert(owner, "Updates", msg));
+            setStatus?.Invoke("Couldn't download update: " + ShortError(ex));
+        }
+        finally
+        {
+            progress?.Dispose();
         }
     }
 
