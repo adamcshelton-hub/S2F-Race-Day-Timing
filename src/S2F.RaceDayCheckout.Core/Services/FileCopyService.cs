@@ -167,14 +167,12 @@ public sealed class FileCopyService : IFileCopyService
                     continue;
             }
 
-            await using (var src = File.OpenRead(file))
-            await using (var dst = File.Create(destFile))
-            {
-                await src.CopyToAsync(dst, cancellationToken);
-                stats.BytesCopied += src.Length;
-            }
+            // Overlay/reclaim: Entries.DTA is often locked by RSServer — retry, then skip that
+            // file so the rest of the overlay still applies (do not abort the whole reclaim).
+            if (!await TryCopyFileWithRetriesAsync(file, destFile, cancellationToken).ConfigureAwait(false))
+                continue;
 
-            File.SetLastWriteTimeUtc(destFile, File.GetLastWriteTimeUtc(file));
+            stats.BytesCopied += new FileInfo(destFile).Length;
             stats.FilesCopied++;
             stats.CurrentFile = relative;
             copiedPaths.Add(destFile);
@@ -187,6 +185,91 @@ public sealed class FileCopyService : IFileCopyService
         }
 
         return ((int)stats.FilesCopied, copiedPaths);
+    }
+
+    private static async Task<bool> TryCopyFileWithRetriesAsync(
+        string sourceFile,
+        string destFile,
+        CancellationToken cancellationToken)
+    {
+        const int maxAttempts = 4;
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                // Write via temp + replace so a locked destination is less likely mid-stream,
+                // and a partial write cannot leave a truncated Entries.DTA.
+                var destDir = Path.GetDirectoryName(destFile);
+                if (!string.IsNullOrEmpty(destDir))
+                    Directory.CreateDirectory(destDir);
+
+                var temp = destFile + ".s2f-tmp";
+                try
+                {
+                    if (File.Exists(temp))
+                    {
+                        File.SetAttributes(temp, FileAttributes.Normal);
+                        File.Delete(temp);
+                    }
+
+                    await using (var src = File.OpenRead(sourceFile))
+                    await using (var dst = File.Create(temp))
+                    {
+                        await src.CopyToAsync(dst, cancellationToken).ConfigureAwait(false);
+                    }
+
+                    File.SetLastWriteTimeUtc(temp, File.GetLastWriteTimeUtc(sourceFile));
+
+                    if (File.Exists(destFile))
+                    {
+                        File.SetAttributes(destFile, FileAttributes.Normal);
+                        File.Replace(temp, destFile, destinationBackupFileName: null, ignoreMetadataErrors: true);
+                    }
+                    else
+                    {
+                        File.Move(temp, destFile);
+                    }
+
+                    return true;
+                }
+                finally
+                {
+                    try
+                    {
+                        if (File.Exists(temp))
+                        {
+                            File.SetAttributes(temp, FileAttributes.Normal);
+                            File.Delete(temp);
+                        }
+                    }
+                    catch
+                    {
+                        // best-effort
+                    }
+                }
+            }
+            catch (IOException) when (attempt < maxAttempts)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(150 * attempt), cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (UnauthorizedAccessException) when (attempt < maxAttempts)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(150 * attempt), cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (IOException)
+            {
+                return false;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return false;
+            }
+        }
+
+        return false;
     }
 
     private static bool IsAppMetaRelative(string relative) =>

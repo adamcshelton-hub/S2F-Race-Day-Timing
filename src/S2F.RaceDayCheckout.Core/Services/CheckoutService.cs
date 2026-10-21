@@ -1104,6 +1104,8 @@ public sealed class CheckoutService
             {
                 using var overlayCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 overlayCts.CancelAfter(GraphSyncPolicy.MidRacePublishBudget);
+                // AutosaveOverlayOnly always re-PUTs every file (no size-skip) so same-length
+                // Entries.DTA edits from the other laptop replace a stale local overlay.
                 await _cloud.DownloadSessionAsync(
                     request.Pack.Path,
                     request.Settings.LibraryRoot,
@@ -1135,6 +1137,7 @@ public sealed class CheckoutService
         });
         // Force overlay (not newer-only): Graph downloads stamp mtime=now on the base pack,
         // so MirrorNewerFiles would skip the live mid-race files.
+        // Per-file retries: RunScore often locks Entries.DTA on this laptop during reclaim.
         await _copy.OverlayAllFilesAsync(autosavePath, activeRunScore, mergeProgress, cancellationToken)
             .ConfigureAwait(false);
         // Seed Backup from the same overlay — RunScore alternate-save must see recovered files

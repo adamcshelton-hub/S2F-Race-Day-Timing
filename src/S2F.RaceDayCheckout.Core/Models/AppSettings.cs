@@ -25,6 +25,13 @@ public sealed class AppSettings
     /// <summary>How often Active timing writes/uploads _checkout.json lastSeen (minimum 30s in UI timer).</summary>
     public const int DefaultHeartbeatSeconds = 60;
 
+    /// <summary>
+    /// While sitting on a live office event list (no Active checkout), how often to re-pull
+    /// each race's tiny <c>_checkout.json</c> so Checked Out / Available stay current.
+    /// Floor 60s in the UI timer — cellular-safe, not aggressive.
+    /// </summary>
+    public const int DefaultSessionLockPollSeconds = 90;
+
     public int HeartbeatSeconds { get; set; } = DefaultHeartbeatSeconds;
     public int StaleLockMinutes { get; set; } = DefaultStaleLockMinutes;
     public int AutosaveMirrorSeconds { get; set; } = 60;

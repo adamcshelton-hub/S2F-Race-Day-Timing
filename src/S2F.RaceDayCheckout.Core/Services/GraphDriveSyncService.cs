@@ -336,10 +336,15 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
                     relative, librarySessionPath, librarySessionPath, jobs, budget.Token, options)
                 .ConfigureAwait(false);
 
+            // Normal pack: skip unchanged by size (cellular). Live _autosave reclaim must always
+            // re-pull — Entries.DTA / results often change content without a size change, and a
+            // stale local overlay would otherwise win after force take-over.
             var todo = jobs
                 .Where(j => j.Size is null or <= GraphSyncPolicy.FinishMaxFileBytes)
                 .Where(j =>
                 {
+                    if (overlayOnly)
+                        return true;
                     if (!File.Exists(j.LocalPath) || j.Size is not long remoteSize)
                         return true;
                     try { return new FileInfo(j.LocalPath).Length != remoteSize; }
@@ -354,7 +359,9 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
                     Success = true,
                     FilesTransferred = 0,
                     Message = jobs.Count > 0
-                        ? "Race files already on this laptop."
+                        ? (overlayOnly
+                            ? "No live autosave files on OneDrive."
+                            : "Race files already on this laptop.")
                         : "OneDrive session had no files (using local library if present)."
                 };
             }

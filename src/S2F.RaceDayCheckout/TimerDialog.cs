@@ -18,9 +18,11 @@ public enum TimerCloseChoice
 /// <summary>Another laptop took the checkout lock while this machine still has Active.</summary>
 public enum TimerLockTakenOverChoice
 {
+    /// <summary>Escape / PIN cancel — leave Active blocked; heartbeat can re-prompt.</summary>
+    Dismissed,
     /// <summary>Clear local Active; leave the other laptop's lock alone.</summary>
     CloseLocalCopy,
-    /// <summary>Admin PIN force take-over — reclaim this race on this laptop.</summary>
+    /// <summary>Admin PIN verified — reclaim this race on this laptop.</summary>
     ForceTakeOver
 }
 
@@ -132,40 +134,143 @@ public static class TimerDialog
 
     /// <summary>
     /// Soft/force takeover happened elsewhere while this laptop still has Active.
-    /// Primary = Close Local Copy (safe). Secondary = Force Take Over (Admin PIN next).
+    /// Force Take Over stays in this overlay and collects the Admin PIN here (no bounce to main).
     /// </summary>
     public static TimerLockTakenOverChoice AskLockTakenOver(
         Window? owner,
         string holderName,
         string machineName)
     {
-        var choice = TimerLockTakenOverChoice.CloseLocalCopy;
+        var choice = TimerLockTakenOverChoice.Dismissed;
         var window = CreateChromeLess(owner);
         var who = string.IsNullOrWhiteSpace(holderName) ? "Another timer" : holderName.Trim();
         var where = string.IsNullOrWhiteSpace(machineName) ? "another laptop" : machineName.Trim();
-
-        var closeLocal = MakeButton("Close Local Copy", "PrimaryButton", () =>
+        var cardHost = new ContentControl
         {
-            choice = TimerLockTakenOverChoice.CloseLocalCopy;
-            window.DialogResult = true;
-        });
-        var force = MakeButton("Force Take Over…", "DangerButton", () =>
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+
+        void ShowChoices()
         {
-            choice = TimerLockTakenOverChoice.ForceTakeOver;
-            window.DialogResult = true;
-        });
+            var closeLocal = MakeButton("Close Local Copy", "PrimaryButton", () =>
+            {
+                choice = TimerLockTakenOverChoice.CloseLocalCopy;
+                window.DialogResult = true;
+            });
+            var force = MakeButton("Force Take Over…", "DangerButton", ShowPinStep);
+            cardHost.Content = BuildCard(
+                "Another Laptop Took Over",
+                $"{who} on {where} now holds this event.\n\n"
+                + "This laptop must not upload or Finish — that would overwrite their work.\n\n"
+                + "Close Local Copy clears Active on this machine only (close RunScore / Timing & Scoring first).\n\n"
+                + "Force Take Over requires the Admin PIN and reclaims the race here.",
+                buttons: new[] { closeLocal, force });
+        }
 
-        var card = BuildCard(
-            "Another Laptop Took Over",
-            $"{who} on {where} now holds this event.\n\n"
-            + "This laptop must not upload or Finish — that would overwrite their work.\n\n"
-            + "Close Local Copy clears Active on this machine only (close RunScore / Timing & Scoring first).\n\n"
-            + "Force Take Over requires the Admin PIN and reclaims the race here.",
-            buttons: new[] { closeLocal, force });
+        void ShowPinStep()
+        {
+            cardHost.Content = BuildAdminPinCard(
+                title: "Force Take Over",
+                message: "Enter the Admin PIN to reclaim this race on this laptop.",
+                confirmLabel: "Force Take Over",
+                onConfirmValidPin: _ =>
+                {
+                    choice = TimerLockTakenOverChoice.ForceTakeOver;
+                    window.DialogResult = true;
+                },
+                onBack: ShowChoices,
+                verifyCompanyPin: true);
+        }
 
-        window.Content = DimmedHost(card);
+        ShowChoices();
+        window.Content = DimmedHost(cardHost);
         window.ShowDialog();
         return choice;
+    }
+
+    /// <summary>
+    /// Select-session force take-over: warning + Admin PIN in one branded overlay.
+    /// </summary>
+    public static bool ConfirmForceTakeoverWithAdminPin(
+        Window? owner,
+        string holderName,
+        string machineName,
+        string lastSeenLocal)
+    {
+        var confirmed = false;
+        var window = CreateChromeLess(owner);
+        var cardHost = new ContentControl
+        {
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+
+        void ShowWarning()
+        {
+            var force = MakeButton("Force Take Over…", "DangerButton", ShowPinStep);
+            var cancel = MakeButton("Cancel", "SecondaryButton", () =>
+            {
+                confirmed = false;
+                window.DialogResult = false;
+            });
+            cardHost.Content = BuildCard(
+                "Already in Use",
+                $"Someone else is already using this event.\n\n"
+                + $"{holderName} on {machineName}\nLast seen {lastSeenLocal}\n\n"
+                + "Only use Force Take Over if that laptop truly cannot finish (crash, power loss, or you're the only timer left).\n\n"
+                + "Force Take Over requires the Admin PIN.",
+                buttons: new[] { force, cancel });
+        }
+
+        void ShowPinStep()
+        {
+            cardHost.Content = BuildAdminPinCard(
+                title: "Force Take Over",
+                message: "Enter the Admin PIN to take over this event.",
+                confirmLabel: "Force Take Over",
+                onConfirmValidPin: _ =>
+                {
+                    confirmed = true;
+                    window.DialogResult = true;
+                },
+                onBack: ShowWarning,
+                verifyCompanyPin: true);
+        }
+
+        ShowWarning();
+        window.Content = DimmedHost(cardHost);
+        window.ShowDialog();
+        return confirmed;
+    }
+
+    /// <summary>
+    /// Branded Admin PIN overlay (chrome-less). Returns null if cancelled.
+    /// When <paramref name="verifyCompanyPin"/> is true, wrong PIN stays on the card.
+    /// </summary>
+    public static string? PromptAdminPin(
+        Window? owner,
+        string title,
+        string message,
+        bool verifyCompanyPin = false)
+    {
+        string? pin = null;
+        var window = CreateChromeLess(owner);
+        var card = BuildAdminPinCard(
+            title,
+            message,
+            confirmLabel: "Continue",
+            onConfirmValidPin: accepted =>
+            {
+                pin = accepted;
+                window.DialogResult = true;
+            },
+            onBack: () => { window.DialogResult = false; },
+            verifyCompanyPin: verifyCompanyPin,
+            backLabel: "Cancel");
+        window.Content = DimmedHost(card);
+        window.ShowDialog();
+        return pin;
     }
 
     /// <summary>
@@ -708,8 +813,107 @@ public static class TimerDialog
         }
 
         stack.Children.Add(buttonPanel);
+        return StyleCard(stack);
+    }
 
-        return new Border
+    /// <summary>
+    /// Admin PIN step inside a branded card. When <paramref name="verifyCompanyPin"/> is true,
+    /// wrong PIN stays on this card with an inline error (no bounce to main).
+    /// </summary>
+    private static Border BuildAdminPinCard(
+        string title,
+        string message,
+        string confirmLabel,
+        Action<string> onConfirmValidPin,
+        Action onBack,
+        bool verifyCompanyPin,
+        string backLabel = "Back")
+    {
+        var stack = new StackPanel();
+        stack.Children.Add(new TextBlock
+        {
+            Text = title,
+            FontSize = 26,
+            FontWeight = FontWeights.Bold,
+            TextAlignment = TextAlignment.Center,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 0, 0, 14)
+        });
+        stack.Children.Add(new TextBlock
+        {
+            Text = message,
+            FontSize = 16,
+            Foreground = Brush("MutedBrush"),
+            TextAlignment = TextAlignment.Center,
+            TextWrapping = TextWrapping.Wrap,
+            LineHeight = 24,
+            Margin = new Thickness(0, 0, 0, 16)
+        });
+
+        var box = new PasswordBox
+        {
+            FontSize = 22,
+            Padding = new Thickness(12, 10, 12, 10),
+            HorizontalContentAlignment = HorizontalAlignment.Center,
+            MinHeight = 48
+        };
+        stack.Children.Add(box);
+
+        var error = new TextBlock
+        {
+            Text = string.Empty,
+            FontSize = 14,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = Brush("DangerBrush"),
+            TextAlignment = TextAlignment.Center,
+            TextWrapping = TextWrapping.Wrap,
+            Visibility = Visibility.Collapsed,
+            Margin = new Thickness(0, 10, 0, 0)
+        };
+        stack.Children.Add(error);
+
+        void Submit()
+        {
+            var entered = box.Password ?? string.Empty;
+            if (verifyCompanyPin
+                && !string.Equals(entered, AppSettings.DefaultAdminPin, StringComparison.Ordinal))
+            {
+                error.Text = "Admin PIN did not match. Try again.";
+                error.Visibility = Visibility.Visible;
+                box.Clear();
+                box.Focus();
+                return;
+            }
+
+            onConfirmValidPin(entered);
+        }
+
+        var confirm = MakeButton(confirmLabel, "DangerButton", Submit);
+        confirm.Margin = new Thickness(0, 20, 0, 0);
+        confirm.IsDefault = true;
+        stack.Children.Add(confirm);
+
+        var back = MakeButton(backLabel, "SecondaryButton", onBack);
+        back.Margin = new Thickness(0, 10, 0, 0);
+        back.IsCancel = true;
+        stack.Children.Add(back);
+
+        box.KeyDown += (_, e) =>
+        {
+            if (e.Key == Key.Enter)
+            {
+                Submit();
+                e.Handled = true;
+            }
+        };
+
+        var card = StyleCard(stack);
+        card.Loaded += (_, _) => box.Focus();
+        return card;
+    }
+
+    private static Border StyleCard(UIElement child) =>
+        new()
         {
             Background = Brush("CardBrush"),
             CornerRadius = new CornerRadius(12),
@@ -725,9 +929,8 @@ public static class TimerDialog
                 ShadowDepth = 0,
                 Color = Colors.Black
             },
-            Child = stack
+            Child = child
         };
-    }
 
     private static Button MakeButton(string text, string styleKey, Action onClick)
     {

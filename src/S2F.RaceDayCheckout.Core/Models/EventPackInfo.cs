@@ -101,10 +101,47 @@ public sealed class EventPackInfo
             // Present tense — the lock is still Active (even when heartbeat is stale).
             // Soft take-over is available when the other laptop looks idle, not "was" (past).
             if (IsLockStale)
-                return $"Open on {who} · Soft Take Over Available";
+            {
+                var lastSeen = FormatLockLastSeen(Lock.LastSeenAt);
+                return $"Open on {who} · Last Seen {lastSeen} · Soft Take Over Available";
+            }
 
             return $"Checked Out · {who}";
         }
+    }
+
+    /// <summary>
+    /// Relative age of lock <see cref="CheckoutLock.LastSeenAt"/> for Soft Take Over rows
+    /// (heartbeat already on the lock — no extra Graph call).
+    /// </summary>
+    public static string FormatLockLastSeen(DateTimeOffset lastSeenAt)
+    {
+        var age = DateTimeOffset.UtcNow - lastSeenAt;
+        if (age < TimeSpan.Zero)
+            age = TimeSpan.Zero;
+
+        if (age < TimeSpan.FromMinutes(1))
+            return "Just Now";
+        if (age < TimeSpan.FromHours(1))
+        {
+            var min = Math.Max(1, (int)age.TotalMinutes);
+            return min == 1 ? "1 Min Ago" : $"{min} Min Ago";
+        }
+
+        if (age < TimeSpan.FromHours(36))
+        {
+            var hr = Math.Max(1, (int)age.TotalHours);
+            return hr == 1 ? "1 Hr Ago" : $"{hr} Hr Ago";
+        }
+
+        if (age < TimeSpan.FromDays(14))
+        {
+            var days = Math.Max(1, (int)age.TotalDays);
+            return days == 1 ? "1 Day Ago" : $"{days} Days Ago";
+        }
+
+        // Old leftovers — calendar date in local time is clearer than "47 Days Ago".
+        return lastSeenAt.ToLocalTime().ToString("MMM d");
     }
 
     /// <summary>

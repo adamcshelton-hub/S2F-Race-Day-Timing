@@ -77,7 +77,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private readonly EventBuilderService _eventBuilder = new();
     private readonly DispatcherTimer _heartbeatTimer;
     private readonly DispatcherTimer _mirrorTimer;
+    private readonly DispatcherTimer _sessionLockPollTimer;
     private readonly SemaphoreSlim _heartbeatUploadGate = new(1, 1);
+    private readonly SemaphoreSlim _sessionLockPollGate = new(1, 1);
     /// <summary>Offices / Past Races paths already Graph-indexed this run (cellular: don't re-walk).</summary>
     private readonly HashSet<string> _graphIndexedOffices = new(StringComparer.OrdinalIgnoreCase);
     /// <summary>Merged local+remote *.event names per session path (Announcer T&S secondary probe).</summary>
@@ -201,12 +203,22 @@ public sealed class MainViewModel : INotifyPropertyChanged
             try { await _mirror.MirrorOnceAsync(); }
             catch { /* non-fatal */ }
         };
+        _sessionLockPollTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromSeconds(Math.Max(60, AppSettings.DefaultSessionLockPollSeconds))
+        };
+        _sessionLockPollTimer.Tick += async (_, _) =>
+        {
+            try { await PollSessionLocksOnceAsync().ConfigureAwait(true); }
+            catch { /* non-fatal — list stays usable */ }
+        };
 
         EnsureLocalRoots(); // office name folders under C:\S2F\Library — no Graph
         LoadAdminUnlock();
         ReloadFromDisk();
         _heartbeatTimer.Start();
         _mirrorTimer.Start();
+        UpdateSessionLockPolling();
     }
 
     private bool IsAdminUnlocked =>
@@ -354,6 +366,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 OnPropertyChanged(nameof(ShowSessionLock));
                 OnPropertyChanged(nameof(ShowRaceDayListFilter));
                 OnPropertyChanged(nameof(RaceDayListFilterHint));
+                UpdateSessionLockPolling();
             }
         }
     }
@@ -719,6 +732,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 OnPropertyChanged(nameof(IsTimingActive));
                 OnPropertyChanged(nameof(IsAnnouncerActive));
                 NotifyActiveSaveAsGuide();
+                UpdateSessionLockPolling();
             }
         }
     }
@@ -1229,6 +1243,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
 
         Step = WizardStep.Session;
+        // Step may already be Session (re-pick) — still start/stop the lock poll for live vs Past Races.
+        UpdateSessionLockPolling();
     }
 
     public void SelectSession(EventPackInfo? session) =>
@@ -1474,25 +1490,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
         var holder = eval.Lock?.HolderName ?? "another timer";
         var machine = eval.Lock?.MachineName ?? "another laptop";
         var lastSeen = eval.Lock?.LastSeenAt.ToLocalTime().ToString("g") ?? "unknown";
-        if (!TimerDialog.Confirm(
-                OwnerWindow,
-                "Already in Use",
-                $"Someone else is already using this event.\n\n"
-                + $"{holder} on {machine}\nLast seen {lastSeen}\n\n"
-                + "Only use Force Take Over if that laptop truly cannot finish (crash, power loss, or you're the only timer left).\n\n"
-                + "Force Take Over requires the Admin PIN.",
-                yesLabel: "Force Take Over…",
-                noLabel: "Cancel"))
+        // Warning + Admin PIN stay in one branded overlay (no bounce to a separate Admin window).
+        if (!TimerDialog.ConfirmForceTakeoverWithAdminPin(OwnerWindow, holder, machine, lastSeen))
             return false;
-
-        var pin = PromptPin("Enter Admin PIN to force take-over:");
-        if (pin is null)
-            return false;
-        if (!string.Equals(pin, AppSettings.DefaultAdminPin, StringComparison.Ordinal))
-        {
-            Alert("Wrong PIN", "Admin PIN did not match. Event was not taken over.");
-            return false;
-        }
 
         reason = "Force take-over (Admin PIN) — other laptop still looked alive";
         return true;
@@ -2029,14 +2029,13 @@ public sealed class MainViewModel : INotifyPropertyChanged
     {
         if (!IsAdminUnlocked)
         {
-            var pin = PromptPin("Enter admin PIN to open settings:");
+            var pin = TimerDialog.PromptAdminPin(
+                OwnerWindow,
+                "Admin",
+                "Enter the Admin PIN to open settings.",
+                verifyCompanyPin: true);
             if (pin is null)
                 return;
-            if (!string.Equals(pin, AppSettings.DefaultAdminPin, StringComparison.Ordinal))
-            {
-                Alert("Admin", "Incorrect PIN.");
-                return;
-            }
 
             GrantAdminUnlock();
         }
@@ -2071,6 +2070,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
             // After sign-in, allow single-office auto-advance into the session list.
             if (!HasActive)
                 ReloadFromDisk();
+            UpdateSessionLockPolling();
         }
         catch (Exception)
         {
@@ -2082,6 +2082,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         finally
         {
             Busy = false;
+            UpdateSessionLockPolling();
         }
     }
 
@@ -2101,6 +2102,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 SelectedEventFile = null;
                 Step = WizardStep.Office;
             }
+            UpdateSessionLockPolling();
         }
         catch (Exception)
         {
@@ -2362,6 +2364,61 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
     }
 
+    /// <summary>
+    /// Cellular-safe: while sitting on a live office event list (Timing, Graph signed in, no Active),
+    /// re-pull tiny <c>_checkout.json</c> files on a slow timer so Checked Out and Available update
+    /// without Refresh Events. Not Past Races; not when Busy / selecting a pack.
+    /// </summary>
+    private bool WantsSessionLockPolling =>
+        Step == WizardStep.Session
+        && IsTimingRole
+        && !IsPastRacesBrowse
+        && !HasActive
+        && _cloud.IsAvailable
+        && !string.IsNullOrWhiteSpace(SelectedOffice);
+
+    private bool CanPollSessionLocksNow =>
+        WantsSessionLockPolling && !Busy;
+
+    private void UpdateSessionLockPolling()
+    {
+        if (WantsSessionLockPolling)
+        {
+            if (!_sessionLockPollTimer.IsEnabled)
+                _sessionLockPollTimer.Start();
+        }
+        else if (_sessionLockPollTimer.IsEnabled)
+        {
+            _sessionLockPollTimer.Stop();
+        }
+    }
+
+    private async Task PollSessionLocksOnceAsync()
+    {
+        if (!CanPollSessionLocksNow)
+            return;
+        if (!_sessionLockPollGate.Wait(0))
+            return;
+
+        try
+        {
+            var office = SelectedOffice!;
+            var sessions = _scanner.ListSessions(_settings.LibraryRoot, office);
+            await RefreshSessionLocksFromGraphAsync(sessions).ConfigureAwait(true);
+
+            // Left the list / signed out / started checkout while GETs were in flight.
+            if (!CanPollSessionLocksNow
+                || !string.Equals(SelectedOffice, office, StringComparison.OrdinalIgnoreCase))
+                return;
+
+            LoadSessions(office);
+        }
+        finally
+        {
+            _sessionLockPollGate.Release();
+        }
+    }
+
     private async Task PreparePastRacesListAsync()
     {
         if (IsAnnouncerRole)
@@ -2479,6 +2536,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(StepSubtitle));
         OnPropertyChanged(nameof(EmptySessionsTitle));
         OnPropertyChanged(nameof(EmptySessionsBody));
+        UpdateSessionLockPolling();
 
         if (Step != WizardStep.Session || string.IsNullOrWhiteSpace(SelectedOffice))
             return;
@@ -4493,11 +4551,14 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
             if (choice == TimerLockTakenOverChoice.ForceTakeOver)
             {
+                // PIN already verified inside AskLockTakenOver overlay.
                 await ForceReclaimAfterLockTakenAsync(active).ConfigureAwait(true);
                 return;
             }
 
-            await CloseLocalCopyAfterLockTakenAsync().ConfigureAwait(true);
+            if (choice == TimerLockTakenOverChoice.CloseLocalCopy)
+                await CloseLocalCopyAfterLockTakenAsync().ConfigureAwait(true);
+            // Dismissed (Escape / Back on PIN) — stay blocked; next heartbeat can re-prompt.
         }
         finally
         {
@@ -4632,15 +4693,6 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     private async Task ForceReclaimAfterLockTakenAsync(ActiveCheckout active)
     {
-        var pin = PromptPin("Enter Admin PIN to force take-over:");
-        if (pin is null)
-            return;
-        if (!string.Equals(pin, AppSettings.DefaultAdminPin, StringComparison.Ordinal))
-        {
-            Alert("Wrong PIN", "Admin PIN did not match. Event was not taken over.");
-            return;
-        }
-
         SelectedSession = new EventPackInfo
         {
             Office = active.Office,
@@ -4716,45 +4768,6 @@ public sealed class MainViewModel : INotifyPropertyChanged
             try { await _mirror.MirrorOnceAsync().ConfigureAwait(false); }
             catch { /* next timer tick retries */ }
         });
-    }
-
-    private static string? PromptPin(string message)
-    {
-        var window = new Window
-        {
-            Title = "Admin",
-            Width = 360,
-            Height = 180,
-            WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            ResizeMode = ResizeMode.NoResize,
-            Background = (System.Windows.Media.Brush)Application.Current.FindResource("BgBrush")
-        };
-        var panel = new System.Windows.Controls.StackPanel { Margin = new Thickness(20) };
-        panel.Children.Add(new System.Windows.Controls.TextBlock
-        {
-            Text = message,
-            TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 0, 0, 12)
-        });
-        var box = new System.Windows.Controls.PasswordBox();
-        panel.Children.Add(box);
-        var buttons = new System.Windows.Controls.StackPanel
-        {
-            Orientation = System.Windows.Controls.Orientation.Horizontal,
-            HorizontalAlignment = HorizontalAlignment.Right,
-            Margin = new Thickness(0, 16, 0, 0)
-        };
-        string? result = null;
-        var ok = new Button { Content = "OK", Style = (Style)Application.Current.FindResource("PrimaryButton"), Width = 90, IsDefault = true };
-        var cancel = new Button { Content = "Cancel", Style = (Style)Application.Current.FindResource("SecondaryButton"), Width = 90, Margin = new Thickness(8, 0, 0, 0), IsCancel = true };
-        ok.Click += (_, _) => { result = box.Password; window.DialogResult = true; };
-        cancel.Click += (_, _) => { window.DialogResult = false; };
-        buttons.Children.Add(ok);
-        buttons.Children.Add(cancel);
-        panel.Children.Add(buttons);
-        window.Content = panel;
-        box.Focus();
-        return window.ShowDialog() == true ? result : null;
     }
 
     private bool Set<T>(ref T field, T value, [CallerMemberName] string? name = null)
