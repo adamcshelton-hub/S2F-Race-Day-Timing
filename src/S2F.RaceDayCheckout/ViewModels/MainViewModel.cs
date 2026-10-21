@@ -4445,10 +4445,24 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     private async Task CloseLocalCopyAfterLockTakenAsync()
     {
+        // Mirror already paused on takeover — drain any in-flight copy so Active unlocks.
+        _mirror.Pause();
+        try { await _mirror.DrainAsync().ConfigureAwait(true); }
+        catch { /* best-effort */ }
+
         var result = _checkout.AbandonLocalActive(requireVendorsClosed: true);
         if (!result.Success && result.BlockingProcesses.Count > 0)
         {
-            if (!TimerDialog.Confirm(
+            // RSServer often lingers briefly after the window closes — wait before prompting.
+            ProgressText = "Waiting for RunScore / Timing & Scoring to exit…";
+            var wait = await _processGuard.WaitForBlockingClearedAsync(
+                TimeSpan.FromSeconds(12),
+                new Progress<string>(s => ProgressText = s)).ConfigureAwait(true);
+            if (wait.Kind == BlockingWaitKind.Cleared)
+            {
+                result = _checkout.AbandonLocalActive(requireVendorsClosed: true);
+            }
+            else if (!TimerDialog.Confirm(
                     OwnerWindow,
                     "Vendors Still Open",
                     result.Message + "\n\nClose them, then Close Local Copy again — or clear Active anyway (you must close RunScore / Timing & Scoring yourself).",
@@ -4458,8 +4472,10 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 // Stay blocked — next heartbeat re-prompts.
                 return;
             }
-
-            result = _checkout.AbandonLocalActive(requireVendorsClosed: false);
+            else
+            {
+                result = _checkout.AbandonLocalActive(requireVendorsClosed: false);
+            }
         }
 
         if (!result.Success)

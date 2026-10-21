@@ -464,6 +464,45 @@ public class CheckoutServiceTests
     }
 
     [Fact]
+    public async Task Checkout_ForceTakeover_PullsAutosaveOverlayEvenWhenSkipGraphDownload()
+    {
+        var (packPath, libraryRoot) = CreateFlatPack();
+        File.WriteAllText(Path.Combine(packPath, "RUNSCORE", "ENTRIES.FRM"), "stale-base");
+        // Simulate Graph pack download stamping base files newer than mid-race overlay would be.
+        File.SetLastWriteTimeUtc(Path.Combine(packPath, "RUNSCORE", "ENTRIES.FRM"), DateTime.UtcNow.AddMinutes(5));
+
+        var raceDay = Path.Combine(Path.GetTempPath(), "s2f-rd-" + Guid.NewGuid().ToString("N"));
+        var settings = new AppSettings { LibraryRoot = libraryRoot, RaceDayRoot = raceDay, DisplayName = "Adam" };
+        var paths = new PathService();
+        new CheckoutLockService(paths, new OtherMachine())
+            .Acquire(packPath, "Memphis", "2026 - Sample Event", "2026 - Sample Event", "Other",
+                new[] { "RUNSCORE" }, primaryEventFile: "Sample Event.event");
+
+        var cloud = new AutosaveOverlayCloudSync(packPath);
+        var service = new CheckoutService(
+            paths, new CheckoutLockService(paths, new FakeMachine()), new FileCopyService(),
+            new NoProcesses(), new ActiveCheckoutStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json")),
+            new InstantSync(), cloud: cloud);
+
+        var forced = await service.CheckoutAsync(new CheckoutRequest
+        {
+            Pack = PackInfo(packPath, "Memphis", "2026 - Sample Event"),
+            Settings = settings,
+            HolderName = "Adam",
+            ConfirmForceTakeover = true,
+            EmergencyReason = "Force take-over (Admin PIN)",
+            SkipGraphDownload = true
+        });
+
+        Assert.True(forced.Success, forced.Message);
+        Assert.True(cloud.OverlayDownloadCalls > 0, "reclaim must pull RUNSCORE\\_autosave from Graph");
+        Assert.Equal(
+            "live-autosave",
+            File.ReadAllText(Path.Combine(forced.Active!.ActivePath, "RUNSCORE", "ENTRIES.FRM")));
+        Assert.Contains("autosave", forced.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task Checkin_ClearsAutosaveFolder()
     {
         var (packPath, libraryRoot) = CreateFlatPack();
@@ -567,7 +606,7 @@ public class CheckoutServiceTests
             string libraryRoot, string graphDriveRoot, string relativeUnderLibrary, bool probeSessionLeaves = false, IProgress<string>? status = null, CancellationToken cancellationToken = default) =>
             Task.FromResult(new CloudSyncResult { Success = true });
 
-        public Task<CloudSyncResult> DownloadSessionAsync(
+        public virtual Task<CloudSyncResult> DownloadSessionAsync(
             string librarySessionPath, string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default, SessionDownloadOptions? options = null) =>
             Task.FromResult(new CloudSyncResult { Success = true, Message = "local" });
 
@@ -626,6 +665,47 @@ public class CheckoutServiceTests
                 FilesTransferred = onlyRelativePaths?.Count ?? 0,
                 Message = "ok"
             });
+    }
+
+    /// <summary>Writes mid-race overlay bytes only when reclaim asks for AutosaveOverlayOnly.</summary>
+    private sealed class AutosaveOverlayCloudSync : StubCloudSync
+    {
+        private readonly string _packPath;
+        public int OverlayDownloadCalls { get; private set; }
+
+        public AutosaveOverlayCloudSync(string packPath) => _packPath = packPath;
+
+        public override Task<CloudSyncResult> DownloadSessionAsync(
+            string librarySessionPath,
+            string libraryRoot,
+            string graphDriveRoot,
+            IProgress<string>? status = null,
+            CancellationToken cancellationToken = default,
+            SessionDownloadOptions? options = null)
+        {
+            if (options?.AutosaveOverlayOnly == true)
+            {
+                OverlayDownloadCalls++;
+                var autosave = Path.Combine(_packPath, "RUNSCORE", "_autosave");
+                Directory.CreateDirectory(autosave);
+                var frm = Path.Combine(autosave, "ENTRIES.FRM");
+                File.WriteAllText(frm, "live-autosave");
+                // Older than the "just downloaded" base pack — OverlayAllFiles must still win.
+                File.SetLastWriteTimeUtc(frm, DateTime.UtcNow.AddHours(-1));
+                return Task.FromResult(new CloudSyncResult
+                {
+                    Success = true,
+                    FilesTransferred = 1,
+                    Message = "overlay"
+                });
+            }
+
+            return Task.FromResult(new CloudSyncResult { Success = true, Message = "pack" });
+        }
+
+        public override Task<CloudSyncResult> UploadSessionAsync(
+            string librarySessionPath, string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default, IReadOnlyList<string>? onlyRelativePaths = null) =>
+            Task.FromResult(new CloudSyncResult { Success = true, Message = "ok" });
     }
 
     private sealed class FailingCloudSync : StubCloudSync
@@ -929,6 +1009,11 @@ public class CheckoutServiceTests
             string source, string destination, IProgress<CopyProgress>? progress = null,
             CancellationToken cancellationToken = default) =>
             _inner.MirrorNewerFilesAsync(source, destination, progress, cancellationToken);
+
+        public Task<IReadOnlyList<string>> OverlayAllFilesAsync(
+            string source, string destination, IProgress<CopyProgress>? progress = null,
+            CancellationToken cancellationToken = default) =>
+            _inner.OverlayAllFilesAsync(source, destination, progress, cancellationToken);
     }
 
     [Fact]

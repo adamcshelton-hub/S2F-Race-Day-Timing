@@ -325,7 +325,11 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
             // Graph does not support folder-as-ZIP on personal OneDrive (?format=zip is for Office→PDF).
             // Enumerate once, then download several files at a time.
             var slim = options?.Role == CheckoutRole.Announcer;
-            status?.Report(slim ? "Listing announcer files…" : "Listing race files…");
+            var overlayOnly = options?.AutosaveOverlayOnly == true;
+            status?.Report(
+                slim ? "Listing announcer files…"
+                : overlayOnly ? "Listing live autosave…"
+                : "Listing race files…");
             Directory.CreateDirectory(librarySessionPath);
             var jobs = new List<DownloadJob>();
             await CollectDownloadJobsAsync(
@@ -1498,9 +1502,18 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
 
         Directory.CreateDirectory(localPath);
         var slim = options?.Role == CheckoutRole.Announcer;
+        var overlayOnly = options?.AutosaveOverlayOnly == true;
         var underAppMeta = string.Equals(
             Path.GetFileName(localPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)),
             PathService.AppMetaFolderName,
+            StringComparison.OrdinalIgnoreCase);
+        var underRunScore = string.Equals(
+            Path.GetFileName(localPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)),
+            PathService.RunScoreFolderName,
+            StringComparison.OrdinalIgnoreCase);
+        var underAutosave = string.Equals(
+            Path.GetFileName(localPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)),
+            PathService.AutosaveFolderName,
             StringComparison.OrdinalIgnoreCase);
 
         foreach (var item in children)
@@ -1515,7 +1528,19 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
 
             if (item.IsFolder)
             {
-                if (slim)
+                if (overlayOnly)
+                {
+                    // Session → RUNSCORE → _autosave only (skip tombstones / everything else).
+                    if (!underRunScore && !underAutosave
+                        && !string.Equals(item.Name, PathService.RunScoreFolderName, StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    if (underRunScore
+                        && !string.Equals(item.Name, PathService.AutosaveFolderName, StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    if (item.Name.EndsWith(PathService.AutosaveTombstoneSuffix, StringComparison.OrdinalIgnoreCase))
+                        continue;
+                }
+                else if (slim)
                 {
                     if (!AnnouncerDownloadPolicy.ShouldRecurse(relative))
                         continue;
@@ -1535,7 +1560,13 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
             }
             else if (item.IsFile)
             {
-                if (slim && !AnnouncerDownloadPolicy.ShouldIncludeFile(relative, options?.AnnouncerEventFile))
+                if (overlayOnly)
+                {
+                    // Files only under RUNSCORE\_autosave (not RUNSCORE root, not session root).
+                    if (!underAutosave)
+                        continue;
+                }
+                else if (slim && !AnnouncerDownloadPolicy.ShouldIncludeFile(relative, options?.AnnouncerEventFile))
                     continue;
                 jobs.Add(new DownloadJob(childCloud, childLocal, item.Name, item.Size));
             }

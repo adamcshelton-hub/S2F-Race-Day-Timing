@@ -15,6 +15,12 @@ public sealed class PathService
     /// <summary>Leftover rename target when OneDrive blocks deleting <see cref="AutosaveFolderName"/>.</summary>
     public const string AutosaveTombstoneSuffix = ".~delete";
 
+    /// <summary>
+    /// Active session rename target when Close Local Copy cannot delete RUNSCORE
+    /// because another process still holds a handle (RSServer exited but files locked).
+    /// </summary>
+    public const string ActivePendingDeleteSuffix = ".~pending-delete";
+
     /// <summary>Hidden app metadata under each session (locks, history, finish backups).</summary>
     public const string AppMetaFolderName = "._checkin";
 

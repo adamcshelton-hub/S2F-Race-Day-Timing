@@ -23,6 +23,16 @@ public interface IFileCopyService
         string destination,
         IProgress<CopyProgress>? progress = null,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Always copy every file from source over destination (reclaim _autosave overlay).
+    /// Ignores mtimes — Graph downloads stamp local files with "now", so newer-only would skip.
+    /// </summary>
+    Task<IReadOnlyList<string>> OverlayAllFilesAsync(
+        string source,
+        string destination,
+        IProgress<CopyProgress>? progress = null,
+        CancellationToken cancellationToken = default);
 }
 
 public sealed class FileCopyService : IFileCopyService
@@ -62,6 +72,20 @@ public sealed class FileCopyService : IFileCopyService
 
         Directory.CreateDirectory(destination);
         var (_, paths) = await CopyRecursiveAsync(source, destination, onlyNewer: true, progress, cancellationToken);
+        return paths;
+    }
+
+    public async Task<IReadOnlyList<string>> OverlayAllFilesAsync(
+        string source,
+        string destination,
+        IProgress<CopyProgress>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (!Directory.Exists(source))
+            return Array.Empty<string>();
+
+        Directory.CreateDirectory(destination);
+        var (_, paths) = await CopyRecursiveAsync(source, destination, onlyNewer: false, progress, cancellationToken);
         return paths;
     }
 

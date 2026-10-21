@@ -192,7 +192,8 @@ public sealed class SharedFolderLinkService
 
     /// <summary>
     /// Delete Active tree safely: drop DB's reparse link first so recursive delete
-    /// cannot walk into OneDrive DB's.
+    /// cannot walk into OneDrive DB's. Retries, then renames aside if a handle is still open
+    /// (Close Local Copy must not leave the timer stuck after RSServer exits).
     /// </summary>
     public void DeleteActiveTreeSafe(string activeSessionPath)
     {
@@ -200,7 +201,93 @@ public sealed class SharedFolderLinkService
             return;
 
         RemoveDbsLinkIfPresent(activeSessionPath);
-        Directory.Delete(activeSessionPath, recursive: true);
+        ClearReadOnlyRecursive(activeSessionPath);
+
+        Exception? last = null;
+        for (var attempt = 1; attempt <= 4; attempt++)
+        {
+            try
+            {
+                if (!Directory.Exists(activeSessionPath))
+                    return;
+                TryDeleteContentsBestEffort(activeSessionPath);
+                Directory.Delete(activeSessionPath, recursive: true);
+                return;
+            }
+            catch (Exception ex)
+            {
+                last = ex;
+                Thread.Sleep(250 * attempt);
+                ClearReadOnlyRecursive(activeSessionPath);
+            }
+        }
+
+        // Rename out of Active so the app can drop checkout state even if a file is locked.
+        var tombstone = activeSessionPath.TrimEnd('\\', '/') + PathService.ActivePendingDeleteSuffix;
+        try
+        {
+            if (Directory.Exists(tombstone))
+            {
+                try { Directory.Delete(tombstone, recursive: true); }
+                catch { PathService.TryMarkHidden(tombstone); }
+            }
+
+            Directory.Move(activeSessionPath, tombstone);
+            PathService.TryMarkHidden(tombstone);
+            try { Directory.Delete(tombstone, recursive: true); }
+            catch
+            {
+                // Leftover hidden folder is OK — Active path is free for the next race.
+            }
+        }
+        catch (Exception ex)
+        {
+            throw new IOException(
+                "Could not clear the local Active folder: " + (last?.Message ?? ex.Message),
+                ex);
+        }
+    }
+
+    private static void ClearReadOnlyRecursive(string root)
+    {
+        try
+        {
+            foreach (var file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
+            {
+                try { File.SetAttributes(file, FileAttributes.Normal); }
+                catch { /* continue */ }
+            }
+        }
+        catch
+        {
+            // directory may already be gone
+        }
+    }
+
+    private static void TryDeleteContentsBestEffort(string root)
+    {
+        if (!Directory.Exists(root))
+            return;
+
+        foreach (var file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
+        {
+            try
+            {
+                File.SetAttributes(file, FileAttributes.Normal);
+                File.Delete(file);
+            }
+            catch
+            {
+                // locked — rename of the tree may still succeed
+            }
+        }
+
+        foreach (var dir in Directory.EnumerateDirectories(root, "*", SearchOption.AllDirectories)
+                     .OrderByDescending(d => d.Length))
+        {
+            try { Directory.Delete(dir, recursive: false); }
+            catch { /* parent delete / rename may still work */ }
+        }
     }
 
     private static bool TryCreateDirectoryLink(string linkPath, string targetPath, out string error)

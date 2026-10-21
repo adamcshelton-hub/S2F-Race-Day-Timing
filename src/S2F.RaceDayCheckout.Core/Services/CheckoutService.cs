@@ -269,12 +269,39 @@ public sealed class CheckoutService
             ? (dbsLink.Created ? " Active DB's is local; app publishes to OneDrive via Graph." : "")
             : $" DB's warning: {dbsLink.Message}";
 
-        // Mid-race failover: apply newer OneDrive RUNSCORE\_autosave only on reclaim/force.
+        // Mid-race failover: overlay OneDrive RUNSCORE\_autosave only on reclaim/force.
         // Normal checkout must NOT merge leftovers — Finish clears _autosave so post-race
         // OneDrive edits are not overwritten by stale mid-race mirrors.
+        // Graph pack download skips _autosave on cellular — reclaim must pull that folder
+        // even when SkipGraphDownload left the base pack on disk.
         var reclaim =
             eval.Outcome is LockAcquireOutcome.NeedsEmergencyConfirm or LockAcquireOutcome.SameMachineReclaim
             || request.ConfirmForceTakeover;
+        if (reclaim && useGraph)
+        {
+            statusProgress?.Report("Downloading live autosave from OneDrive…");
+            try
+            {
+                using var overlayCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                overlayCts.CancelAfter(GraphSyncPolicy.MidRacePublishBudget);
+                await _cloud.DownloadSessionAsync(
+                    request.Pack.Path,
+                    request.Settings.LibraryRoot,
+                    request.Settings.GraphDriveRoot,
+                    statusProgress,
+                    overlayCts.Token,
+                    SessionDownloadOptions.ForReclaimAutosaveOverlay());
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                // Weak cell — merge whatever is already local under Library \_autosave.
+            }
+            catch
+            {
+                // Non-fatal — merge local overlay if present.
+            }
+        }
+
         var autosaveMerged = 0;
         if (reclaim
             && Directory.Exists(autosavePath)
@@ -286,7 +313,9 @@ public sealed class CheckoutService
                 autosaveMerged = (int)p.FilesCopied;
                 progress?.Report(p);
             });
-            await _copy.MirrorNewerFilesAsync(autosavePath, activeRunScore, mergeProgress, cancellationToken);
+            // Force overlay (not newer-only): Graph downloads stamp mtime=now on the base pack,
+            // so MirrorNewerFiles would skip the live mid-race files.
+            await _copy.OverlayAllFilesAsync(autosavePath, activeRunScore, mergeProgress, cancellationToken);
             // Seed local Backup so RunScore alternate folder also has the recovered files.
             await _copy.MirrorNewerFilesAsync(activeRunScore, backupPath, cancellationToken: cancellationToken);
         }
