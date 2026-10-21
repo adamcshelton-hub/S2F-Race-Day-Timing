@@ -248,6 +248,27 @@
                 Visibility="{Binding IsTimingActive, Converter={StaticResource BoolVis}}">
           <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
             <StackPanel>
+              <!-- Another laptop took the lock — close vendors here, then Close Local Copy -->
+              <Border Background="#FDECEA" BorderBrush="{StaticResource DangerBrush}" BorderThickness="1"
+                      CornerRadius="8" Padding="16" Margin="0,0,0,16"
+                      Visibility="{Binding ShowLockTakenOverBanner, Converter={StaticResource BoolVis}}">
+                <StackPanel>
+                  <TextBlock Text="Another Laptop Took Over" FontSize="16" FontWeight="SemiBold"
+                             Margin="0,0,0,8"/>
+                  <TextBlock Text="{Binding LockTakenOverBannerText}" TextWrapping="Wrap" FontSize="14"
+                             Margin="0,0,0,12"/>
+                  <UniformGrid Columns="2" Margin="0,0,0,8">
+                    <Button Content="Close RunScore" Style="{StaticResource PrimaryButton}"
+                            Margin="0,0,8,8" Click="CloseRunScoreAfterTakeover_Click"/>
+                    <Button Content="Close Timing &amp; Scoring" Style="{StaticResource PrimaryButton}"
+                            Margin="8,0,0,8" Click="CloseTsAfterTakeover_Click"/>
+                  </UniformGrid>
+                  <Button Content="Close Local Copy" Style="{StaticResource SaveButton}"
+                          HorizontalAlignment="Stretch"
+                          Click="CloseLocalCopyAfterTakeover_Click"/>
+                </StackPanel>
+              </Border>
+
               <UniformGrid Columns="2" Margin="0,0,0,12">
                 <Button Content="Open RunScore" Style="{StaticResource PrimaryButton}"
                         Margin="0,0,8,8" Click="LaunchRunScore_Click"/>
@@ -273,6 +294,7 @@
 
               <Button Content="Finish" Style="{StaticResource SaveButton}"
                       HorizontalAlignment="Stretch" FontSize="18" MinHeight="56" Margin="0,0,0,16"
+                      IsEnabled="{Binding CanTapPrimaryActions}"
                       Click="Finish_Click"/>
 
               <!-- Persist Save As map while Active has no .event yet (dialog alone is easy to forget). -->

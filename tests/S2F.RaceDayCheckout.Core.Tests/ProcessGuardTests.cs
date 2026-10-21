@@ -53,4 +53,25 @@ public class ProcessGuardTests
         Assert.True(result.Success);
         Assert.Contains("No RunScore", result.Message, StringComparison.OrdinalIgnoreCase);
     }
+
+    [Theory]
+    [InlineData("TimingAndScoring64", true)]
+    [InlineData("mylaps_ts_launch", true)]
+    [InlineData("Orbits", true)]
+    [InlineData("RSServer", false)]
+    [InlineData("powershell", false)]
+    public void IsTimingAndScoringProcess_ExcludesRunScore(string name, bool expected) =>
+        Assert.Equal(expected, ProcessGuard.IsTimingAndScoringProcess(name));
+
+    [Fact]
+    public void TryCloseRunScoreForAbandonedCheckout_NoOpWhenNoneRunning()
+    {
+        var guard = new ProcessGuard();
+        if (guard.GetRunScoreProcessNames().Count > 0)
+            return;
+
+        var result = guard.TryCloseRunScoreForAbandonedCheckout();
+        Assert.True(result.Success);
+        Assert.Contains("not running", result.Message, StringComparison.OrdinalIgnoreCase);
+    }
 }

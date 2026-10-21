@@ -168,6 +168,144 @@ public sealed class ProcessGuard : IProcessGuard
                || processName.Contains("rsserver", StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>Timing &amp; Scoring / Orbits — not RunScore.</summary>
+    public static bool IsTimingAndScoringProcess(string processName)
+    {
+        if (string.IsNullOrWhiteSpace(processName) || IsRunScoreProcess(processName))
+            return false;
+
+        return processName.Contains("TimingAndScoring", StringComparison.OrdinalIgnoreCase)
+               || processName.Contains("MyLapsTiming", StringComparison.OrdinalIgnoreCase)
+               || processName.Equals("mylaps_ts_launch", StringComparison.OrdinalIgnoreCase)
+               || processName.Equals("Orbits", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// User clicked Close RunScore after another laptop took the lock — request window close,
+    /// then force-end leftovers so Close Local Copy can unlock Active files.
+    /// </summary>
+    public CloseVendorResult TryCloseRunScoreForAbandonedCheckout() =>
+        TryCloseMatchingProcesses(IsRunScoreProcess, productLabel: "RunScore");
+
+    /// <summary>User clicked Close Timing &amp; Scoring on the lock-taken-over screen.</summary>
+    public CloseVendorResult TryCloseTimingAndScoringForAbandonedCheckout() =>
+        TryCloseMatchingProcesses(IsTimingAndScoringProcess, productLabel: "Timing & Scoring");
+
+    private CloseVendorResult TryCloseMatchingProcesses(Func<string, bool> match, string productLabel)
+    {
+        var targets = new List<Process>();
+        try
+        {
+            foreach (var process in Process.GetProcesses())
+            {
+                try
+                {
+                    if (!match(process.ProcessName))
+                    {
+                        process.Dispose();
+                        continue;
+                    }
+
+                    targets.Add(process);
+                }
+                catch
+                {
+                    try { process.Dispose(); } catch { /* ignore */ }
+                }
+            }
+
+            if (targets.Count == 0)
+            {
+                return new CloseVendorResult
+                {
+                    Success = true,
+                    Message = productLabel + " is not running."
+                };
+            }
+
+            var closedWindows = 0;
+            foreach (var process in targets)
+            {
+                try
+                {
+                    if (process.MainWindowHandle != IntPtr.Zero && process.CloseMainWindow())
+                        closedWindows++;
+                }
+                catch
+                {
+                    // access denied / exited
+                }
+            }
+
+            // Give a graceful close a few seconds (RSServer often lags the UI).
+            var deadline = DateTime.UtcNow.AddSeconds(6);
+            while (DateTime.UtcNow < deadline)
+            {
+                Thread.Sleep(400);
+                if (!targets.Any(p =>
+                    {
+                        try { return !p.HasExited; }
+                        catch { return false; }
+                    }))
+                    break;
+            }
+
+            var ended = new List<string>();
+            var failed = new List<string>();
+            foreach (var process in targets)
+            {
+                try
+                {
+                    if (process.HasExited)
+                    {
+                        ended.Add(process.ProcessName);
+                        continue;
+                    }
+
+                    process.Kill(entireProcessTree: false);
+                    ended.Add(process.ProcessName);
+                }
+                catch
+                {
+                    try { failed.Add(process.ProcessName); }
+                    catch { /* ignore */ }
+                }
+            }
+
+            Thread.Sleep(400);
+            var still = EnumerateMatching(match).Select(m => m.Name)
+                .Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(n => n).ToList();
+            if (still.Count > 0)
+            {
+                return new CloseVendorResult
+                {
+                    Success = false,
+                    ClosedProcessNames = ended.Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(n => n).ToList(),
+                    Message = "Tried to close " + productLabel + ", but still detected: "
+                              + string.Join(", ", still)
+                              + ". Use Task Manager if needed."
+                };
+            }
+
+            var names = ended.Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(n => n).ToList();
+            return new CloseVendorResult
+            {
+                Success = true,
+                ClosedProcessNames = names,
+                Message = closedWindows > 0
+                    ? "Closed " + productLabel + " (" + string.Join(", ", names) + ")."
+                    : "Ended " + productLabel + " (" + string.Join(", ", names) + ")."
+            };
+        }
+        finally
+        {
+            foreach (var process in targets)
+            {
+                try { process.Dispose(); } catch { /* ignore */ }
+            }
+        }
+    }
+
     /// <summary>
     /// True when every name in <paramref name="blockingNames"/> is a RunScore process
     /// (safe to offer End RSServer — never for Timing &amp; Scoring / Orbits alone).
@@ -339,4 +477,12 @@ public sealed class EndHeadlessRunScoreResult
     public bool Success { get; init; }
     public string Message { get; init; } = string.Empty;
     public IReadOnlyList<string> EndedProcessNames { get; init; } = Array.Empty<string>();
+}
+
+/// <summary>Result of user-clicked Close RunScore / Close Timing &amp; Scoring on lock-taken-over.</summary>
+public sealed class CloseVendorResult
+{
+    public bool Success { get; init; }
+    public string Message { get; init; } = string.Empty;
+    public IReadOnlyList<string> ClosedProcessNames { get; init; } = Array.Empty<string>();
 }

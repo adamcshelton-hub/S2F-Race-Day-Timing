@@ -114,6 +114,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private bool _lockTakenOverPromptOpen;
     /// <summary>After we detect a lost lock, skip cloud writes until user Close Local / Force.</summary>
     private bool _cloudWritesBlockedUntilResolved;
+    /// <summary>
+    /// After "I'll Close RunScore First", do not re-open the modal until this time —
+    /// timer needs the UI free to close vendors, then uses the Active banner.
+    /// </summary>
+    private DateTimeOffset? _lockTakenOverSnoozeUntil;
     /// <summary>Takeover confirms from SelectSession (before pack download) — reused by CheckoutAsync for the same path only.</summary>
     private bool _checkoutConfirmForce;
     private bool _checkoutConfirmEmergency;
@@ -493,6 +498,17 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public bool ShowSessionLock => IsTimingRole;
     public bool IsTimingActive => IsActiveStep && Active is { Role: not CheckoutRole.Announcer };
     public bool IsAnnouncerActive => IsActiveStep && Active?.Role == CheckoutRole.Announcer;
+
+    /// <summary>
+    /// Another laptop holds the lock — show Close Local Copy on Active instead of a blocking modal loop.
+    /// </summary>
+    public bool ShowLockTakenOverBanner =>
+        IsTimingActive && _cloudWritesBlockedUntilResolved;
+
+    public string LockTakenOverBannerText =>
+        "Another laptop took this race. Cloud upload is paused so you cannot overwrite their work.\n\n"
+        + "Close RunScore and Timing & Scoring, then tap Close Local Copy. "
+        + "To take the race back later, choose it from the event list and use Force Take Over there.";
     public bool IsAdminSetupNewEvent => IsAdminStep && _adminSection == AdminSection.SetupNewEvent;
     public bool IsAdminEditCurrentEvent => IsAdminStep && _adminSection == AdminSection.EditCurrentEvent;
     public bool IsAdminSettings => IsAdminStep && _adminSection == AdminSection.Settings;
@@ -731,6 +747,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 OnPropertyChanged(nameof(ShowRolePicker));
                 OnPropertyChanged(nameof(IsTimingActive));
                 OnPropertyChanged(nameof(IsAnnouncerActive));
+                OnPropertyChanged(nameof(ShowLockTakenOverBanner));
                 NotifyActiveSaveAsGuide();
                 UpdateSessionLockPolling();
             }
@@ -765,7 +782,10 @@ public sealed class MainViewModel : INotifyPropertyChanged
         set
         {
             if (Set(ref _busy, value))
+            {
                 OnPropertyChanged(nameof(BusyKeepOpenVisible));
+                OnPropertyChanged(nameof(CanTapPrimaryActions));
+            }
         }
     }
 
@@ -781,6 +801,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
     }
 
     public bool BusyKeepOpenVisible => Busy && !BusyNeedsAcknowledge;
+
+    /// <summary>False while the busy overlay is up — Finish disables so a laggy click is not “ignored.”</summary>
+    public bool CanTapPrimaryActions => !Busy;
 
     private void SetBusy(string title, string detail = "")
     {
@@ -811,6 +834,19 @@ public sealed class MainViewModel : INotifyPropertyChanged
         Busy = false;
         BusyTitle = string.Empty;
         ProgressText = string.Empty;
+    }
+
+    /// <summary>Let WPF paint the busy overlay before a Graph/lock call that can take seconds.</summary>
+    private static async Task YieldUiAsync()
+    {
+        var dispatcher = Application.Current?.Dispatcher;
+        if (dispatcher is null)
+        {
+            await Task.Yield();
+            return;
+        }
+
+        await dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);
     }
 
     private static Window? OwnerWindow =>
@@ -1025,7 +1061,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
         {
             // Restart / same-machine reclaim — treat as race-day, not Admin setup checkout.
             _finishReturnsToAdmin = false;
-            _cloudWritesBlockedUntilResolved = false;
+            SetCloudWritesBlocked(false);
+            ClearLockTakenOverSnooze();
             Step = WizardStep.Active;
             Status = Active.Role == CheckoutRole.Announcer
                 ? "Announcer T&S files loaded — tap Done when you're finished."
@@ -1648,17 +1685,28 @@ public sealed class MainViewModel : INotifyPropertyChanged
         if (Active is null)
             return;
 
+        // Ignore double-taps while the busy overlay is already up (except app-close Finish).
+        if (Busy && !closingApp)
+            return;
+
         if (Active.Role == CheckoutRole.Announcer)
         {
             await DoneAnnouncerAsync().ConfigureAwait(true);
             return;
         }
 
+        // Show busy immediately — Graph lock confirm can take a few seconds on cellular.
+        SetBusy(
+            closingApp ? "Closing — saving your race" : "Saving your race",
+            "Confirming this laptop still holds the race…");
+        await YieldUiAsync().ConfigureAwait(true);
+
         // Never Finish-upload over another laptop. A failed OneDrive check is not a takeover.
         switch (await CheckLockOwnershipAsync(caller: "finish").ConfigureAwait(true))
         {
             case LockCloudVerdict.TakenOver:
                 RaceDayTrace.Write("lock takeover prompt from finish");
+                ClearBusy();
                 await HandleLockTakenOverAsync().ConfigureAwait(true);
                 return;
             case LockCloudVerdict.Unconfirmed:
@@ -1669,12 +1717,14 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
 
         // Optional: confirm main timing .event when files are present. Missing .event does not block Finish.
+        ClearBusy();
         if (!await ConfirmPrimaryEventBeforeFinishAsync().ConfigureAwait(true))
             return;
 
         SetBusy(
             closingApp ? "Closing — saving your race" : "Saving your race",
             "Please wait…\nDo not shut down this laptop yet.");
+        await YieldUiAsync().ConfigureAwait(true);
 
         // Pause live mirror so it cannot recreate RUNSCORE\_autosave while Finish deletes it.
         _mirrorTimer.Stop();
@@ -1776,26 +1826,22 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 return;
             }
 
+            var officeAfterFinish = Active?.Office ?? SelectedOffice;
             Active = null;
             SelectedSession = null;
             SelectedEventFile = null;
-            LoadOffices();
 
             var returnToAdmin = _finishReturnsToAdmin;
             _finishReturnsToAdmin = false;
             if (returnToAdmin)
             {
+                LoadOffices();
                 EnterAdminSetup("Finish complete — ready for the next setup.");
-            }
-            else if (Offices.Count == 1)
-            {
-                await SelectOfficeAsync(Offices[0]);
-                Status = string.Empty;
             }
             else
             {
-                Step = WizardStep.Office;
-                Status = string.Empty;
+                // Back to that office's event list (not the office picker), when we know which office.
+                await ReturnToRaceDayOfficeListAsync(officeAfterFinish).ConfigureAwait(true);
             }
 
             // AwaitingOneDriveConfirm here means RetainActiveForCloudRetry was already handled above.
@@ -2706,15 +2752,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 return;
             }
 
+            var officeAfterDone = Active?.Office ?? SelectedOffice;
             Active = null;
             SelectedSession = null;
             SelectedEventFile = null;
-            LoadOffices();
-            if (Offices.Count == 1)
-                await SelectOfficeAsync(Offices[0]).ConfigureAwait(true);
-            else
-                Step = WizardStep.Office;
-            Status = string.Empty;
+            await ReturnToRaceDayOfficeListAsync(officeAfterDone).ConfigureAwait(true);
             await ShowBusyResultAsync("Done", result.Message).ConfigureAwait(true);
         }
         catch (Exception ex)
@@ -4470,6 +4512,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
         switch (await CheckLockOwnershipAsync(caller: "heartbeat").ConfigureAwait(true))
         {
             case LockCloudVerdict.TakenOver:
+                if (IsLockTakenOverSnoozed)
+                {
+                    RaceDayTrace.Write("lock takeover prompt snoozed — banner on Active");
+                    return;
+                }
+
                 RaceDayTrace.Write("lock takeover prompt from heartbeat");
                 await HandleLockTakenOverAsync().ConfigureAwait(true);
                 return;
@@ -4542,7 +4590,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
             return;
         }
 
-        _cloudWritesBlockedUntilResolved = true;
+        SetCloudWritesBlocked(true);
         _mirror.Pause();
 
         var other = _locks.TryGetOtherMachineActiveLock(active.LibrarySessionPath);
@@ -4556,24 +4604,71 @@ public sealed class MainViewModel : INotifyPropertyChanged
             var choice = TimerDialog.AskLockTakenOver(
                 OwnerWindow,
                 other?.HolderName ?? "Another timer",
-                other?.MachineName ?? "another laptop");
+                other?.MachineName ?? "another laptop",
+                closeRunScore: () => _processGuard.TryCloseRunScoreForAbandonedCheckout().Message,
+                closeTimingAndScoring: () => _processGuard.TryCloseTimingAndScoringForAbandonedCheckout().Message);
             RaceDayTrace.Write($"lock takeover choice={choice}");
 
-            if (choice == TimerLockTakenOverChoice.ForceTakeOver)
+            if (choice == TimerLockTakenOverChoice.CloseLocalCopy)
             {
-                // PIN already verified inside AskLockTakenOver overlay.
-                await ForceReclaimAfterLockTakenAsync(active).ConfigureAwait(true);
+                ClearLockTakenOverSnooze();
+                await CloseLocalCopyAfterLockTakenAsync().ConfigureAwait(true);
                 return;
             }
 
-            if (choice == TimerLockTakenOverChoice.CloseLocalCopy)
-                await CloseLocalCopyAfterLockTakenAsync().ConfigureAwait(true);
-            // Dismissed (Escape / Back on PIN) — stay blocked; next heartbeat can re-prompt.
+            // Not Now / Dismissed — free the UI; banner keeps Close Local Copy (no Force here).
+            SnoozeLockTakenOverPrompt();
+            Status = "Close RunScore and Timing & Scoring, then tap Close Local Copy.";
         }
         finally
         {
             _lockTakenOverPromptOpen = false;
         }
+    }
+
+    private bool IsLockTakenOverSnoozed =>
+        _lockTakenOverSnoozeUntil is { } until && until > DateTimeOffset.UtcNow;
+
+    private void SnoozeLockTakenOverPrompt()
+    {
+        // Long enough to close vendors and use the banner; heartbeat will not steal focus.
+        _lockTakenOverSnoozeUntil = DateTimeOffset.UtcNow.AddMinutes(10);
+        OnPropertyChanged(nameof(ShowLockTakenOverBanner));
+    }
+
+    private void ClearLockTakenOverSnooze()
+    {
+        _lockTakenOverSnoozeUntil = null;
+        OnPropertyChanged(nameof(ShowLockTakenOverBanner));
+    }
+
+    private void SetCloudWritesBlocked(bool blocked)
+    {
+        _cloudWritesBlockedUntilResolved = blocked;
+        OnPropertyChanged(nameof(ShowLockTakenOverBanner));
+    }
+
+    public void CloseRunScoreFromBanner()
+    {
+        if (!_cloudWritesBlockedUntilResolved)
+            return;
+        Status = _processGuard.TryCloseRunScoreForAbandonedCheckout().Message;
+    }
+
+    public void CloseTimingAndScoringFromBanner()
+    {
+        if (!_cloudWritesBlockedUntilResolved)
+            return;
+        Status = _processGuard.TryCloseTimingAndScoringForAbandonedCheckout().Message;
+    }
+
+    /// <summary>Active banner — Close Local Copy after the timer closed RunScore / T&amp;S.</summary>
+    public async Task CloseLocalCopyFromBannerAsync()
+    {
+        if (!_cloudWritesBlockedUntilResolved || Active is null)
+            return;
+        ClearLockTakenOverSnooze();
+        await CloseLocalCopyAfterLockTakenAsync().ConfigureAwait(true);
     }
 
     private async Task CloseLocalCopyAfterLockTakenAsync()
@@ -4623,18 +4718,43 @@ public sealed class MainViewModel : INotifyPropertyChanged
             return;
         }
 
+        var officeAfterClose = Active?.Office ?? SelectedOffice;
         Active = null;
         SelectedSession = null;
         SelectedEventFile = null;
         _finishReturnsToAdmin = false;
-        _cloudWritesBlockedUntilResolved = false;
+        SetCloudWritesBlocked(false);
+        ClearLockTakenOverSnooze();
         _mirror.Resume();
-        LoadOffices();
-        if (Offices.Count == 1)
-            await SelectOfficeAsync(Offices[0]).ConfigureAwait(true);
-        else
-            Step = WizardStep.Office;
+        await ReturnToRaceDayOfficeListAsync(officeAfterClose).ConfigureAwait(true);
         Status = result.Message;
+    }
+
+    /// <summary>
+    /// After Finish / Done / Close Local Copy — reopen that office's event list when known;
+    /// otherwise single-office auto-advance or the office picker.
+    /// </summary>
+    private async Task ReturnToRaceDayOfficeListAsync(string? preferredOffice)
+    {
+        LoadOffices();
+        var office = preferredOffice?.Trim();
+        if (!string.IsNullOrEmpty(office)
+            && Offices.Any(o => string.Equals(o, office, StringComparison.OrdinalIgnoreCase)))
+        {
+            await SelectOfficeAsync(office).ConfigureAwait(true);
+            Status = string.Empty;
+            return;
+        }
+
+        if (Offices.Count == 1)
+        {
+            await SelectOfficeAsync(Offices[0]).ConfigureAwait(true);
+            Status = string.Empty;
+            return;
+        }
+
+        Step = WizardStep.Office;
+        Status = string.Empty;
     }
 
     /// <summary>
@@ -4768,69 +4888,6 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
         SetBusy(busyTitle, "Getting your race ready…");
         return true;
-    }
-
-    private async Task ForceReclaimAfterLockTakenAsync(ActiveCheckout active)
-    {
-        if (!await EnsureVendorsClosedForLiveOverlayAsync("Force Take Over").ConfigureAwait(true))
-            return;
-
-        SelectedSession = new EventPackInfo
-        {
-            Office = active.Office,
-            ParentEvent = active.ParentEvent,
-            SessionName = active.SessionName,
-            RelativePath = active.RelativePath,
-            Path = active.LibrarySessionPath,
-            EventFiles = EventFileSelector.ListEventFiles(active.LibrarySessionPath),
-            PrimaryEventFile = active.PrimaryEventFile
-        };
-        SelectedEventFile = active.PrimaryEventFile ?? string.Empty;
-        _sessionPackPulled = SessionPackLooksUsable(active.LibrarySessionPath);
-        _checkoutRole = CheckoutRole.Timing;
-        OnPropertyChanged(nameof(IsTimingRole));
-        OnPropertyChanged(nameof(IsAnnouncerRole));
-
-        SetBusy("Force Take Over", "Reclaiming this race on this laptop…");
-        try
-        {
-            var progress = new Progress<CopyProgress>(p =>
-                ProgressText = p.FilesCopied > 0 ? $"Copying race files… ({p.FilesCopied})" : "Getting your race ready…");
-            var statusProgress = new Progress<string>(s => ProgressText = FriendlyProgress(s));
-            var result = await _checkout.CheckoutAsync(new CheckoutRequest
-            {
-                Pack = SelectedSession,
-                Settings = _settings,
-                HolderName = DisplayName.Trim(),
-                PrimaryEventFileOverride = SelectedEventFile,
-                ConfirmForceTakeover = true,
-                EmergencyReason = "Force take-over (Admin PIN) — lock was held by another laptop after this machine woke",
-                SkipGraphDownload = _sessionPackPulled
-            }, progress, statusProgress).ConfigureAwait(true);
-
-            if (!result.Success)
-            {
-                await ShowBusyResultAsync("Couldn't take over", result.Message).ConfigureAwait(true);
-                return;
-            }
-
-            Active = result.Active;
-            Step = WizardStep.Active;
-            _cloudWritesBlockedUntilResolved = false;
-            _mirror.Resume();
-            KickAutosaveMirror();
-            Status = string.Empty;
-            await ShowBusyResultAsync("Force take-over complete", result.Message).ConfigureAwait(true);
-        }
-        catch (Exception ex)
-        {
-            await ShowBusyResultAsync("Couldn't take over", ex.Message).ConfigureAwait(true);
-        }
-        finally
-        {
-            if (Busy && !BusyNeedsAcknowledge)
-                ClearBusy();
-        }
     }
 
     /// <summary>

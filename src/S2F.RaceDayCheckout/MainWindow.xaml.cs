@@ -314,6 +314,15 @@ public partial class MainWindow : Window
 
     private void OpenWorkingFolder_Click(object sender, RoutedEventArgs e) => _vm.OpenWorkingFolder();
 
+    private void CloseRunScoreAfterTakeover_Click(object sender, RoutedEventArgs e) =>
+        _vm.CloseRunScoreFromBanner();
+
+    private void CloseTsAfterTakeover_Click(object sender, RoutedEventArgs e) =>
+        _vm.CloseTimingAndScoringFromBanner();
+
+    private async void CloseLocalCopyAfterTakeover_Click(object sender, RoutedEventArgs e) =>
+        await _vm.CloseLocalCopyFromBannerAsync();
+
     private async void Finish_Click(object sender, RoutedEventArgs e) => await _vm.FinishAsync();
 
     private async void Done_Click(object sender, RoutedEventArgs e) => await _vm.DoneAnnouncerAsync();
