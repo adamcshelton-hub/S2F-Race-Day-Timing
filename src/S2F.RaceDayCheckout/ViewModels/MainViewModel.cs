@@ -588,6 +588,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public bool IsAdminEventsOffice => IsAdminEditCurrentEvent && _adminEventsSubStep == AdminEventsSubStep.Office;
     public bool IsAdminEventsSession => IsAdminEditCurrentEvent && _adminEventsSubStep == AdminEventsSubStep.Session;
     public bool IsAdminEventsAssign => IsAdminEditCurrentEvent && _adminEventsSubStep == AdminEventsSubStep.Assign;
+    /// <summary>
+    /// Past Races path under the list (live office lists rely on StepSubtitle — same density as race-day).
+    /// </summary>
+    public bool ShowAdminEventsPathBreadcrumb =>
+        IsAdminEventsSession && IsAdminPastRacesBrowse;
     public bool ShowAdminListFilter =>
         IsAdminEventsOffice || IsAdminEventsSession
         || IsAdminNewEventOffice || IsAdminNewEventSource;
@@ -1278,10 +1283,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
     /// <summary>
     /// Office pick: live offices Graph-index session leaves once; Past Races lists
     /// <b>one folder level</b> only (cellular).
+    /// Switches to the event list immediately so a second double-click cannot land on an event
+    /// that appears under the cursor after a Graph / lock delay.
     /// </summary>
     public async Task SelectOfficeAsync(string? office)
     {
-        if (HasActive || string.IsNullOrWhiteSpace(office))
+        if (HasActive || Busy || string.IsNullOrWhiteSpace(office))
             return;
 
         if (!EnsureGraphSignedInToBegin("choose an office"))
@@ -1290,26 +1297,45 @@ public sealed class MainViewModel : INotifyPropertyChanged
         SelectedOffice = office;
         _pastRacesRelative = string.Empty;
         ClearRaceDayListFilter();
+        // Clear before Step change so the session list is empty while we load — not stale rows.
+        Sessions.Clear();
+        ApplyRaceDayListFilter();
+        OnPropertyChanged(nameof(HasSessions));
+        OnPropertyChanged(nameof(ShowEmptySessions));
+        OnPropertyChanged(nameof(EmptySessionsTitle));
+        OnPropertyChanged(nameof(EmptySessionsBody));
         OnPropertyChanged(nameof(IsPastRacesBrowse));
         OnPropertyChanged(nameof(PastRacesBreadcrumb));
         OnPropertyChanged(nameof(StepTitle));
         OnPropertyChanged(nameof(StepSubtitle));
 
-        if (IsPastRacesBrowse)
-        {
-            // force:false — reuse this-run Graph cache (shared with Admin Past Races).
-            await RefreshPastRacesLevelAsync(force: false).ConfigureAwait(true);
-            await PreparePastRacesListAsync().ConfigureAwait(true);
-        }
-        else
-        {
-            await EnsureOfficeSessionsFromGraphIfNeededAsync(office).ConfigureAwait(true);
-            await LoadLiveOfficeSessionsAsync(office).ConfigureAwait(true);
-        }
-
+        // Leave the office list before any await — paint first so lag cannot look like "nothing happened."
         Step = WizardStep.Session;
-        // Step may already be Session (re-pick) — still start/stop the lock poll for live vs Past Races.
         UpdateSessionLockPolling();
+        SetBusy($"Loading events for {office}…");
+        await YieldUiAsync().ConfigureAwait(true);
+
+        try
+        {
+            if (IsPastRacesBrowse)
+            {
+                // force:false — reuse this-run Graph cache (shared with Admin Past Races).
+                await RefreshPastRacesLevelAsync(force: false).ConfigureAwait(true);
+                await PreparePastRacesListAsync().ConfigureAwait(true);
+            }
+            else
+            {
+                await EnsureOfficeSessionsFromGraphIfNeededAsync(office, manageBusy: false)
+                    .ConfigureAwait(true);
+                await LoadLiveOfficeSessionsAsync(office).ConfigureAwait(true);
+            }
+        }
+        finally
+        {
+            if (Busy && !BusyNeedsAcknowledge)
+                ClearBusy();
+            UpdateSessionLockPolling();
+        }
     }
 
     public void SelectSession(EventPackInfo? session) =>
@@ -1320,7 +1346,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
     /// </summary>
     public async Task SelectSessionAsync(EventPackInfo? session)
     {
-        if (HasActive || session is null)
+        // Busy covers office→events load — ignore laggy double-clicks that land on a row.
+        if (HasActive || Busy || session is null)
             return;
 
         if (!EnsureGraphSignedInToBegin("load a race"))
@@ -2345,7 +2372,10 @@ public sealed class MainViewModel : INotifyPropertyChanged
     /// Once per office per app run: Graph-index that office only (add + prune moved events).
     /// Skipped when offline / already indexed this run — cellular, one tree at a time.
     /// </summary>
-    private async Task EnsureOfficeSessionsFromGraphIfNeededAsync(string office)
+    /// <param name="manageBusy">
+    /// False when the caller already owns the busy overlay (office→events transition).
+    /// </param>
+    private async Task EnsureOfficeSessionsFromGraphIfNeededAsync(string office, bool manageBusy = true)
     {
         if (!_cloud.IsAvailable || HasActive)
             return;
@@ -2354,8 +2384,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
         try
         {
-            Busy = true;
-            BusyTitle = $"Loading events for {office}…";
+            if (manageBusy)
+            {
+                Busy = true;
+                BusyTitle = $"Loading events for {office}…";
+            }
             var result = await _cloud.RefreshOfficeSessionsAsync(
                 _settings.LibraryRoot,
                 _settings.GraphDriveRoot,
@@ -2374,7 +2407,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
         finally
         {
-            Busy = false;
+            if (manageBusy)
+                Busy = false;
         }
     }
 
@@ -3383,7 +3417,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     public async Task SelectAdminOfficeAsync(string? office)
     {
-        if (string.IsNullOrWhiteSpace(office) || !IsAdminEditCurrentEvent)
+        if (Busy || string.IsNullOrWhiteSpace(office) || !IsAdminEditCurrentEvent)
             return;
 
         ResetAdminAssignUi();
@@ -3393,32 +3427,44 @@ public sealed class MainViewModel : INotifyPropertyChanged
         _adminPastRacesRelative = string.Empty;
         _adminListFilter = string.Empty;
         OnPropertyChanged(nameof(AdminListFilter));
-        // Sub-step before ApplyAdminListFilter so the session source fills AdminSessions.
+        // Sub-step before any await so the office list is gone — paint before Graph / disk work.
         _adminEventsSubStep = AdminEventsSubStep.Session;
         NotifyAdminSection();
+        SetBusy($"Loading events for {office}…");
+        await YieldUiAsync().ConfigureAwait(true);
 
-        if (IsAdminPastRacesBrowse)
+        try
         {
-            // Same nested browse + same this-run cache as race-day Past Races (no admin: key).
-            await RefreshPastRacesLevelAtAsync(
-                _adminPastRacesRelative,
-                PastRacesCacheKey(_adminPastRacesRelative),
-                force: false).ConfigureAwait(true);
-            LoadAdminPastRacesBrowser();
+            if (IsAdminPastRacesBrowse)
+            {
+                // Same nested browse + same this-run Graph cache as race-day Past Races (no admin: key).
+                await RefreshPastRacesLevelAtAsync(
+                    _adminPastRacesRelative,
+                    PastRacesCacheKey(_adminPastRacesRelative),
+                    force: false).ConfigureAwait(true);
+                LoadAdminPastRacesBrowser();
+            }
+            else
+            {
+                // Same EnsureOfficeSessions cache as Timing — skip Graph if that office was already indexed.
+                await EnsureOfficeSessionsFromGraphIfNeededAsync(office, manageBusy: false)
+                    .ConfigureAwait(true);
+                foreach (var session in _scanner.ListSessions(_settings.LibraryRoot, office))
+                    _adminSessionSource.Add(session);
+                ApplyAdminListFilter();
+            }
         }
-        else
+        finally
         {
-            // Same EnsureOfficeSessions cache as Timing — skip Graph if that office was already indexed.
-            await EnsureOfficeSessionsFromGraphIfNeededAsync(office).ConfigureAwait(true);
-            foreach (var session in _scanner.ListSessions(_settings.LibraryRoot, office))
-                _adminSessionSource.Add(session);
-            ApplyAdminListFilter();
+            if (Busy && !BusyNeedsAcknowledge)
+                ClearBusy();
         }
     }
 
     public async Task SelectAdminSessionAsync(EventPackInfo? session)
     {
-        if (session is null || !IsAdminEditCurrentEvent)
+        // Busy covers office→events load — ignore laggy double-clicks that land on a row.
+        if (Busy || session is null || !IsAdminEditCurrentEvent)
             return;
 
         if (session.IsNavigationFolder)
@@ -3824,6 +3870,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(IsAdminEventsOffice));
         OnPropertyChanged(nameof(IsAdminEventsSession));
         OnPropertyChanged(nameof(IsAdminEventsAssign));
+        OnPropertyChanged(nameof(ShowAdminEventsPathBreadcrumb));
         OnPropertyChanged(nameof(IsAdminSessionRaceGroupLeaf));
         OnPropertyChanged(nameof(ShowAddRaceToGroup));
         OnPropertyChanged(nameof(ShowMoveToPastRaces));

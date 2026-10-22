@@ -355,7 +355,360 @@
         <!-- ADMIN — Setup New Event | Edit Current Event | Settings -->
         <DockPanel Grid.Row="1" LastChildFill="True"
                    Visibility="{Binding IsAdminStep, Converter={StaticResource BoolVis}}">
-          <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+          <!-- Tab strip — docked so lists fill like race-day (single scrollbar, no MaxHeight). -->
+          <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,10">
+            <Button Content="Setup New Event" MinWidth="150" Margin="0,0,10,0" Click="AdminSetupNewEvent_Click">
+              <Button.Style>
+                <Style TargetType="Button" BasedOn="{StaticResource SecondaryButton}">
+                  <Style.Triggers>
+                    <DataTrigger Binding="{Binding IsAdminSetupNewEvent}" Value="True">
+                      <Setter Property="Background" Value="{StaticResource AccentBrush}"/>
+                      <Setter Property="Foreground" Value="White"/>
+                      <Setter Property="BorderThickness" Value="0"/>
+                    </DataTrigger>
+                  </Style.Triggers>
+                </Style>
+              </Button.Style>
+            </Button>
+            <Button Content="Edit Current Event" MinWidth="160" Margin="0,0,10,0" Click="AdminEditCurrentEvent_Click">
+              <Button.Style>
+                <Style TargetType="Button" BasedOn="{StaticResource SecondaryButton}">
+                  <Style.Triggers>
+                    <DataTrigger Binding="{Binding IsAdminEditCurrentEvent}" Value="True">
+                      <Setter Property="Background" Value="{StaticResource AccentBrush}"/>
+                      <Setter Property="Foreground" Value="White"/>
+                      <Setter Property="BorderThickness" Value="0"/>
+                    </DataTrigger>
+                  </Style.Triggers>
+                </Style>
+              </Button.Style>
+            </Button>
+            <Button Content="Settings" MinWidth="120" Click="AdminSettings_Click">
+              <Button.Style>
+                <Style TargetType="Button" BasedOn="{StaticResource SecondaryButton}">
+                  <Style.Triggers>
+                    <DataTrigger Binding="{Binding IsAdminSettings}" Value="True">
+                      <Setter Property="Background" Value="{StaticResource AccentBrush}"/>
+                      <Setter Property="Foreground" Value="White"/>
+                      <Setter Property="BorderThickness" Value="0"/>
+                    </DataTrigger>
+                  </Style.Triggers>
+                </Style>
+              </Button.Style>
+            </Button>
+          </StackPanel>
+
+          <Grid>
+          <!-- Setup New Event — lists fill; forms scroll alone (no outer page scrollbar). -->
+          <DockPanel LastChildFill="True"
+                     Visibility="{Binding IsAdminSetupNewEvent, Converter={StaticResource BoolVis}}">
+            <StackPanel DockPanel.Dock="Top">
+              <TextBlock Text="{Binding AdminNewEventBreadcrumb}" Foreground="{StaticResource MutedBrush}"
+                         FontSize="13" Margin="0,0,0,10" TextWrapping="Wrap"/>
+              <StackPanel Margin="0,0,0,10"
+                          Visibility="{Binding ShowAdminListFilter, Converter={StaticResource BoolVis}}">
+                <TextBlock Text="{Binding AdminListFilterHint}" Margin="0,0,0,4"
+                           Foreground="{StaticResource MutedBrush}" FontSize="12"/>
+                <TextBox x:Name="NewEventListFilterBox"
+                         Text="{Binding AdminListFilter, UpdateSourceTrigger=PropertyChanged}"
+                         Padding="10,8"
+                         ToolTip="Filters the list as you type. Enter moves to the list."
+                         KeyDown="AdminListFilter_KeyDown"/>
+              </StackPanel>
+            </StackPanel>
+            <Grid>
+              <ListBox x:Name="NewEventLayoutList"
+                       Style="{StaticResource StepListBox}"
+                       ItemsSource="{Binding NewEventLayouts}"
+                       Visibility="{Binding IsAdminNewEventLayout, Converter={StaticResource BoolVis}}"
+                       MouseDoubleClick="NewEventLayout_DoubleClick"
+                       KeyDown="NewEventLayoutList_KeyDown">
+                <ListBox.ItemTemplate>
+                  <DataTemplate>
+                    <StackPanel>
+                      <TextBlock Text="{Binding Display}" FontSize="15" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                      <TextBlock Text="{Binding Detail}" FontSize="12" Foreground="{StaticResource MutedBrush}"
+                                 TextWrapping="Wrap" Margin="0,4,0,0"/>
+                    </StackPanel>
+                  </DataTemplate>
+                </ListBox.ItemTemplate>
+              </ListBox>
+
+              <ListBox x:Name="NewEventOfficeList"
+                       Style="{StaticResource StepListBox}"
+                       ItemsSource="{Binding NewEventOffices}"
+                       Visibility="{Binding IsAdminNewEventOffice, Converter={StaticResource BoolVis}}"
+                       MouseDoubleClick="NewEventOffice_DoubleClick"
+                       KeyDown="NewEventOfficeList_KeyDown">
+                <ListBox.ItemTemplate>
+                  <DataTemplate>
+                    <TextBlock Text="{Binding}" FontSize="15" FontWeight="SemiBold"/>
+                  </DataTemplate>
+                </ListBox.ItemTemplate>
+              </ListBox>
+
+              <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                            Visibility="{Binding IsAdminNewEventParent, Converter={StaticResource BoolVis}}">
+                <StackPanel>
+                  <TextBlock Text="Race Group Name" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}" FontSize="12"/>
+                  <TextBox x:Name="NewEventParentNameBox"
+                           Text="{Binding NewEventParentName, UpdateSourceTrigger=LostFocus}"
+                           Padding="10,8" Margin="0,0,0,14" TabIndex="1"
+                           ToolTip="e.g. LRM Weekend — Tab to Year, Enter to continue"
+                           KeyDown="NewEventParentField_KeyDown"/>
+                  <TextBlock Text="Year" Margin="0,0,0,4"
+                             Foreground="{StaticResource MutedBrush}" FontSize="12"/>
+                  <TextBox x:Name="NewEventParentYearBox"
+                           Text="{Binding NewEventParentYear, UpdateSourceTrigger=LostFocus}"
+                           Padding="10,8" Margin="0,0,0,4" TabIndex="2"
+                           HorizontalAlignment="Left" Width="100"
+                           ToolTip="Year prefix on the Race Group folder (e.g. 2026). Enter to continue"
+                           KeyDown="NewEventParentField_KeyDown"/>
+                  <TextBlock Text="Folder on disk is Year - Name (e.g. 2026 - LRM Weekend)."
+                             FontSize="12" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,8"/>
+                  <TextBlock Text="{Binding NewEventParentFolderPreview}" TextWrapping="Wrap" FontSize="13"
+                             Foreground="{StaticResource AccentBrush}"/>
+                </StackPanel>
+              </ScrollViewer>
+
+              <ListBox x:Name="NewEventSourceKindList"
+                       Style="{StaticResource StepListBox}"
+                       ItemsSource="{Binding NewEventSourceKinds}"
+                       Visibility="{Binding IsAdminNewEventSourceKind, Converter={StaticResource BoolVis}}"
+                       MouseDoubleClick="NewEventSourceKind_DoubleClick"
+                       KeyDown="NewEventSourceKindList_KeyDown">
+                <ListBox.ItemTemplate>
+                  <DataTemplate>
+                    <TextBlock Text="{Binding Display}" FontSize="15" FontWeight="SemiBold"/>
+                  </DataTemplate>
+                </ListBox.ItemTemplate>
+              </ListBox>
+
+              <ListBox x:Name="NewEventSourceList"
+                       Style="{StaticResource StepListBox}"
+                       ItemsSource="{Binding NewEventSources}"
+                       Visibility="{Binding IsAdminNewEventSource, Converter={StaticResource BoolVis}}"
+                       MouseDoubleClick="NewEventSource_DoubleClick"
+                       KeyDown="NewEventSourceList_KeyDown">
+                <ListBox.ItemTemplate>
+                  <DataTemplate>
+                    <StackPanel Orientation="Horizontal">
+                      <TextBlock Text="{Binding Display}" FontSize="15" FontWeight="SemiBold"/>
+                      <TextBlock Text=" /" FontSize="15" FontWeight="SemiBold"
+                                 Visibility="{Binding IsFolder, Converter={StaticResource BoolVis}}"/>
+                    </StackPanel>
+                  </DataTemplate>
+                </ListBox.ItemTemplate>
+              </ListBox>
+
+              <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                            Visibility="{Binding IsAdminNewEventDetails, Converter={StaticResource BoolVis}}">
+                <StackPanel>
+                  <TextBlock Text="Race Name" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}" FontSize="12"/>
+                  <TextBox x:Name="NewEventRaceNameBox"
+                           Text="{Binding NewEventRaceName, UpdateSourceTrigger=LostFocus}"
+                           Padding="10,8" Margin="0,0,0,14" TabIndex="1"
+                           ToolTip="Tab to Race Date. Enter moves to the next field."
+                           KeyDown="NewEventDetailsField_KeyDown"/>
+
+                  <TextBlock Text="Race Date" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}" FontSize="12"/>
+                  <DatePicker x:Name="NewEventRaceDatePicker"
+                              SelectedDate="{Binding NewEventRaceDateValue}"
+                              Padding="8,6" MinHeight="36" Margin="0,0,0,4" TabIndex="2"
+                              HorizontalAlignment="Left" Width="220"
+                              ToolTip="Used in Entries.ini (MM/DD/YYYY) and the year in the folder name. Tab to Results ID."
+                              KeyDown="NewEventDetailsField_KeyDown"/>
+                  <TextBlock Text="Stored in Entries.ini as MM/DD/YYYY. Year is used in the folder name."
+                             FontSize="12" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,14"/>
+
+                  <TextBlock Text="%resultsid% (Race Roster)" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}" FontSize="12"/>
+                  <TextBox x:Name="NewEventResultsIdBox"
+                           Text="{Binding NewEventResultsId, UpdateSourceTrigger=LostFocus}"
+                           Padding="10,8" Margin="0,0,0,4" TabIndex="3"
+                           ToolTip="Paste the public results link or just the id. Enter creates the event."
+                           KeyDown="NewEventDetailsField_KeyDown"/>
+                  <TextBlock Text="Paste the full results.raceroster.com link or the id only — both work."
+                             FontSize="12" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,14"/>
+
+                  <TextBlock Text="{Binding NewEventPreview}" TextWrapping="Wrap" FontSize="13"
+                             Foreground="{StaticResource AccentBrush}"/>
+                </StackPanel>
+              </ScrollViewer>
+
+              <StackPanel Visibility="{Binding IsAdminNewEventGroupCreated, Converter={StaticResource BoolVis}}">
+                <Border Background="#F3FBF6" BorderBrush="{StaticResource SaveBrush}" BorderThickness="1"
+                        CornerRadius="8" Padding="16" Margin="0,0,0,16">
+                  <StackPanel>
+                    <TextBlock Text="{Binding NewEventGroupCreatedHeadline}" FontSize="18" FontWeight="SemiBold"
+                               TextWrapping="Wrap" Margin="0,0,0,6"/>
+                    <TextBlock Text="{Binding NewEventGroupCreatedDetail}" TextWrapping="Wrap" FontSize="14"
+                               Foreground="{StaticResource MutedBrush}" Margin="0,0,0,12"/>
+                    <TextBlock TextWrapping="Wrap" FontSize="14"
+                               Text="Use Checkout to setup RunScore / T&amp;S for this event. Or Add Another Race to keep building under the same Race Group."/>
+                  </StackPanel>
+                </Border>
+              </StackPanel>
+            </Grid>
+          </DockPanel>
+
+          <!-- Edit Current Event — same fill pattern as Choose Your Event. -->
+          <DockPanel LastChildFill="True"
+                     Visibility="{Binding IsAdminEditCurrentEvent, Converter={StaticResource BoolVis}}">
+            <!-- Match race-day: search only above the list. Path crumb only for Past Races drill-down. -->
+            <StackPanel DockPanel.Dock="Top">
+              <TextBlock Text="{Binding AdminEventsBreadcrumb}" Foreground="{StaticResource MutedBrush}"
+                         FontSize="13" Margin="0,0,0,10" TextWrapping="Wrap"
+                         Visibility="{Binding ShowAdminEventsPathBreadcrumb, Converter={StaticResource BoolVis}}"/>
+              <StackPanel Margin="0,0,0,10"
+                          Visibility="{Binding ShowAdminListFilter, Converter={StaticResource BoolVis}}">
+                <TextBlock Text="{Binding AdminListFilterHint}" Margin="0,0,0,4"
+                           Foreground="{StaticResource MutedBrush}" FontSize="12"/>
+                <TextBox Text="{Binding AdminListFilter, UpdateSourceTrigger=PropertyChanged}"
+                         Padding="10,8"
+                         ToolTip="Filters the list as you type"/>
+              </StackPanel>
+            </StackPanel>
+            <Grid>
+              <ListBox x:Name="AdminOfficeList"
+                       Style="{StaticResource StepListBox}"
+                       ItemsSource="{Binding AdminOffices}"
+                       Visibility="{Binding IsAdminEventsOffice, Converter={StaticResource BoolVis}}"
+                       MouseDoubleClick="AdminOffice_DoubleClick">
+                <ListBox.ItemTemplate>
+                  <DataTemplate>
+                    <TextBlock Text="{Binding}" FontSize="15" FontWeight="SemiBold"/>
+                  </DataTemplate>
+                </ListBox.ItemTemplate>
+              </ListBox>
+
+              <ListBox x:Name="AdminSessionList"
+                       Style="{StaticResource StepListBox}"
+                       ItemsSource="{Binding AdminSessions}"
+                       Visibility="{Binding IsAdminEventsSession, Converter={StaticResource BoolVis}}"
+                       MouseDoubleClick="AdminSession_DoubleClick">
+                <ListBox.ItemTemplate>
+                  <DataTemplate>
+                    <TextBlock Text="{Binding DisplayName}" FontSize="15" FontWeight="SemiBold"/>
+                  </DataTemplate>
+                </ListBox.ItemTemplate>
+              </ListBox>
+
+              <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                            Visibility="{Binding IsAdminEventsAssign, Converter={StaticResource BoolVis}}">
+                <StackPanel>
+                  <StackPanel Visibility="{Binding ShowAdminTsSetup, Converter={StaticResource BoolVis}}">
+                    <TextBlock TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" FontSize="14" Margin="0,0,0,12"
+                               Text="No Timing &amp; Scoring .event yet. Launch Timing &amp; Scoring, Save As into the Active folder below, then Refresh Event Files to mark main timing — or Finish later and pick primary then."/>
+                    <Button Content="Launch Timing &amp; Scoring" Style="{StaticResource PrimaryButton}"
+                            HorizontalAlignment="Stretch" MinHeight="48" Margin="0,0,0,10"
+                            Click="AdminLaunchTs_Click"
+                            ToolTip="Opens Timing &amp; Scoring. Checks out this race first when needed so Save As matches Finish."/>
+                    <Button Content="Refresh Event Files" Style="{StaticResource SecondaryButton}"
+                            HorizontalAlignment="Left" MinHeight="40" Margin="0,0,0,14"
+                            Click="AdminRefreshEventFiles_Click"
+                            ToolTip="Reload .event names from Active, Library, and OneDrive after Save As."/>
+                    <Border Background="#F7F8FA" BorderBrush="{StaticResource LineBrush}" BorderThickness="1"
+                            CornerRadius="8" Padding="16" Margin="0,0,0,8">
+                      <StackPanel>
+                        <TextBlock Text="T&amp;S Save As Location" FontSize="15" FontWeight="SemiBold"
+                                   Margin="0,0,0,10"/>
+                        <TextBlock Text="{Binding AdminSaveAsFolderGuide}"
+                                   FontFamily="Consolas, Cascadia Mono, Courier New"
+                                   FontSize="13" LineHeight="20" TextWrapping="Wrap"
+                                   Foreground="{StaticResource MutedBrush}"/>
+                      </StackPanel>
+                    </Border>
+                  </StackPanel>
+
+                  <StackPanel Visibility="{Binding ShowAdminSaveAssignment, Converter={StaticResource BoolVis}}">
+                    <TextBlock Text="Main Timing .event" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}" FontSize="12"/>
+                    <ComboBox ItemsSource="{Binding AdminEventFiles}"
+                              SelectedItem="{Binding SelectedTimingFile}"
+                              Padding="8,6" MinHeight="36" Margin="0,0,0,8"/>
+                    <TextBlock TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" FontSize="12" Margin="0,4,0,0"
+                               Text="Any other .event in this folder (announcer, video display, special callouts) is available on Announcer T&amp;S Laptop — staff pick which one at checkout."/>
+                  </StackPanel>
+
+                  <Border Background="#FFF8E8" BorderBrush="#E6C35C" BorderThickness="1"
+                          CornerRadius="8" Padding="12" Margin="0,14,0,0"
+                          Visibility="{Binding ShowAddRaceToGroup, Converter={StaticResource BoolVis}}">
+                    <TextBlock TextWrapping="Wrap" FontSize="13"
+                               Text="This race sits under a Race Group. Use Add Race to This Race Group to create another event folder under the same group. Move to Past Races archives the whole Race Group."/>
+                  </Border>
+                </StackPanel>
+              </ScrollViewer>
+            </Grid>
+          </DockPanel>
+
+          <!-- Settings — one scrollbar for the form only. -->
+          <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                        Visibility="{Binding IsAdminSettings, Converter={StaticResource BoolVis}}">
+            <StackPanel>
+              <TextBlock TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" FontSize="13" Margin="0,0,0,16"
+                         Text="Library and race-day folders are fixed at C:\S2F\Library and C:\S2F\RaceDay (Graph cache + Active). New packs are under Setup New Event; main timing .event assignment is under Edit Current Event."/>
+
+              <TextBlock Text="OneDrive" Margin="0,0,0,4" FontWeight="SemiBold"/>
+              <TextBlock Text="{Binding GraphAccountStatus}" TextWrapping="Wrap" Margin="0,0,0,8" FontSize="13"/>
+              <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                <Button Content="Sign In to OneDrive" Style="{StaticResource PrimaryButton}"
+                        MinHeight="40" Width="180" Margin="0,0,12,0" Click="GraphSignIn_Click"
+                        Visibility="{Binding IsGraphSignedIn, Converter={StaticResource BoolVis}, ConverterParameter=invert}"/>
+                <Button Content="Sign Out" Style="{StaticResource SecondaryButton}"
+                        MinHeight="40" Width="120" Margin="0,0,12,0" Click="GraphSignOut_Click"
+                        Visibility="{Binding IsGraphSignedIn, Converter={StaticResource BoolVis}}"/>
+                <Button Content="Refresh Offices" Style="{StaticResource SecondaryButton}"
+                        MinHeight="40" Width="150" Click="GraphRefresh_Click"
+                        ToolTip="List office folders from OneDrive into C:\S2F\Library"/>
+              </StackPanel>
+              <Expander Header="Advanced" Margin="0,8,0,0"
+                        Foreground="{StaticResource MutedBrush}">
+                <StackPanel Margin="0,10,0,0">
+                  <TextBlock Text="Cloud subfolder for the library (leave blank if offices are under My files)"
+                             Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}" FontSize="12"/>
+                  <TextBox Text="{Binding GraphDriveRoot, UpdateSourceTrigger=PropertyChanged}" Padding="10,8"
+                           Margin="0,0,0,12"
+                           ToolTip="Blank = OneDrive My files root (Atlanta, Test Office, …). Only fill in if offices live inside a subfolder."/>
+
+                  <TextBlock Text="RunScore Vendor Logins" Margin="0,4,0,4" FontWeight="SemiBold"/>
+                  <TextBlock TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" FontSize="12" Margin="0,0,0,10"
+                             Text="Leave blank to use company credentials from OneDrive (._s2f/runscore-vendor-secrets.json). A custom login on this laptop is never overwritten by that file. SMS always uses the company file. Save, then restart RunScore if it is open."/>
+
+                  <TextBlock Text="RaceRoster Login" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}" FontSize="12"/>
+                  <TextBox Text="{Binding RaceRosterLoginOverride, UpdateSourceTrigger=PropertyChanged}" Padding="10,8"
+                           Margin="0,0,0,8"/>
+                  <TextBlock Text="RaceRoster Password" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}" FontSize="12"/>
+                  <TextBox Text="{Binding RaceRosterPasswordOverride, UpdateSourceTrigger=PropertyChanged}" Padding="10,8"
+                           Margin="0,0,0,12"
+                           ToolTip="Optional when only changing the login — blank keeps the current RunScore password."/>
+
+                  <TextBlock Text="RunSignUp Login" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}" FontSize="12"/>
+                  <TextBox Text="{Binding RunSignUpLoginOverride, UpdateSourceTrigger=PropertyChanged}" Padding="10,8"
+                           Margin="0,0,0,8"/>
+                  <TextBlock Text="RunSignUp Password" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}" FontSize="12"/>
+                  <TextBox Text="{Binding RunSignUpPasswordOverride, UpdateSourceTrigger=PropertyChanged}" Padding="10,8"
+                           Margin="0,0,0,12"
+                           ToolTip="Optional when only changing the login — blank keeps the current RunScore password."/>
+
+                  <Button Content="Edit RunScore SOP…" Style="{StaticResource SecondaryButton}"
+                          HorizontalAlignment="Left" MinWidth="200" Click="EditRunScoreSop_Click"
+                          ToolTip="Opens runscore-sop.json — save the file, then checkout / Open RunScore to apply."/>
+                </StackPanel>
+              </Expander>
+            </StackPanel>
+          </ScrollViewer>
+
+          </Grid>
+        </DockPanel>
+
+        <!-- Bottom actions + status (updates / library hints) -->
+        <DockPanel Grid.Row="2" Margin="0,18,0,0" LastChildFill="True">
+          <Button DockPanel.Dock="Left" Content="Back" Style="{StaticResource SecondaryButton}"
+                  Width="120" Margin="0,0,12,0" Click="Back_Click"
+                  Visibility="{Binding ShowBack, Converter={StaticResource BoolVis}}"/>
+
+          <!-- Admin actions sit in the shared footer (same row as race-day Continue) so lists get full height. -->
+          <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right"
+                      Visibility="{Binding IsAdminStep, Converter={StaticResource BoolVis}}">
             <!-- IsDefault = Enter activates the visible primary action (lists + most fields). -->
             <Button Content="Continue" Width="160" Margin="0,0,12,0" Click="NewEventLayoutContinue_Click"
                     Visibility="{Binding IsAdminNewEventLayout, Converter={StaticResource BoolVis}}"
@@ -529,336 +882,6 @@
               </Button.Style>
             </Button>
           </StackPanel>
-          <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
-                        Padding="0,0,4,8">
-            <StackPanel>
-              <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
-                <Button Content="Setup New Event" MinWidth="150" Margin="0,0,10,0" Click="AdminSetupNewEvent_Click">
-                  <Button.Style>
-                    <Style TargetType="Button" BasedOn="{StaticResource SecondaryButton}">
-                      <Style.Triggers>
-                        <DataTrigger Binding="{Binding IsAdminSetupNewEvent}" Value="True">
-                          <Setter Property="Background" Value="{StaticResource AccentBrush}"/>
-                          <Setter Property="Foreground" Value="White"/>
-                          <Setter Property="BorderThickness" Value="0"/>
-                        </DataTrigger>
-                      </Style.Triggers>
-                    </Style>
-                  </Button.Style>
-                </Button>
-                <Button Content="Edit Current Event" MinWidth="160" Margin="0,0,10,0" Click="AdminEditCurrentEvent_Click">
-                  <Button.Style>
-                    <Style TargetType="Button" BasedOn="{StaticResource SecondaryButton}">
-                      <Style.Triggers>
-                        <DataTrigger Binding="{Binding IsAdminEditCurrentEvent}" Value="True">
-                          <Setter Property="Background" Value="{StaticResource AccentBrush}"/>
-                          <Setter Property="Foreground" Value="White"/>
-                          <Setter Property="BorderThickness" Value="0"/>
-                        </DataTrigger>
-                      </Style.Triggers>
-                    </Style>
-                  </Button.Style>
-                </Button>
-                <Button Content="Settings" MinWidth="120" Click="AdminSettings_Click">
-                  <Button.Style>
-                    <Style TargetType="Button" BasedOn="{StaticResource SecondaryButton}">
-                      <Style.Triggers>
-                        <DataTrigger Binding="{Binding IsAdminSettings}" Value="True">
-                          <Setter Property="Background" Value="{StaticResource AccentBrush}"/>
-                          <Setter Property="Foreground" Value="White"/>
-                          <Setter Property="BorderThickness" Value="0"/>
-                        </DataTrigger>
-                      </Style.Triggers>
-                    </Style>
-                  </Button.Style>
-                </Button>
-              </StackPanel>
-
-              <StackPanel Visibility="{Binding IsAdminSetupNewEvent, Converter={StaticResource BoolVis}}">
-                <TextBlock Text="{Binding AdminNewEventBreadcrumb}" Foreground="{StaticResource MutedBrush}"
-                           FontSize="13" Margin="0,0,0,10" TextWrapping="Wrap"/>
-
-                <StackPanel Margin="0,0,0,10"
-                            Visibility="{Binding ShowAdminListFilter, Converter={StaticResource BoolVis}}">
-                  <TextBlock Text="{Binding AdminListFilterHint}" Margin="0,0,0,4"
-                             Foreground="{StaticResource MutedBrush}" FontSize="12"/>
-                  <TextBox x:Name="NewEventListFilterBox"
-                           Text="{Binding AdminListFilter, UpdateSourceTrigger=PropertyChanged}"
-                           Padding="10,8"
-                           ToolTip="Filters the list as you type. Enter moves to the list."
-                           KeyDown="AdminListFilter_KeyDown"/>
-                </StackPanel>
-
-                <ListBox x:Name="NewEventLayoutList"
-                         Style="{StaticResource StepListBox}" MaxHeight="360"
-                         ItemsSource="{Binding NewEventLayouts}"
-                         Visibility="{Binding IsAdminNewEventLayout, Converter={StaticResource BoolVis}}"
-                         MouseDoubleClick="NewEventLayout_DoubleClick"
-                         KeyDown="NewEventLayoutList_KeyDown">
-                  <ListBox.ItemTemplate>
-                    <DataTemplate>
-                      <StackPanel>
-                        <TextBlock Text="{Binding Display}" FontSize="15" FontWeight="SemiBold" TextWrapping="Wrap"/>
-                        <TextBlock Text="{Binding Detail}" FontSize="12" Foreground="{StaticResource MutedBrush}"
-                                   TextWrapping="Wrap" Margin="0,4,0,0"/>
-                      </StackPanel>
-                    </DataTemplate>
-                  </ListBox.ItemTemplate>
-                </ListBox>
-
-                <ListBox x:Name="NewEventOfficeList"
-                         Style="{StaticResource StepListBox}" MaxHeight="360"
-                         ItemsSource="{Binding NewEventOffices}"
-                         Visibility="{Binding IsAdminNewEventOffice, Converter={StaticResource BoolVis}}"
-                         MouseDoubleClick="NewEventOffice_DoubleClick"
-                         KeyDown="NewEventOfficeList_KeyDown">
-                  <ListBox.ItemTemplate>
-                    <DataTemplate>
-                      <TextBlock Text="{Binding}" FontSize="15" FontWeight="SemiBold"/>
-                    </DataTemplate>
-                  </ListBox.ItemTemplate>
-                </ListBox>
-
-                <StackPanel Visibility="{Binding IsAdminNewEventParent, Converter={StaticResource BoolVis}}">
-                  <TextBlock Text="Race Group Name" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}" FontSize="12"/>
-                  <TextBox x:Name="NewEventParentNameBox"
-                           Text="{Binding NewEventParentName, UpdateSourceTrigger=LostFocus}"
-                           Padding="10,8" Margin="0,0,0,14" TabIndex="1"
-                           ToolTip="e.g. LRM Weekend — Tab to Year, Enter to continue"
-                           KeyDown="NewEventParentField_KeyDown"/>
-                  <TextBlock Text="Year" Margin="0,0,0,4"
-                             Foreground="{StaticResource MutedBrush}" FontSize="12"/>
-                  <TextBox x:Name="NewEventParentYearBox"
-                           Text="{Binding NewEventParentYear, UpdateSourceTrigger=LostFocus}"
-                           Padding="10,8" Margin="0,0,0,4" TabIndex="2"
-                           HorizontalAlignment="Left" Width="100"
-                           ToolTip="Year prefix on the Race Group folder (e.g. 2026). Enter to continue"
-                           KeyDown="NewEventParentField_KeyDown"/>
-                  <TextBlock Text="Folder on disk is Year - Name (e.g. 2026 - LRM Weekend)."
-                             FontSize="12" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,8"/>
-                  <TextBlock Text="{Binding NewEventParentFolderPreview}" TextWrapping="Wrap" FontSize="13"
-                             Foreground="{StaticResource AccentBrush}"/>
-                </StackPanel>
-
-                <ListBox x:Name="NewEventSourceKindList"
-                         Style="{StaticResource StepListBox}" MaxHeight="360"
-                         ItemsSource="{Binding NewEventSourceKinds}"
-                         Visibility="{Binding IsAdminNewEventSourceKind, Converter={StaticResource BoolVis}}"
-                         MouseDoubleClick="NewEventSourceKind_DoubleClick"
-                         KeyDown="NewEventSourceKindList_KeyDown">
-                  <ListBox.ItemTemplate>
-                    <DataTemplate>
-                      <TextBlock Text="{Binding Display}" FontSize="15" FontWeight="SemiBold"/>
-                    </DataTemplate>
-                  </ListBox.ItemTemplate>
-                </ListBox>
-
-                <ListBox x:Name="NewEventSourceList"
-                         Style="{StaticResource StepListBox}" MaxHeight="360"
-                         ItemsSource="{Binding NewEventSources}"
-                         Visibility="{Binding IsAdminNewEventSource, Converter={StaticResource BoolVis}}"
-                         MouseDoubleClick="NewEventSource_DoubleClick"
-                         KeyDown="NewEventSourceList_KeyDown">
-                  <ListBox.ItemTemplate>
-                    <DataTemplate>
-                      <StackPanel Orientation="Horizontal">
-                        <TextBlock Text="{Binding Display}" FontSize="15" FontWeight="SemiBold"/>
-                        <TextBlock Text=" /" FontSize="15" FontWeight="SemiBold"
-                                   Visibility="{Binding IsFolder, Converter={StaticResource BoolVis}}"/>
-                      </StackPanel>
-                    </DataTemplate>
-                  </ListBox.ItemTemplate>
-                </ListBox>
-
-                <StackPanel Visibility="{Binding IsAdminNewEventDetails, Converter={StaticResource BoolVis}}">
-                  <TextBlock Text="Race Name" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}" FontSize="12"/>
-                  <TextBox x:Name="NewEventRaceNameBox"
-                           Text="{Binding NewEventRaceName, UpdateSourceTrigger=LostFocus}"
-                           Padding="10,8" Margin="0,0,0,14" TabIndex="1"
-                           ToolTip="Tab to Race Date. Enter moves to the next field."
-                           KeyDown="NewEventDetailsField_KeyDown"/>
-
-                  <TextBlock Text="Race Date" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}" FontSize="12"/>
-                  <DatePicker x:Name="NewEventRaceDatePicker"
-                              SelectedDate="{Binding NewEventRaceDateValue}"
-                              Padding="8,6" MinHeight="36" Margin="0,0,0,4" TabIndex="2"
-                              HorizontalAlignment="Left" Width="220"
-                              ToolTip="Used in Entries.ini (MM/DD/YYYY) and the year in the folder name. Tab to Results ID."
-                              KeyDown="NewEventDetailsField_KeyDown"/>
-                  <TextBlock Text="Stored in Entries.ini as MM/DD/YYYY. Year is used in the folder name."
-                             FontSize="12" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,14"/>
-
-                  <TextBlock Text="%resultsid% (Race Roster)" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}" FontSize="12"/>
-                  <TextBox x:Name="NewEventResultsIdBox"
-                           Text="{Binding NewEventResultsId, UpdateSourceTrigger=LostFocus}"
-                           Padding="10,8" Margin="0,0,0,4" TabIndex="3"
-                           ToolTip="Paste the public results link or just the id. Enter creates the event."
-                           KeyDown="NewEventDetailsField_KeyDown"/>
-                  <TextBlock Text="Paste the full results.raceroster.com link or the id only — both work."
-                             FontSize="12" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,14"/>
-
-                  <TextBlock Text="{Binding NewEventPreview}" TextWrapping="Wrap" FontSize="13"
-                             Foreground="{StaticResource AccentBrush}"/>
-                </StackPanel>
-
-                <StackPanel Visibility="{Binding IsAdminNewEventGroupCreated, Converter={StaticResource BoolVis}}">
-                  <Border Background="#F3FBF6" BorderBrush="{StaticResource SaveBrush}" BorderThickness="1"
-                          CornerRadius="8" Padding="16" Margin="0,0,0,16">
-                    <StackPanel>
-                      <TextBlock Text="{Binding NewEventGroupCreatedHeadline}" FontSize="18" FontWeight="SemiBold"
-                                 TextWrapping="Wrap" Margin="0,0,0,6"/>
-                      <TextBlock Text="{Binding NewEventGroupCreatedDetail}" TextWrapping="Wrap" FontSize="14"
-                                 Foreground="{StaticResource MutedBrush}" Margin="0,0,0,12"/>
-                      <TextBlock TextWrapping="Wrap" FontSize="14"
-                                 Text="Use Checkout to setup RunScore / T&amp;S for this event. Or Add Another Race to keep building under the same Race Group."/>
-                    </StackPanel>
-                  </Border>
-                </StackPanel>
-              </StackPanel>
-
-              <StackPanel Visibility="{Binding IsAdminEditCurrentEvent, Converter={StaticResource BoolVis}}">
-                <TextBlock TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" FontSize="13" Margin="0,0,0,12"
-                           Text="Mark which .event is the main timing file. Other .event files (announcer, video display, …) are picked on Announcer T&amp;S Laptop checkout."/>
-                <TextBlock Text="{Binding AdminEventsBreadcrumb}" Foreground="{StaticResource MutedBrush}"
-                           FontSize="13" Margin="0,0,0,10" TextWrapping="Wrap"/>
-
-                <StackPanel Margin="0,0,0,10"
-                            Visibility="{Binding ShowAdminListFilter, Converter={StaticResource BoolVis}}">
-                  <TextBlock Text="{Binding AdminListFilterHint}" Margin="0,0,0,4"
-                             Foreground="{StaticResource MutedBrush}" FontSize="12"/>
-                  <TextBox Text="{Binding AdminListFilter, UpdateSourceTrigger=PropertyChanged}"
-                           Padding="10,8"
-                           ToolTip="Filters the list as you type"/>
-                </StackPanel>
-
-                <ListBox x:Name="AdminOfficeList"
-                         Style="{StaticResource StepListBox}" MaxHeight="360"
-                         ItemsSource="{Binding AdminOffices}"
-                         Visibility="{Binding IsAdminEventsOffice, Converter={StaticResource BoolVis}}"
-                         MouseDoubleClick="AdminOffice_DoubleClick">
-                  <ListBox.ItemTemplate>
-                    <DataTemplate>
-                      <TextBlock Text="{Binding}" FontSize="15" FontWeight="SemiBold"/>
-                    </DataTemplate>
-                  </ListBox.ItemTemplate>
-                </ListBox>
-
-                <ListBox x:Name="AdminSessionList"
-                         Style="{StaticResource StepListBox}" MaxHeight="360"
-                         ItemsSource="{Binding AdminSessions}"
-                         Visibility="{Binding IsAdminEventsSession, Converter={StaticResource BoolVis}}"
-                         MouseDoubleClick="AdminSession_DoubleClick">
-                  <ListBox.ItemTemplate>
-                    <DataTemplate>
-                      <TextBlock Text="{Binding DisplayName}" FontSize="15" FontWeight="SemiBold"/>
-                    </DataTemplate>
-                  </ListBox.ItemTemplate>
-                </ListBox>
-
-                <StackPanel Visibility="{Binding IsAdminEventsAssign, Converter={StaticResource BoolVis}}">
-                  <StackPanel Visibility="{Binding ShowAdminTsSetup, Converter={StaticResource BoolVis}}">
-                    <TextBlock TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" FontSize="14" Margin="0,0,0,12"
-                               Text="No Timing &amp; Scoring .event yet. Launch Timing &amp; Scoring, Save As into the Active folder below, then Refresh Event Files to mark main timing — or Finish later and pick primary then."/>
-                    <Button Content="Launch Timing &amp; Scoring" Style="{StaticResource PrimaryButton}"
-                            HorizontalAlignment="Stretch" MinHeight="48" Margin="0,0,0,10"
-                            Click="AdminLaunchTs_Click"
-                            ToolTip="Opens Timing &amp; Scoring. Checks out this race first when needed so Save As matches Finish."/>
-                    <Button Content="Refresh Event Files" Style="{StaticResource SecondaryButton}"
-                            HorizontalAlignment="Left" MinHeight="40" Margin="0,0,0,14"
-                            Click="AdminRefreshEventFiles_Click"
-                            ToolTip="Reload .event names from Active, Library, and OneDrive after Save As."/>
-                    <Border Background="#F7F8FA" BorderBrush="{StaticResource LineBrush}" BorderThickness="1"
-                            CornerRadius="8" Padding="16" Margin="0,0,0,8">
-                      <StackPanel>
-                        <TextBlock Text="T&amp;S Save As Location" FontSize="15" FontWeight="SemiBold"
-                                   Margin="0,0,0,10"/>
-                        <TextBlock Text="{Binding AdminSaveAsFolderGuide}"
-                                   FontFamily="Consolas, Cascadia Mono, Courier New"
-                                   FontSize="13" LineHeight="20" TextWrapping="Wrap"
-                                   Foreground="{StaticResource MutedBrush}"/>
-                      </StackPanel>
-                    </Border>
-                  </StackPanel>
-
-                  <StackPanel Visibility="{Binding ShowAdminSaveAssignment, Converter={StaticResource BoolVis}}">
-                    <TextBlock Text="Main Timing .event" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}" FontSize="12"/>
-                    <ComboBox ItemsSource="{Binding AdminEventFiles}"
-                              SelectedItem="{Binding SelectedTimingFile}"
-                              Padding="8,6" MinHeight="36" Margin="0,0,0,8"/>
-                    <TextBlock TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" FontSize="12" Margin="0,4,0,0"
-                               Text="Any other .event in this folder (announcer, video display, special callouts) is available on Announcer T&amp;S Laptop — staff pick which one at checkout."/>
-                  </StackPanel>
-
-                  <Border Background="#FFF8E8" BorderBrush="#E6C35C" BorderThickness="1"
-                          CornerRadius="8" Padding="12" Margin="0,14,0,0"
-                          Visibility="{Binding ShowAddRaceToGroup, Converter={StaticResource BoolVis}}">
-                    <TextBlock TextWrapping="Wrap" FontSize="13"
-                               Text="This race sits under a Race Group. Use Add Race to This Race Group to create another event folder under the same group. Move to Past Races archives the whole Race Group."/>
-                  </Border>
-                </StackPanel>
-              </StackPanel>
-
-              <StackPanel Visibility="{Binding IsAdminSettings, Converter={StaticResource BoolVis}}">
-                <TextBlock TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" FontSize="13" Margin="0,0,0,16"
-                           Text="Library and race-day folders are fixed at C:\S2F\Library and C:\S2F\RaceDay (Graph cache + Active). New packs are under Setup New Event; main timing .event assignment is under Edit Current Event."/>
-
-                <TextBlock Text="OneDrive" Margin="0,0,0,4" FontWeight="SemiBold"/>
-                <TextBlock Text="{Binding GraphAccountStatus}" TextWrapping="Wrap" Margin="0,0,0,8" FontSize="13"/>
-                <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
-                  <Button Content="Sign In to OneDrive" Style="{StaticResource PrimaryButton}"
-                          MinHeight="40" Width="180" Margin="0,0,12,0" Click="GraphSignIn_Click"
-                          Visibility="{Binding IsGraphSignedIn, Converter={StaticResource BoolVis}, ConverterParameter=invert}"/>
-                  <Button Content="Sign Out" Style="{StaticResource SecondaryButton}"
-                          MinHeight="40" Width="120" Margin="0,0,12,0" Click="GraphSignOut_Click"
-                          Visibility="{Binding IsGraphSignedIn, Converter={StaticResource BoolVis}}"/>
-                  <Button Content="Refresh Offices" Style="{StaticResource SecondaryButton}"
-                          MinHeight="40" Width="150" Click="GraphRefresh_Click"
-                          ToolTip="List office folders from OneDrive into C:\S2F\Library"/>
-                </StackPanel>
-                <Expander Header="Advanced" Margin="0,8,0,0"
-                          Foreground="{StaticResource MutedBrush}">
-                  <StackPanel Margin="0,10,0,0">
-                    <TextBlock Text="Cloud subfolder for the library (leave blank if offices are under My files)"
-                               Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}" FontSize="12"/>
-                    <TextBox Text="{Binding GraphDriveRoot, UpdateSourceTrigger=PropertyChanged}" Padding="10,8"
-                             Margin="0,0,0,12"
-                             ToolTip="Blank = OneDrive My files root (Atlanta, Test Office, …). Only fill in if offices live inside a subfolder."/>
-
-                    <TextBlock Text="RunScore Vendor Logins" Margin="0,4,0,4" FontWeight="SemiBold"/>
-                    <TextBlock TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" FontSize="12" Margin="0,0,0,10"
-                               Text="Leave blank to use company credentials from OneDrive (._s2f/runscore-vendor-secrets.json). A custom login on this laptop is never overwritten by that file. SMS always uses the company file. Save, then restart RunScore if it is open."/>
-
-                    <TextBlock Text="RaceRoster Login" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}" FontSize="12"/>
-                    <TextBox Text="{Binding RaceRosterLoginOverride, UpdateSourceTrigger=PropertyChanged}" Padding="10,8"
-                             Margin="0,0,0,8"/>
-                    <TextBlock Text="RaceRoster Password" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}" FontSize="12"/>
-                    <TextBox Text="{Binding RaceRosterPasswordOverride, UpdateSourceTrigger=PropertyChanged}" Padding="10,8"
-                             Margin="0,0,0,12"
-                             ToolTip="Optional when only changing the login — blank keeps the current RunScore password."/>
-
-                    <TextBlock Text="RunSignUp Login" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}" FontSize="12"/>
-                    <TextBox Text="{Binding RunSignUpLoginOverride, UpdateSourceTrigger=PropertyChanged}" Padding="10,8"
-                             Margin="0,0,0,8"/>
-                    <TextBlock Text="RunSignUp Password" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}" FontSize="12"/>
-                    <TextBox Text="{Binding RunSignUpPasswordOverride, UpdateSourceTrigger=PropertyChanged}" Padding="10,8"
-                             Margin="0,0,0,12"
-                             ToolTip="Optional when only changing the login — blank keeps the current RunScore password."/>
-
-                    <Button Content="Edit RunScore SOP…" Style="{StaticResource SecondaryButton}"
-                            HorizontalAlignment="Left" MinWidth="200" Click="EditRunScoreSop_Click"
-                            ToolTip="Opens runscore-sop.json — save the file, then checkout / Open RunScore to apply."/>
-                  </StackPanel>
-                </Expander>
-              </StackPanel>
-            </StackPanel>
-          </ScrollViewer>
-        </DockPanel>
-
-        <!-- Bottom actions + status (updates / library hints) -->
-        <DockPanel Grid.Row="2" Margin="0,18,0,0" LastChildFill="True">
-          <Button DockPanel.Dock="Left" Content="Back" Style="{StaticResource SecondaryButton}"
-                  Width="120" Margin="0,0,12,0" Click="Back_Click"
-                  Visibility="{Binding ShowBack, Converter={StaticResource BoolVis}}"/>
 
           <Button DockPanel.Dock="Right" Content="Continue" Style="{StaticResource PrimaryButton}"
                   Width="160" Margin="12,0,0,0" Click="OfficeContinue_Click"
