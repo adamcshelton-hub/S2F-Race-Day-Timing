@@ -127,6 +127,8 @@ public sealed class RunScoreSopStore : IRunScoreSopStore
 
     public void Save(RunScoreSopProfile profile)
     {
+        NormalizeDictionaries(profile);
+        StripVendorCredentialStrings(profile);
         var dir = Path.GetDirectoryName(_path);
         if (!string.IsNullOrEmpty(dir))
             Directory.CreateDirectory(dir);
@@ -139,6 +141,18 @@ public sealed class RunScoreSopStore : IRunScoreSopStore
         profile.Bools = new Dictionary<string, bool>(profile.Bools ?? new(), StringComparer.Ordinal);
         profile.Ints = new Dictionary<string, int>(profile.Ints ?? new(), StringComparer.Ordinal);
         profile.Strings = new Dictionary<string, string>(profile.Strings ?? new(), StringComparer.Ordinal);
+        StripVendorCredentialStrings(profile);
+    }
+
+    /// <summary>
+    /// Vendor credentials live in the OneDrive secrets file — never persist in Admin SOP JSON.
+    /// </summary>
+    internal static void StripVendorCredentialStrings(RunScoreSopProfile profile)
+    {
+        if (profile.Strings is null || profile.Strings.Count == 0)
+            return;
+        foreach (var name in RunScorePreferencesService.VendorCredentialNames)
+            profile.Strings.Remove(name);
     }
 
     /// <summary>

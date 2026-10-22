@@ -363,5 +363,9 @@ public class AutosaveMirrorServiceTests
         public Task<CloudSyncResult> MoveOfficeItemToPastRacesAsync(
             string libraryRoot, string graphDriveRoot, string officeName, string itemFolderName, IProgress<string>? status = null, CancellationToken cancellationToken = default) =>
             Task.FromResult(new CloudSyncResult { Success = true });
+
+        public Task<CloudSyncResult> SyncRunScoreVendorSecretsAsync(
+            string graphDriveRoot, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new CloudSyncResult { Success = true });
     }
 }

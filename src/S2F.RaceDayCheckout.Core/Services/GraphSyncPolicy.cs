@@ -17,6 +17,11 @@ public static class GraphSyncPolicy
     /// <summary>Probe allowed office folders only (never list entire OneDrive root).</summary>
     public static readonly TimeSpan OfficeListBudget = TimeSpan.FromSeconds(20);
 
+    /// <summary>
+    /// One known-path GET for <c>._s2f/runscore-vendor-secrets.json</c> — tiny file, fail fast on cellular.
+    /// </summary>
+    public static readonly TimeSpan VendorSecretsBudget = TimeSpan.FromSeconds(20);
+
     /// <summary>Index one office’s event leaves — cancel if cellular stalls.</summary>
     public static readonly TimeSpan OfficeSessionsBudget = TimeSpan.FromSeconds(75);
 

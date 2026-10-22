@@ -722,6 +722,11 @@ public class CheckoutServiceTests
             IProgress<string>? status = null,
             CancellationToken cancellationToken = default) =>
             Task.FromResult(new CloudSyncResult { Success = true, Message = "moved (stub)" });
+
+        public Task<CloudSyncResult> SyncRunScoreVendorSecretsAsync(
+            string graphDriveRoot,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(new CloudSyncResult { Success = true, Message = "vendor secrets (stub)" });
     }
 
     private sealed class OkCloudSync : StubCloudSync
@@ -1411,5 +1416,10 @@ public class CheckoutServiceTests
             IProgress<string>? status = null,
             CancellationToken cancellationToken = default) =>
             Task.FromResult(new CloudSyncResult { Success = true, Message = "moved (track)" });
+
+        public Task<CloudSyncResult> SyncRunScoreVendorSecretsAsync(
+            string graphDriveRoot,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(new CloudSyncResult { Success = true, Message = "vendor secrets (track)" });
     }
 }

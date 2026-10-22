@@ -340,6 +340,11 @@ public sealed class CheckoutService
         };
         _activeStore.Save(active);
 
+        // Soft: if vendor secrets cache is missing and Graph is up, one short GET before SOP pin.
+        // Never blocks checkout on failure — ApplySop leaves registry alone when cache is empty.
+        await TrySyncVendorSecretsIfCacheMissingAsync(request.Settings.GraphDriveRoot, cancellationToken)
+            .ConfigureAwait(false);
+
         // Point RunScore alternate-save folders at this checkout's Backup before the timer opens RS.
         // Re-applied on Open RunScore only when RS is not already running (prefs load at process start).
         var prefResult = _runScorePrefs.ApplySop(backupPath, request.Settings.RaceDayRoot);
@@ -1194,6 +1199,27 @@ public sealed class CheckoutService
         catch
         {
             // Contents may still be cleared; IsAutosaveCleared decides success.
+        }
+    }
+
+    private async Task TrySyncVendorSecretsIfCacheMissingAsync(
+        string graphDriveRoot,
+        CancellationToken cancellationToken)
+    {
+        if (!_cloud.IsAvailable)
+            return;
+        if (new RunScoreVendorSecretsStore().HasCache)
+            return;
+
+        try
+        {
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            cts.CancelAfter(GraphSyncPolicy.VendorSecretsBudget);
+            await _cloud.SyncRunScoreVendorSecretsAsync(graphDriveRoot, cts.Token).ConfigureAwait(false);
+        }
+        catch
+        {
+            // Soft — ApplySop uses cache when present; otherwise leaves vendor registry alone.
         }
     }
 

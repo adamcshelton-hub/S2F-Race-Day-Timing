@@ -2165,6 +2165,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
             Status = $"Signed in as {_graphAuth.AccountEmail}.";
             NotifyGraphStatus();
+            await SyncVendorSecretsFromGraphAsync(force: true).ConfigureAwait(true);
             await RefreshLibraryFromGraphAsync();
             // After sign-in, allow single-office auto-advance into the session list.
             if (!HasActive)
@@ -2209,6 +2210,54 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
     }
 
+    /// <summary>
+    /// Pull <c>._s2f/runscore-vendor-secrets.json</c> into AppData cache.
+    /// Soft-fail; never blocks checkout. <paramref name="force"/> refreshes even when cache exists
+    /// (sign-in / intentional office refresh); otherwise only pulls when cache is missing.
+    /// </summary>
+    private async Task SyncVendorSecretsFromGraphAsync(bool force)
+    {
+        if (!_cloud.IsAvailable)
+            return;
+        if (!force && new RunScoreVendorSecretsStore().HasCache)
+            return;
+
+        try
+        {
+            var result = await _cloud.SyncRunScoreVendorSecretsAsync(_settings.GraphDriveRoot)
+                .ConfigureAwait(true);
+            if (!result.Success)
+                return;
+
+            // Pin HKCU as soon as the cache is fresh — do not wait for checkout / Open RunScore.
+            // RunScore still must be restarted to reload prefs if it is already open.
+            try
+            {
+                var pin = new RunScorePreferencesService().EnsureVendorCredentials();
+                if (pin.UpdatedCount > 0 && !string.IsNullOrWhiteSpace(pin.Message))
+                    Status = pin.Message;
+                else if (!string.IsNullOrWhiteSpace(result.Message))
+                    Status = result.Message;
+            }
+            catch
+            {
+                if (!string.IsNullOrWhiteSpace(result.Message))
+                    Status = result.Message;
+            }
+        }
+        catch
+        {
+            // Non-fatal — race day uses existing cache / leaves registry alone.
+        }
+    }
+
+    /// <summary>
+    /// Already signed in (MSAL cache): fill vendor secrets cache if missing.
+    /// Soft — does not block landing / race day. Call from window load.
+    /// </summary>
+    public Task EnsureVendorSecretsIfSignedInAsync() =>
+        SyncVendorSecretsFromGraphAsync(force: false);
+
     /// <summary>Admin / sign-in: probe office folders only (no event trees — cellular).</summary>
     public async Task RefreshLibraryFromGraphAsync(bool blockUi = true)
     {
@@ -2227,6 +2276,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
             }
             else
                 Status = "Checking office folders on OneDrive…";
+
+            // Intentional Graph moment — also pick up rotated OneDrive vendor secrets.
+            await SyncVendorSecretsFromGraphAsync(force: true).ConfigureAwait(true);
 
             _graphIndexedOffices.Clear();
             var result = await _cloud.RefreshOfficeListAsync(

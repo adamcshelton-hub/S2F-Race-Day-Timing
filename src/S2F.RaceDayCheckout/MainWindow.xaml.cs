@@ -256,6 +256,22 @@ public partial class MainWindow : Window
             this,
             msg => _vm.Status = msg);
 
+        // Already signed in (token cache): pull vendor secrets if AppData cache is empty.
+        // Soft + short Graph budget — does not wait on office indexing below.
+        try
+        {
+            await _vm.EnsureVendorSecretsIfSignedInAsync()
+                .WaitAsync(TimeSpan.FromSeconds(20));
+        }
+        catch (TimeoutException)
+        {
+            // Non-fatal — checkout / Open RunScore can retry when cache still missing.
+        }
+        catch
+        {
+            // Non-fatal
+        }
+
         // Optional: confirm which offices exist on OneDrive (does not block showing the list).
         try
         {

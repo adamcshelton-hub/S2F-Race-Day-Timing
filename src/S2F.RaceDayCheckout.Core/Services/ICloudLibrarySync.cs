@@ -166,6 +166,15 @@ public interface ICloudLibrarySync
         string itemFolderName,
         IProgress<string>? status = null,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Download company RunScore vendor credentials from the fixed OneDrive path
+    /// <c>._s2f/runscore-vendor-secrets.json</c> and write the local AppData cache.
+    /// One path GET only — never lists root. Short budget; failure leaves prior cache intact.
+    /// </summary>
+    Task<CloudSyncResult> SyncRunScoreVendorSecretsAsync(
+        string graphDriveRoot,
+        CancellationToken cancellationToken = default);
 }
 
 public sealed class NullCloudLibrarySync : ICloudLibrarySync
@@ -230,6 +239,11 @@ public sealed class NullCloudLibrarySync : ICloudLibrarySync
         string officeName,
         string itemFolderName,
         IProgress<string>? status = null,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(new CloudSyncResult { Success = false, Message = "Sign in to OneDrive first." });
+
+    public Task<CloudSyncResult> SyncRunScoreVendorSecretsAsync(
+        string graphDriveRoot,
         CancellationToken cancellationToken = default) =>
         Task.FromResult(new CloudSyncResult { Success = false, Message = "Sign in to OneDrive first." });
 }

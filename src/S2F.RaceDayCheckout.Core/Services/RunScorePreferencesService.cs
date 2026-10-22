@@ -27,6 +27,10 @@ public sealed class PreferenceApplyResult
 /// External Editor → Notepad++ is machine policy when that exe exists: set on app start / install,
 /// re-applied after <see cref="RestoreNativePrefs"/> so Finish does not revert to Windows Notepad.
 /// </para>
+/// <para>
+/// Vendor credentials (SMS / RaceRoster / RunSignUp) come from the OneDrive secrets cache — never from
+/// Admin SOP. Pinned on ApplySop and again after RestoreNativePrefs; excluded from native snapshot restore.
+/// </para>
 /// </summary>
 public sealed class RunScorePreferencesService
 {
@@ -43,18 +47,38 @@ public sealed class RunScorePreferencesService
     public const string SaveResultsDir = "Save results dir";
     public const string AutoSaveCounts = "Auto save counts";
 
+    public const string SmsLogin = "SMS login";
+    public const string SmsPassword = "SMS password";
+    public const string RaceRosterLogin = "RaceRoster login";
+    public const string RaceRosterPassword = "RaceRoster password";
+    public const string RunSignUpLogin = "RunSignUp login";
+    public const string RunSignUpPassword = "RunSignUp password";
+
+    public static readonly string[] VendorCredentialNames =
+    [
+        SmsLogin,
+        SmsPassword,
+        RaceRosterLogin,
+        RaceRosterPassword,
+        RunSignUpLogin,
+        RunSignUpPassword
+    ];
+
     private readonly IRunScorePreferenceStore _store;
     private readonly IRunScoreSopStore _sopStore;
     private readonly INativeRunScorePrefsStore _nativeStore;
+    private readonly IRunScoreVendorSecretsStore _vendorSecrets;
 
     public RunScorePreferencesService(
         IRunScorePreferenceStore? store = null,
         IRunScoreSopStore? sopStore = null,
-        INativeRunScorePrefsStore? nativeStore = null)
+        INativeRunScorePrefsStore? nativeStore = null,
+        IRunScoreVendorSecretsStore? vendorSecrets = null)
     {
         _store = store ?? CreateDefaultStore();
         _sopStore = sopStore ?? new RunScoreSopStore();
         _nativeStore = nativeStore ?? new NativeRunScorePrefsStore();
+        _vendorSecrets = vendorSecrets ?? new RunScoreVendorSecretsStore();
     }
 
     private static IRunScorePreferenceStore CreateDefaultStore()
@@ -94,7 +118,12 @@ public sealed class RunScorePreferencesService
         foreach (var (name, value) in profile.Ints)
             list.Add(SopPreference.Int(name, value));
         foreach (var (name, value) in profile.Strings)
+        {
+            // Vendor credentials are company secrets — never apply from editable SOP JSON.
+            if (IsVendorCredentialName(name))
+                continue;
             list.Add(SopPreference.String(name, value ?? string.Empty));
+        }
 
         return list;
     }
@@ -170,12 +199,24 @@ public sealed class RunScorePreferencesService
             };
         }
 
+        var vendor = EnsureVendorCredentials();
+        if (vendor.UpdatedCount > 0)
+        {
+            foreach (var name in vendor.UpdatedNames)
+            {
+                if (!updated.Contains(name, StringComparer.OrdinalIgnoreCase))
+                    updated.Add(name);
+            }
+        }
+
         var msg = updated.Count == 0
             ? $"RunScore preferences already match SOP ({matched} checks)."
             : $"Updated {updated.Count} RunScore preference(s) to SOP ({matched} already matched).";
 
         if (!string.IsNullOrWhiteSpace(loaded.Warning))
             msg += " " + loaded.Warning;
+        if (!string.IsNullOrWhiteSpace(vendor.Message) && vendor.UpdatedCount > 0)
+            msg += " " + vendor.Message;
 
         return new PreferenceApplyResult
         {
@@ -248,6 +289,10 @@ public sealed class RunScorePreferencesService
                     && NotepadPlusPlusInstalled(notepadPlusPlusExePath, fileExists))
                     continue;
 
+                // Company vendor credentials — never restore a stale office snapshot over them.
+                if (IsVendorCredentialName(name))
+                    continue;
+
                 var desired = value ?? string.Empty;
                 if (IsAlternateFolderPref(name))
                     desired = WithTrailingSeparator(desired);
@@ -279,11 +324,23 @@ public sealed class RunScorePreferencesService
             }
         }
 
+        var vendor = EnsureVendorCredentials();
+        if (vendor.UpdatedCount > 0)
+        {
+            foreach (var name in vendor.UpdatedNames)
+            {
+                if (!updated.Contains(name, StringComparer.OrdinalIgnoreCase))
+                    updated.Add(name);
+            }
+        }
+
         var msg = updated.Count == 0
             ? "Office RunScore prefs already restored."
             : $"Restored {updated.Count} office RunScore preference(s) for native RSServer.";
         if (!string.IsNullOrWhiteSpace(pin.Message) && pin.UpdatedCount > 0)
             msg += " " + pin.Message;
+        if (!string.IsNullOrWhiteSpace(vendor.Message) && vendor.UpdatedCount > 0)
+            msg += " " + vendor.Message;
 
         return new PreferenceApplyResult
         {
@@ -293,6 +350,101 @@ public sealed class RunScorePreferencesService
             Message = msg
         };
     }
+
+    /// <summary>
+    /// Pin SMS / RaceRoster / RunSignUp login+password from the OneDrive secrets cache into HKCU.
+    /// Each pair applies only when both values are non-empty. Case-sensitive match.
+    /// </summary>
+    public PreferenceApplyResult EnsureVendorCredentials(RunScoreVendorSecrets? secrets = null)
+    {
+        if (!_store.IsAvailable)
+        {
+            return new PreferenceApplyResult
+            {
+                Success = true,
+                Message = "Vendor credentials pin skipped (not Windows)."
+            };
+        }
+
+        var src = secrets ?? _vendorSecrets.Load();
+        if (src is null)
+        {
+            return new PreferenceApplyResult
+            {
+                Success = true,
+                Message = "No vendor secrets cache — SMS / RaceRoster / RunSignUp unchanged."
+            };
+        }
+
+        var updated = new List<string>();
+        try
+        {
+            PinPair(SmsLogin, SmsPassword, src.SmsLogin, src.SmsPassword, updated);
+            PinPair(RaceRosterLogin, RaceRosterPassword, src.RaceRosterLogin, src.RaceRosterPassword, updated);
+            PinPair(RunSignUpLogin, RunSignUpPassword, src.RunSignUpLogin, src.RunSignUpPassword, updated);
+        }
+        catch (Exception ex)
+        {
+            return new PreferenceApplyResult
+            {
+                Success = false,
+                UpdatedCount = updated.Count,
+                UpdatedNames = updated,
+                Message = "Could not set RunScore vendor credentials: " + ex.Message
+            };
+        }
+
+        if (updated.Count == 0)
+        {
+            return new PreferenceApplyResult
+            {
+                Success = true,
+                Message = src.HasAnyCompletePair
+                    ? "RunScore vendor credentials already match cache."
+                    : "Vendor secrets cache has no complete login/password pairs."
+            };
+        }
+
+        return new PreferenceApplyResult
+        {
+            Success = true,
+            UpdatedCount = updated.Count,
+            UpdatedNames = updated,
+            Message = $"Updated {updated.Count} RunScore vendor credential value(s)."
+        };
+    }
+
+    private void PinPair(
+        string loginName,
+        string passwordName,
+        string? login,
+        string? password,
+        List<string> updated)
+    {
+        if (!RunScoreVendorSecrets.IsComplete(login, password))
+            return;
+
+        var loginValue = login!.Trim();
+        var passwordValue = password!; // passwords: do not trim (spaces may be significant)
+
+        var currentLogin = _store.TryGetString(loginName) ?? string.Empty;
+        if (!string.Equals(currentLogin, loginValue, StringComparison.Ordinal))
+        {
+            _store.SetString(loginName, loginValue);
+            updated.Add(loginName);
+        }
+
+        var currentPassword = _store.TryGetString(passwordName) ?? string.Empty;
+        if (!string.Equals(currentPassword, passwordValue, StringComparison.Ordinal))
+        {
+            _store.SetString(passwordName, passwordValue);
+            updated.Add(passwordName);
+        }
+    }
+
+    public static bool IsVendorCredentialName(string? name) =>
+        !string.IsNullOrEmpty(name)
+        && VendorCredentialNames.Contains(name, StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// When Notepad++ is on disk at the SOP path, write RunScore External Editor to that path.

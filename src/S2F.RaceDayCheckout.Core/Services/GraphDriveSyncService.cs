@@ -1182,6 +1182,82 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
         }
     }
 
+    public async Task<CloudSyncResult> SyncRunScoreVendorSecretsAsync(
+        string graphDriveRoot,
+        CancellationToken cancellationToken = default)
+    {
+        if (!_tokens.IsSignedIn)
+            return new CloudSyncResult { Success = false, Message = "Sign in to OneDrive first." };
+
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        budget.CancelAfter(GraphSyncPolicy.VendorSecretsBudget);
+
+        try
+        {
+            var rootPath = NormalizeDrivePath(graphDriveRoot);
+            var cloudPath = JoinDrivePath(rootPath, RunScoreVendorSecretsStore.CloudRelativePath);
+            var url = ItemPathUrl(cloudPath, "content");
+            using var req = await CreateRequestAsync(HttpMethod.Get, url, budget.Token).ConfigureAwait(false);
+            using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, budget.Token)
+                .ConfigureAwait(false);
+
+            if (resp.StatusCode == System.Net.HttpStatusCode.NotFound)
+            {
+                return new CloudSyncResult
+                {
+                    Success = false,
+                    Message = "Vendor secrets file not found on OneDrive (._s2f/runscore-vendor-secrets.json)."
+                };
+            }
+
+            if ((int)resp.StatusCode is 429 or 503)
+            {
+                return new CloudSyncResult
+                {
+                    Success = false,
+                    Message = "Vendor secrets download throttled — using local cache if present."
+                };
+            }
+
+            resp.EnsureSuccessStatusCode();
+            var json = await resp.Content.ReadAsStringAsync(budget.Token).ConfigureAwait(false);
+            if (!RunScoreVendorSecrets.TryParse(json, out var secrets, out var parseError))
+            {
+                return new CloudSyncResult
+                {
+                    Success = false,
+                    Message = "Invalid vendor secrets JSON on OneDrive: " + (parseError ?? "unknown")
+                };
+            }
+
+            new RunScoreVendorSecretsStore().Save(secrets);
+            return new CloudSyncResult
+            {
+                Success = true,
+                FilesTransferred = 1,
+                Message = secrets.HasAnyCompletePair
+                    ? "RunScore vendor credentials updated from OneDrive."
+                    : "Vendor secrets file downloaded (no complete login/password pairs yet)."
+            };
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return new CloudSyncResult
+            {
+                Success = false,
+                Message = "Vendor secrets download timed out — using local cache if present."
+            };
+        }
+        catch (Exception ex)
+        {
+            return new CloudSyncResult
+            {
+                Success = false,
+                Message = "Could not download vendor secrets: " + ex.Message
+            };
+        }
+    }
+
     private async Task EnsureRemoteFolderChainAsync(string driveFolderPath, CancellationToken cancellationToken)
     {
         var parts = driveFolderPath.Split('/', StringSplitOptions.RemoveEmptyEntries);
