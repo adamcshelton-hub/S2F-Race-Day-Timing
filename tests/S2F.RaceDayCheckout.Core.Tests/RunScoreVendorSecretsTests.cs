@@ -87,7 +87,8 @@ public class RunScoreVendorSecretsTests
             var store = new MemoryRunScorePreferenceStore();
             var svc = new RunScorePreferencesService(store, sopStore, new NativeRunScorePrefsStore(nativePath), vendorStore);
 
-            var pin = svc.EnsureVendorCredentials();
+            var none = new VendorCredentialOverrides();
+            var pin = svc.EnsureVendorCredentials(overrides: none);
             Assert.True(pin.Success);
             Assert.Equal("AC-sms", store.TryGetString(RunScorePreferencesService.SmsLogin));
             Assert.Equal("SmsSecret", store.TryGetString(RunScorePreferencesService.SmsPassword));
@@ -97,7 +98,7 @@ public class RunScoreVendorSecretsTests
 
             // Case-sensitive: lowercase password must update
             store.SetString(RunScorePreferencesService.SmsPassword, "smssecret");
-            var again = svc.EnsureVendorCredentials();
+            var again = svc.EnsureVendorCredentials(overrides: none);
             Assert.Contains(RunScorePreferencesService.SmsPassword, again.UpdatedNames);
             Assert.Equal("SmsSecret", store.TryGetString(RunScorePreferencesService.SmsPassword));
 
@@ -130,10 +131,108 @@ public class RunScoreVendorSecretsTests
                 new NativeRunScorePrefsStore(nativePath),
                 new RunScoreVendorSecretsStore(vendorPath));
 
-            var pin = svc.EnsureVendorCredentials();
+            var pin = svc.EnsureVendorCredentials(overrides: new VendorCredentialOverrides());
             Assert.True(pin.Success);
             Assert.Equal(0, pin.UpdatedCount);
             Assert.Equal("keep-me", store.TryGetString(RunScorePreferencesService.SmsLogin));
+        }
+        finally
+        {
+            try { File.Delete(vendorPath); } catch { }
+            try { File.Delete(sopPath); } catch { }
+            try { File.Delete(nativePath); } catch { }
+        }
+    }
+
+    [Fact]
+    public void EnsureVendorCredentials_CustomRaceRosterLogin_NotOverwrittenBySecrets()
+    {
+        var vendorPath = Path.Combine(Path.GetTempPath(), "s2f-vendor-" + Guid.NewGuid().ToString("N") + ".json");
+        var sopPath = Path.Combine(Path.GetTempPath(), "s2f-sop-" + Guid.NewGuid().ToString("N") + ".json");
+        var nativePath = Path.Combine(Path.GetTempPath(), "s2f-native-" + Guid.NewGuid().ToString("N") + ".json");
+        try
+        {
+            var vendorStore = new RunScoreVendorSecretsStore(vendorPath);
+            vendorStore.Save(new RunScoreVendorSecrets
+            {
+                SmsLogin = "AC",
+                SmsPassword = "tok",
+                RaceRosterLogin = "company@rr.com",
+                RaceRosterPassword = "companyRrPass",
+                RunSignUpLogin = "company@rsu.com",
+                RunSignUpPassword = "companyRsuPass"
+            });
+
+            var store = new MemoryRunScorePreferenceStore();
+            store.SetString(RunScorePreferencesService.RaceRosterPassword, "keep-existing-rr-pass");
+            var svc = new RunScorePreferencesService(
+                store,
+                new RunScoreSopStore(sopPath),
+                new NativeRunScorePrefsStore(nativePath),
+                vendorStore);
+
+            var ovr = new VendorCredentialOverrides
+            {
+                RaceRosterLogin = "custom@rr.com",
+                RaceRosterPassword = "", // blank → keep registry password
+                RunSignUpLogin = "", // blank → use company secrets
+                RunSignUpPassword = ""
+            };
+
+            var pin = svc.EnsureVendorCredentials(overrides: ovr);
+            Assert.True(pin.Success);
+            Assert.Equal("custom@rr.com", store.TryGetString(RunScorePreferencesService.RaceRosterLogin));
+            Assert.Equal("keep-existing-rr-pass", store.TryGetString(RunScorePreferencesService.RaceRosterPassword));
+            Assert.Equal("company@rsu.com", store.TryGetString(RunScorePreferencesService.RunSignUpLogin));
+            Assert.Equal("companyRsuPass", store.TryGetString(RunScorePreferencesService.RunSignUpPassword));
+            Assert.Equal("AC", store.TryGetString(RunScorePreferencesService.SmsLogin));
+
+            // Second pull with company secrets must not clobber custom RaceRoster login
+            var again = svc.EnsureVendorCredentials(overrides: ovr);
+            Assert.Equal("custom@rr.com", store.TryGetString(RunScorePreferencesService.RaceRosterLogin));
+            Assert.Equal(0, again.UpdatedNames.Count(n =>
+                n.Equals(RunScorePreferencesService.RaceRosterLogin, StringComparison.OrdinalIgnoreCase)
+                || n.Equals(RunScorePreferencesService.RaceRosterPassword, StringComparison.OrdinalIgnoreCase)));
+        }
+        finally
+        {
+            try { File.Delete(vendorPath); } catch { }
+            try { File.Delete(sopPath); } catch { }
+            try { File.Delete(nativePath); } catch { }
+        }
+    }
+
+    [Fact]
+    public void EnsureVendorCredentials_CustomRunSignUp_WithPassword_PinsBoth()
+    {
+        var vendorPath = Path.Combine(Path.GetTempPath(), "s2f-vendor-" + Guid.NewGuid().ToString("N") + ".json");
+        var sopPath = Path.Combine(Path.GetTempPath(), "s2f-sop-" + Guid.NewGuid().ToString("N") + ".json");
+        var nativePath = Path.Combine(Path.GetTempPath(), "s2f-native-" + Guid.NewGuid().ToString("N") + ".json");
+        try
+        {
+            var vendorStore = new RunScoreVendorSecretsStore(vendorPath);
+            vendorStore.Save(new RunScoreVendorSecrets
+            {
+                RunSignUpLogin = "company@rsu.com",
+                RunSignUpPassword = "companyPass"
+            });
+
+            var store = new MemoryRunScorePreferenceStore();
+            var svc = new RunScorePreferencesService(
+                store,
+                new RunScoreSopStore(sopPath),
+                new NativeRunScorePrefsStore(nativePath),
+                vendorStore);
+
+            var pin = svc.EnsureVendorCredentials(overrides: new VendorCredentialOverrides
+            {
+                RunSignUpLogin = "timer@office.com",
+                RunSignUpPassword = "officePass"
+            });
+
+            Assert.Equal("timer@office.com", store.TryGetString(RunScorePreferencesService.RunSignUpLogin));
+            Assert.Equal("officePass", store.TryGetString(RunScorePreferencesService.RunSignUpPassword));
+            Assert.Null(store.TryGetString(RunScorePreferencesService.RaceRosterLogin));
         }
         finally
         {

@@ -1019,6 +1019,30 @@ public sealed class MainViewModel : INotifyPropertyChanged
         set { _settings.GraphDriveRoot = value; OnPropertyChanged(); }
     }
 
+    public string RaceRosterLoginOverride
+    {
+        get => _settings.RaceRosterLoginOverride;
+        set { _settings.RaceRosterLoginOverride = value; OnPropertyChanged(); }
+    }
+
+    public string RaceRosterPasswordOverride
+    {
+        get => _settings.RaceRosterPasswordOverride;
+        set { _settings.RaceRosterPasswordOverride = value; OnPropertyChanged(); }
+    }
+
+    public string RunSignUpLoginOverride
+    {
+        get => _settings.RunSignUpLoginOverride;
+        set { _settings.RunSignUpLoginOverride = value; OnPropertyChanged(); }
+    }
+
+    public string RunSignUpPasswordOverride
+    {
+        get => _settings.RunSignUpPasswordOverride;
+        set { _settings.RunSignUpPasswordOverride = value; OnPropertyChanged(); }
+    }
+
     public bool IsGraphSignedIn => _graphAuth.IsSignedIn;
 
     public string GraphAccountStatus =>
@@ -2145,7 +2169,19 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public void SaveAdminSettings()
     {
         _settingsStore.Save(_settings);
-        Status = "Settings saved.";
+        try
+        {
+            var pin = new RunScorePreferencesService().EnsureVendorCredentials(
+                overrides: VendorCredentialOverrides.From(_settings));
+            Status = pin.UpdatedCount > 0
+                ? "Settings saved. " + pin.Message
+                : "Settings saved.";
+        }
+        catch
+        {
+            Status = "Settings saved.";
+        }
+
         ReloadFromDisk();
         NotifyGraphStatus();
     }
@@ -2230,10 +2266,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 return;
 
             // Pin HKCU as soon as the cache is fresh — do not wait for checkout / Open RunScore.
+            // Admin RaceRoster / RunSignUp overrides win over the OneDrive file.
             // RunScore still must be restarted to reload prefs if it is already open.
             try
             {
-                var pin = new RunScorePreferencesService().EnsureVendorCredentials();
+                var pin = new RunScorePreferencesService().EnsureVendorCredentials(
+                    overrides: VendorCredentialOverrides.From(_settings));
                 if (pin.UpdatedCount > 0 && !string.IsNullOrWhiteSpace(pin.Message))
                     Status = pin.Message;
                 else if (!string.IsNullOrWhiteSpace(result.Message))

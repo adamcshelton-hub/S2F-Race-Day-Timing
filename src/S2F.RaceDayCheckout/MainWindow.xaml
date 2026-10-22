@@ -823,6 +823,27 @@
                     <TextBox Text="{Binding GraphDriveRoot, UpdateSourceTrigger=PropertyChanged}" Padding="10,8"
                              Margin="0,0,0,12"
                              ToolTip="Blank = OneDrive My files root (Atlanta, Test Office, …). Only fill in if offices live inside a subfolder."/>
+
+                    <TextBlock Text="RunScore Vendor Logins" Margin="0,4,0,4" FontWeight="SemiBold"/>
+                    <TextBlock TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" FontSize="12" Margin="0,0,0,10"
+                               Text="Leave blank to use company credentials from OneDrive (._s2f/runscore-vendor-secrets.json). A custom login on this laptop is never overwritten by that file. SMS always uses the company file. Save, then restart RunScore if it is open."/>
+
+                    <TextBlock Text="RaceRoster Login" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}" FontSize="12"/>
+                    <TextBox Text="{Binding RaceRosterLoginOverride, UpdateSourceTrigger=PropertyChanged}" Padding="10,8"
+                             Margin="0,0,0,8"/>
+                    <TextBlock Text="RaceRoster Password" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}" FontSize="12"/>
+                    <TextBox Text="{Binding RaceRosterPasswordOverride, UpdateSourceTrigger=PropertyChanged}" Padding="10,8"
+                             Margin="0,0,0,12"
+                             ToolTip="Optional when only changing the login — blank keeps the current RunScore password."/>
+
+                    <TextBlock Text="RunSignUp Login" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}" FontSize="12"/>
+                    <TextBox Text="{Binding RunSignUpLoginOverride, UpdateSourceTrigger=PropertyChanged}" Padding="10,8"
+                             Margin="0,0,0,8"/>
+                    <TextBlock Text="RunSignUp Password" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}" FontSize="12"/>
+                    <TextBox Text="{Binding RunSignUpPasswordOverride, UpdateSourceTrigger=PropertyChanged}" Padding="10,8"
+                             Margin="0,0,0,12"
+                             ToolTip="Optional when only changing the login — blank keeps the current RunScore password."/>
+
                     <Button Content="Edit RunScore SOP…" Style="{StaticResource SecondaryButton}"
                             HorizontalAlignment="Left" MinWidth="200" Click="EditRunScoreSop_Click"
                             ToolTip="Opens runscore-sop.json — save the file, then checkout / Open RunScore to apply."/>

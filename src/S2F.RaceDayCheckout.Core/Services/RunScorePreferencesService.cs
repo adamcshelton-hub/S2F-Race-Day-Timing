@@ -352,10 +352,14 @@ public sealed class RunScorePreferencesService
     }
 
     /// <summary>
-    /// Pin SMS / RaceRoster / RunSignUp login+password from the OneDrive secrets cache into HKCU.
-    /// Each pair applies only when both values are non-empty. Case-sensitive match.
+    /// Pin SMS / RaceRoster / RunSignUp into HKCU.
+    /// SMS always from the OneDrive secrets cache.
+    /// RaceRoster / RunSignUp use Admin overrides when that login is set; otherwise the cache.
+    /// Custom logins are never overwritten by a later secrets.json pull.
     /// </summary>
-    public PreferenceApplyResult EnsureVendorCredentials(RunScoreVendorSecrets? secrets = null)
+    public PreferenceApplyResult EnsureVendorCredentials(
+        RunScoreVendorSecrets? secrets = null,
+        VendorCredentialOverrides? overrides = null)
     {
         if (!_store.IsAvailable)
         {
@@ -367,21 +371,23 @@ public sealed class RunScorePreferencesService
         }
 
         var src = secrets ?? _vendorSecrets.Load();
-        if (src is null)
-        {
-            return new PreferenceApplyResult
-            {
-                Success = true,
-                Message = "No vendor secrets cache — SMS / RaceRoster / RunSignUp unchanged."
-            };
-        }
-
+        var ovr = overrides ?? LoadOverridesFromSettings();
         var updated = new List<string>();
+
         try
         {
-            PinPair(SmsLogin, SmsPassword, src.SmsLogin, src.SmsPassword, updated);
-            PinPair(RaceRosterLogin, RaceRosterPassword, src.RaceRosterLogin, src.RaceRosterPassword, updated);
-            PinPair(RunSignUpLogin, RunSignUpPassword, src.RunSignUpLogin, src.RunSignUpPassword, updated);
+            if (src is not null)
+                PinCompletePair(SmsLogin, SmsPassword, src.SmsLogin, src.SmsPassword, updated);
+
+            if (ovr.HasRaceRosterLogin)
+                PinCustomLogin(RaceRosterLogin, RaceRosterPassword, ovr.RaceRosterLogin, ovr.RaceRosterPassword, updated);
+            else if (src is not null)
+                PinCompletePair(RaceRosterLogin, RaceRosterPassword, src.RaceRosterLogin, src.RaceRosterPassword, updated);
+
+            if (ovr.HasRunSignUpLogin)
+                PinCustomLogin(RunSignUpLogin, RunSignUpPassword, ovr.RunSignUpLogin, ovr.RunSignUpPassword, updated);
+            else if (src is not null)
+                PinCompletePair(RunSignUpLogin, RunSignUpPassword, src.RunSignUpLogin, src.RunSignUpPassword, updated);
         }
         catch (Exception ex)
         {
@@ -396,12 +402,15 @@ public sealed class RunScorePreferencesService
 
         if (updated.Count == 0)
         {
+            var hasSource = src?.HasAnyCompletePair == true
+                || ovr.HasRaceRosterLogin
+                || ovr.HasRunSignUpLogin;
             return new PreferenceApplyResult
             {
                 Success = true,
-                Message = src.HasAnyCompletePair
-                    ? "RunScore vendor credentials already match cache."
-                    : "Vendor secrets cache has no complete login/password pairs."
+                Message = hasSource
+                    ? "RunScore vendor credentials already match."
+                    : "No vendor secrets cache or Admin overrides — SMS / RaceRoster / RunSignUp unchanged."
             };
         }
 
@@ -414,7 +423,20 @@ public sealed class RunScorePreferencesService
         };
     }
 
-    private void PinPair(
+    private static VendorCredentialOverrides LoadOverridesFromSettings()
+    {
+        try
+        {
+            return VendorCredentialOverrides.From(new SettingsStore().Load());
+        }
+        catch
+        {
+            return new VendorCredentialOverrides();
+        }
+    }
+
+    /// <summary>Company secrets pair — both login and password required.</summary>
+    private void PinCompletePair(
         string loginName,
         string passwordName,
         string? login,
@@ -423,23 +445,33 @@ public sealed class RunScorePreferencesService
     {
         if (!RunScoreVendorSecrets.IsComplete(login, password))
             return;
+        PinString(loginName, login!.Trim(), updated);
+        PinString(passwordName, password!, updated);
+    }
 
-        var loginValue = login!.Trim();
-        var passwordValue = password!; // passwords: do not trim (spaces may be significant)
+    /// <summary>
+    /// Admin override: always write login; write password only when the override password is non-empty
+    /// (blank password keeps the current registry password).
+    /// </summary>
+    private void PinCustomLogin(
+        string loginName,
+        string passwordName,
+        string login,
+        string? password,
+        List<string> updated)
+    {
+        PinString(loginName, login.Trim(), updated);
+        if (!string.IsNullOrEmpty(password))
+            PinString(passwordName, password, updated);
+    }
 
-        var currentLogin = _store.TryGetString(loginName) ?? string.Empty;
-        if (!string.Equals(currentLogin, loginValue, StringComparison.Ordinal))
-        {
-            _store.SetString(loginName, loginValue);
-            updated.Add(loginName);
-        }
-
-        var currentPassword = _store.TryGetString(passwordName) ?? string.Empty;
-        if (!string.Equals(currentPassword, passwordValue, StringComparison.Ordinal))
-        {
-            _store.SetString(passwordName, passwordValue);
-            updated.Add(passwordName);
-        }
+    private void PinString(string name, string value, List<string> updated)
+    {
+        var current = _store.TryGetString(name) ?? string.Empty;
+        if (string.Equals(current, value, StringComparison.Ordinal))
+            return;
+        _store.SetString(name, value);
+        updated.Add(name);
     }
 
     public static bool IsVendorCredentialName(string? name) =>

@@ -69,4 +69,28 @@ public sealed class AppSettings
     /// Only set this if offices live in a subfolder on OneDrive.
     /// </summary>
     public string GraphDriveRoot { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Optional laptop override for RunScore RaceRoster login. When non-empty, OneDrive vendor
+    /// secrets will not overwrite RaceRoster credentials on this PC.
+    /// </summary>
+    public string RaceRosterLoginOverride { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Optional RaceRoster password for <see cref="RaceRosterLoginOverride"/>.
+    /// Blank keeps the current registry password when only the login is customized.
+    /// </summary>
+    public string RaceRosterPasswordOverride { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Optional laptop override for RunScore RunSignUp login. When non-empty, OneDrive vendor
+    /// secrets will not overwrite RunSignUp credentials on this PC.
+    /// </summary>
+    public string RunSignUpLoginOverride { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Optional RunSignUp password for <see cref="RunSignUpLoginOverride"/>.
+    /// Blank keeps the current registry password when only the login is customized.
+    /// </summary>
+    public string RunSignUpPasswordOverride { get; set; } = string.Empty;
 }
