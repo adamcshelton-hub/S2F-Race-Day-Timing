@@ -58,6 +58,50 @@ public class EventPackInfoTests
         Assert.DoesNotContain("@", pack.DisplayLock);
     }
 
+    [Fact]
+    public void DisplayLock_ReleasedShowsLastFinishedPcAndWhen()
+    {
+        var pack = new EventPackInfo
+        {
+            Office = "Test",
+            ParentEvent = "Event",
+            SessionName = "Event",
+            RelativePath = "Event",
+            Path = @"C:\x\Event",
+            EventFiles = Array.Empty<string>(),
+            Lock = new CheckoutLock
+            {
+                Status = LockLifecycleStatus.Released,
+                HolderName = "BECKBARRETT3C75",
+                MachineName = "BECKBARRETT3C75",
+                LastSeenAt = DateTimeOffset.UtcNow.AddHours(-2),
+                CheckedOutAt = DateTimeOffset.UtcNow.AddHours(-5)
+            }
+        };
+
+        Assert.False(pack.IsActivelyCheckedOut);
+        Assert.Equal(
+            "Last Finished · BECKBARRETT3C75 · 2 Hr Ago",
+            pack.DisplayLock);
+    }
+
+    [Fact]
+    public void DisplayLock_NoLockIsAvailable()
+    {
+        var pack = new EventPackInfo
+        {
+            Office = "Test",
+            ParentEvent = "Event",
+            SessionName = "Event",
+            RelativePath = "Event",
+            Path = @"C:\x\Event",
+            EventFiles = Array.Empty<string>(),
+            Lock = null
+        };
+
+        Assert.Equal("Available", pack.DisplayLock);
+    }
+
     [Theory]
     [InlineData(30, "Just Now")]
     [InlineData(120, "2 Min Ago")]

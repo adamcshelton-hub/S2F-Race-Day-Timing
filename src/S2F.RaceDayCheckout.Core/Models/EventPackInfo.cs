@@ -94,19 +94,29 @@ public sealed class EventPackInfo
             if (IsNavigationFolder)
                 return "Folder";
 
-            if (!IsActivelyCheckedOut || Lock is null)
-                return "Available";
-
-            var who = FormatLockWho(Lock);
-            // Present tense — the lock is still Active (even when heartbeat is stale).
-            // Soft take-over is available when the other laptop looks idle, not "was" (past).
-            if (IsLockStale)
+            if (IsActivelyCheckedOut && Lock is not null)
             {
-                var lastSeen = FormatLockLastSeen(Lock.LastSeenAt);
-                return $"Open on {who} · Last Seen {lastSeen} · Soft Take Over Available";
+                var who = FormatLockWho(Lock);
+                // Present tense — the lock is still Active (even when heartbeat is stale).
+                // Soft take-over is available when the other laptop looks idle, not "was" (past).
+                if (IsLockStale)
+                {
+                    var lastSeen = FormatLockLastSeen(Lock.LastSeenAt);
+                    return $"Open on {who} · Last Seen {lastSeen} · Soft Take Over Available";
+                }
+
+                return $"Checked Out · {who}";
             }
 
-            return $"Checked Out · {who}";
+            // Released lock from Finish — Finish time + PC (no extra Graph; already on _checkout.json).
+            if (Lock is { Status: LockLifecycleStatus.Released })
+            {
+                var who = FormatLockWho(Lock);
+                var when = FormatLockLastSeen(Lock.LastSeenAt);
+                return $"Last Finished · {who} · {when}";
+            }
+
+            return "Available";
         }
     }
 
