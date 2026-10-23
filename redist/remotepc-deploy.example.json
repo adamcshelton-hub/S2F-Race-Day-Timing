@@ -1,0 +1,9 @@
+{
+  "configurationId": "PASTE_CONFIGURATION_ID_FROM_REMOTEPC_DEPLOY_PACKAGE",
+  "groupName": "Timing Laptops",
+  "personalKey": "",
+  "showConfirm": false,
+  "hideTray": false,
+  "connectPermission": 0,
+  "computerName": ""
+}

@@ -28,6 +28,10 @@ public sealed class PreferenceApplyResult
 /// re-applied after <see cref="RestoreNativePrefs"/> so Finish does not revert to Windows Notepad.
 /// </para>
 /// <para>
+/// External Timers (Tools → External Timers) are company SOP rows: applied on app start and ApplySop;
+/// Finish restore does not wipe them.
+/// </para>
+/// <para>
 /// Vendor credentials (SMS / RaceRoster / RunSignUp) come from the OneDrive secrets cache — never from
 /// Admin SOP. Pinned on ApplySop and again after RestoreNativePrefs; excluded from native snapshot restore.
 /// </para>
@@ -251,7 +255,7 @@ public sealed class RunScorePreferencesService
         var snap = _nativeStore.Load();
         if (snap is null)
         {
-            var pinnedOnly = EnsureNotepadPlusPlusExternalEditor(notepadPlusPlusExePath, fileExists);
+            var pinnedOnly = PinMachinePolicyPrefs(notepadPlusPlusExePath, fileExists);
             return new PreferenceApplyResult
             {
                 Success = true,
@@ -268,6 +272,8 @@ public sealed class RunScorePreferencesService
         {
             foreach (var (name, value) in snap.Bools)
             {
+                if (RunScoreExternalTimers.IsExternalTimerPrefName(name))
+                    continue;
                 if (_store.TryGetBool(name) == value)
                     continue;
                 _store.SetBool(name, value);
@@ -276,6 +282,8 @@ public sealed class RunScorePreferencesService
 
             foreach (var (name, value) in snap.Ints)
             {
+                if (RunScoreExternalTimers.IsExternalTimerPrefName(name))
+                    continue;
                 if (_store.TryGetInt(name) == value)
                     continue;
                 _store.SetInt(name, value);
@@ -291,6 +299,10 @@ public sealed class RunScorePreferencesService
 
                 // Company vendor credentials — never restore a stale office snapshot over them.
                 if (IsVendorCredentialName(name))
+                    continue;
+
+                // External Timers — company SOP; re-pinned after restore.
+                if (RunScoreExternalTimers.IsExternalTimerPrefName(name))
                     continue;
 
                 var desired = value ?? string.Empty;
@@ -314,7 +326,7 @@ public sealed class RunScorePreferencesService
             };
         }
 
-        var pin = EnsureNotepadPlusPlusExternalEditor(notepadPlusPlusExePath, fileExists);
+        var pin = PinMachinePolicyPrefs(notepadPlusPlusExePath, fileExists);
         if (pin.UpdatedCount > 0)
         {
             foreach (var name in pin.UpdatedNames)
@@ -479,6 +491,101 @@ public sealed class RunScorePreferencesService
         && VendorCredentialNames.Contains(name, StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
+    /// Write External Timers from runscore-sop.json (seeded from company export) into HKCU.
+    /// Call on app start so a laptop has timer rows before the first checkout.
+    /// </summary>
+    public PreferenceApplyResult EnsureExternalTimers()
+    {
+        if (!_store.IsAvailable)
+        {
+            return new PreferenceApplyResult
+            {
+                Success = true,
+                Message = "External Timers pin skipped (not Windows)."
+            };
+        }
+
+        try
+        {
+            var loaded = _sopStore.Load();
+            var desired = RunScoreExternalTimers.BuildPrefs(loaded.Profile);
+            if (desired.Count == 0)
+            {
+                return new PreferenceApplyResult
+                {
+                    Success = true,
+                    Message = "No External Timers in SOP."
+                };
+            }
+
+            var updated = new List<string>();
+            var matched = 0;
+            foreach (var pref in desired)
+            {
+                if (Matches(pref))
+                {
+                    matched++;
+                    continue;
+                }
+
+                Write(pref);
+                updated.Add(pref.Name);
+            }
+
+            return new PreferenceApplyResult
+            {
+                Success = true,
+                UpdatedCount = updated.Count,
+                AlreadyMatchedCount = matched,
+                UpdatedNames = updated,
+                Message = updated.Count == 0
+                    ? $"External Timers already match SOP ({matched} checks)."
+                    : $"Updated {updated.Count} External Timer preference(s) ({matched} already matched)."
+            };
+        }
+        catch (Exception ex)
+        {
+            return new PreferenceApplyResult
+            {
+                Success = false,
+                Message = "Could not set External Timers: " + ex.Message
+            };
+        }
+    }
+
+    /// <summary>Notepad++ External Editor + External Timers (company policy pins after Finish restore).</summary>
+    private PreferenceApplyResult PinMachinePolicyPrefs(
+        string? notepadPlusPlusExePath = null,
+        Func<string, bool>? fileExists = null)
+    {
+        var pin = EnsureNotepadPlusPlusExternalEditor(notepadPlusPlusExePath, fileExists);
+        var timers = EnsureExternalTimers();
+        var updated = new List<string>(pin.UpdatedNames);
+        foreach (var name in timers.UpdatedNames)
+        {
+            if (!updated.Contains(name, StringComparer.OrdinalIgnoreCase))
+                updated.Add(name);
+        }
+
+        var parts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(pin.Message) && pin.UpdatedCount > 0)
+            parts.Add(pin.Message);
+        if (!string.IsNullOrWhiteSpace(timers.Message) && timers.UpdatedCount > 0)
+            parts.Add(timers.Message);
+
+        return new PreferenceApplyResult
+        {
+            Success = pin.Success && timers.Success,
+            UpdatedCount = updated.Count,
+            AlreadyMatchedCount = pin.AlreadyMatchedCount + timers.AlreadyMatchedCount,
+            UpdatedNames = updated,
+            Message = parts.Count == 0
+                ? (pin.Message + " " + timers.Message).Trim()
+                : string.Join(" ", parts)
+        };
+    }
+
+    /// <summary>
     /// When Notepad++ is on disk at the SOP path, write RunScore External Editor to that path.
     /// Survives Finish / app close. No-op if the exe is missing.
     /// </summary>
@@ -609,6 +716,10 @@ public sealed class RunScorePreferencesService
             var snap = new NativeRunScorePrefsSnapshot { CapturedAt = DateTimeOffset.UtcNow };
             foreach (var pref in desired)
             {
+                // External Timers stay company SOP — do not treat office snapshot as source of truth.
+                if (RunScoreExternalTimers.IsExternalTimerPrefName(pref.Name))
+                    continue;
+
                 switch (pref.Kind)
                 {
                     case SopPreferenceKind.Bool:

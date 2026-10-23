@@ -8,8 +8,8 @@
     <UseWPF>true</UseWPF>
     <RootNamespace>S2F.RaceDayCheckout</RootNamespace>
     <AssemblyName>S2F.RaceDayCheckout</AssemblyName>
-    <Version>0.6.6</Version>
-    <InformationalVersion>0.6.6</InformationalVersion>
+    <Version>0.7.0</Version>
+    <InformationalVersion>0.7.0</InformationalVersion>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
     <!-- Velopack: custom Main before WPF startup -->
     <StartupObject>S2F.RaceDayCheckout.Program</StartupObject>
@@ -25,5 +25,16 @@
     <ApplicationDefinition Remove="App.xaml" />
     <Page Include="App.xaml" />
     <Resource Include="Assets\logo-mark.png" />
+  </ItemGroup>
+  <!-- Optional RemotePC deploy package (gitignored). Present → copied next to the exe as redist\. -->
+  <ItemGroup Condition="Exists('..\..\redist\remotepc-host.bin')">
+    <None Include="..\..\redist\remotepc-host.bin"
+          CopyToOutputDirectory="PreserveNewest"
+          Link="redist\remotepc-host.bin" />
+  </ItemGroup>
+  <ItemGroup Condition="Exists('..\..\redist\remotepc-deploy.json')">
+    <None Include="..\..\redist\remotepc-deploy.json"
+          CopyToOutputDirectory="PreserveNewest"
+          Link="redist\remotepc-deploy.json" />
   </ItemGroup>
 </Project>

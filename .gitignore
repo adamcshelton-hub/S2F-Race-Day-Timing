@@ -17,3 +17,9 @@ publish/
 
 # Local Squarespace how-to drafts (paste from disk; not shipped in the app)
 docs/
+
+# RemotePC deploy package (account Configuration ID + MSI) — drop locally / CI secret; do not commit.
+# Keep remotepc-deploy.example.json tracked.
+redist/remotepc-host.bin
+redist/remotepc-deploy.json
+!redist/remotepc-deploy.example.json

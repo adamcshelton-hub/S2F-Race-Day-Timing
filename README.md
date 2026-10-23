@@ -23,8 +23,22 @@ Admin settings: tap **Admin** (top-right), enter PIN.
    - Parallels / ARM Windows → **win-arm64**
 3. Run Setup.exe (signed builds avoid SmartScreen warnings).
 4. App checks GitHub for updates on launch. It will **not** restart while an event is checked out.
+5. On first launch of a **new bare Windows laptop** (RemotePC missing), the app silently deploys the company RemotePC host when `redist/remotepc-host.bin` + `redist/remotepc-deploy.json` are bundled.
+   - **Skipped** when RemotePC is already installed (host-only or full viewer+host suite) — deploy MSI is never re-run over an existing install.
+   - **Skipped** on **Parallels Windows guests** (Mac laptops): RemotePC stays on the Mac host; we do not install into the VM.
 
 Admin → **Check for updates** forces a check anytime.
+
+### RemotePC deploy redist (ops)
+
+Not committed (account-scoped). For a release pack that can enroll hosts:
+
+1. RemotePC web → **Deploy Package** → download the **MSI** and copy the **Configuration ID**.
+2. Rename the MSI to `remotepc-host.bin` (Velopack must not re-sign it as an exe).
+3. Copy `redist/remotepc-deploy.example.json` → `redist/remotepc-deploy.json` and paste the Configuration ID (set `groupName` as desired).
+4. Place both files under `publish/<rid>/redist/` before `vpk pack` (or add a CI secret copy step).
+
+See [RemotePC mass deployment](https://www.remotepc.com/mass-deployment-windows).
 
 ## Publish a release (ops)
 
@@ -115,9 +129,10 @@ Admin → **Edit RunScore SOP…** opens that file. Use `"{{BackupPath}}"` for a
 | Alternate folder to save entries (`Save entries dir`) | `{{BackupPath}}` → this checkout’s Backup |
 | Alternate folder to save results (`Save results dir`) | Same |
 | Minutes for Auto Save | **1** (`autoSaveMinutes`; → `300` counts) |
+| External Timers (Tools → External Timers) | Company export: MyLaps BibTag / ChronoTrack / iPico Sport (see `fixtures/runscore-external-timers.json`) |
 | Other Server Preferences | See `bools` / `ints` / `strings` in the JSON |
 
-Timers should not need to open Tools → Preferences on race day. If RunScore was already open, close and relaunch so it reloads the registry. Save the JSON, then checkout or Open RunScore to apply.
+External Timers are written on **app start** and again on checkout / Open RunScore. Timers should not need to open Tools → Preferences on race day. If RunScore was already open, close and relaunch so it reloads the registry. Save the JSON, then checkout or Open RunScore to apply.
 
 **Native RSServer vs race-day:** RunScore has one prefs hive (`HKCU\…\RunScore`). There is no separate “race-day prefs” profile. Before SOP write, the app snapshots the current alternate-folder (and related SOP) values to `%AppData%\S2FRaceDayCheckout\runscore-native-prefs.json`, then restores them on **Finish** (and on app start when nothing is checked out) so opening RSServer outside this app does not keep the race Backup paths.
 

@@ -5,6 +5,7 @@ using System.Windows.Data;
 using System.Windows.Input;
 using System.Windows.Threading;
 using S2F.RaceDayCheckout.Core.Models;
+using S2F.RaceDayCheckout.Core.Services;
 using S2F.RaceDayCheckout.Services;
 using S2F.RaceDayCheckout.ViewModels;
 
@@ -290,6 +291,22 @@ public partial class MainWindow : Window
         // Once per machine: official Notepad++ installer → C:\Program Files\Notepad++.
         // Skipped when that exe is already there, and when this build has no bundled installer.
         await NotepadPlusPlusSetup.EnsureAsync(this, _vm);
+
+        // New laptops only: silent RemotePC host deploy (skips if already installed or redist missing).
+        await RemotePcSetup.EnsureAsync(this, _vm);
+
+        // Company External Timers → HKCU (same hive RunScore Tools → External Timers uses).
+        // Soft — registry write only; does not require RunScore to be installed yet.
+        try
+        {
+            var timers = new RunScorePreferencesService().EnsureExternalTimers();
+            if (timers.UpdatedCount > 0 && !string.IsNullOrWhiteSpace(timers.Message))
+                _vm.Status = timers.Message;
+        }
+        catch
+        {
+            // Non-fatal
+        }
 
         // First install only (Velopack OnFirstRun): create RaceDay Active/Backup + Defender opt-in.
         // Not on checkout; not again on routine updates once DefenderExclusionsConfigured is set.

@@ -87,7 +87,9 @@ public sealed class RunScoreSopStore : IRunScoreSopStore
             }
 
             NormalizeDictionaries(profile);
-            if (ApplyNotepadPlusPlusDefault(profile))
+            var rewritten = ApplyNotepadPlusPlusDefault(profile)
+                            || RunScoreExternalTimers.MergeMissingCompanyDefaults(profile);
+            if (rewritten)
             {
                 try
                 {

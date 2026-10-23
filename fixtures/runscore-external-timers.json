@@ -1,0 +1,95 @@
+{
+  "external_timers": [
+    {
+      "adjust_day": false,
+      "baud": 0,
+      "device_code": "MYLAPS_BIBTAG",
+      "index": 0,
+      "lane": "*",
+      "port": 3097,
+      "server_ip": "",
+      "start": true,
+      "tcp": true
+    },
+    {
+      "adjust_day": false,
+      "baud": 0,
+      "device_code": "CHRONOTRACK",
+      "index": 1,
+      "lane": "*",
+      "port": 61611,
+      "server_ip": "",
+      "start": false,
+      "tcp": true
+    },
+    {
+      "adjust_day": false,
+      "baud": 0,
+      "device_code": "IPICO_SPORT",
+      "index": 2,
+      "lane": "1",
+      "port": 10000,
+      "server_ip": "192.168.8.199",
+      "start": false,
+      "tcp": true
+    },
+    {
+      "adjust_day": false,
+      "baud": 0,
+      "device_code": "TIMEMACH",
+      "index": 3,
+      "lane": "*",
+      "port": 0,
+      "server_ip": "",
+      "start": false,
+      "tcp": false
+    },
+    {
+      "adjust_day": false,
+      "baud": 0,
+      "device_code": "TIMEMACH",
+      "index": 4,
+      "lane": "*",
+      "port": 0,
+      "server_ip": "",
+      "start": false,
+      "tcp": false
+    },
+    {
+      "adjust_day": false,
+      "baud": 0,
+      "device_code": "TIMEMACH",
+      "index": 5,
+      "lane": "*",
+      "port": 0,
+      "server_ip": "",
+      "start": false,
+      "tcp": false
+    },
+    {
+      "adjust_day": false,
+      "baud": 0,
+      "device_code": "TIMEMACH",
+      "index": 6,
+      "lane": "*",
+      "port": 0,
+      "server_ip": "",
+      "start": false,
+      "tcp": false
+    },
+    {
+      "adjust_day": false,
+      "baud": 0,
+      "device_code": "TIMEMACH",
+      "index": 7,
+      "lane": "*",
+      "port": 0,
+      "server_ip": "",
+      "start": false,
+      "tcp": false
+    }
+  ],
+  "format": "runscore-external-timers",
+  "source_app": "server",
+  "version": 1
+}

@@ -64,6 +64,12 @@ jobs:
         shell: pwsh
         run: ./build/fetch-notepadpp.ps1 -Rid "${{ matrix.rid }}" -Destination "publish/${{ matrix.rid }}/redist"
 
+      # Optional: when redist/remotepc-host.bin + remotepc-deploy.json exist on the runner
+      # (local pack, or future private artifact), bundle them. Skips cleanly when absent.
+      - name: Bundle RemotePC deploy (optional)
+        shell: pwsh
+        run: ./build/copy-remotepc-redist.ps1 -Destination "publish/${{ matrix.rid }}/redist"
+
       - name: Check Artifact Signing config
         id: signing
         shell: pwsh
