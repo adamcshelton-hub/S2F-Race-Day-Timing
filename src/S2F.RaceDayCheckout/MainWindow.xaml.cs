@@ -352,6 +352,8 @@ public partial class MainWindow : Window
 
     private void Admin_Click(object sender, RoutedEventArgs e) => _vm.TryOpenAdmin();
 
+    private void ExitAdmin_Click(object sender, RoutedEventArgs e) => _vm.ExitAdmin();
+
     private void AdminSetupNewEvent_Click(object sender, RoutedEventArgs e) =>
         _vm.ShowAdminSetupNewEvent();
 

@@ -28,6 +28,13 @@
             <Hyperlink Click="Admin_Click" Foreground="{StaticResource AccentBrush}"
                        TextDecorations="Underline" Cursor="Hand">Admin</Hyperlink>
           </TextBlock>
+          <TextBlock DockPanel.Dock="Right" VerticalAlignment="Center" HorizontalAlignment="Right"
+                     FontSize="14" FontWeight="SemiBold" Margin="12,0,0,0"
+                     Visibility="{Binding ShowExitAdmin, Converter={StaticResource BoolVis}}"
+                     ToolTip="Leave Admin and return to race day">
+            <Hyperlink Click="ExitAdmin_Click" Foreground="{StaticResource AccentBrush}"
+                       TextDecorations="Underline" Cursor="Hand">Exit Admin</Hyperlink>
+          </TextBlock>
           <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
             <Image Source="pack://application:,,,/Assets/logo-mark.png"
                    Width="40" Height="40" Stretch="Uniform" Margin="0,0,14,0"

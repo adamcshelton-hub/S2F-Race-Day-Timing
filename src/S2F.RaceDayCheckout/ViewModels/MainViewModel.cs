@@ -344,6 +344,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 OnPropertyChanged(nameof(StepTitle));
                 OnPropertyChanged(nameof(StepSubtitle));
                 OnPropertyChanged(nameof(ShowBack));
+                OnPropertyChanged(nameof(ShowExitAdmin));
                 OnPropertyChanged(nameof(ShowRolePicker));
                 OnPropertyChanged(nameof(ShowCheckForUpdates));
                 OnPropertyChanged(nameof(IsTimingActive));
@@ -491,9 +492,26 @@ public sealed class MainViewModel : INotifyPropertyChanged
             ? "This race has more than one non-primary T&S file. Double-click the one this Announcer T&S laptop should open (announcer, video display, special callout, …)."
             : "More than one Timing & Scoring file was found. Double-click the main timing file for this race.";
 
-    public bool ShowBack => Step is WizardStep.Session or WizardStep.EventFile or WizardStep.Admin;
+    /// <summary>
+    /// Race-day Session/EventFile, or Admin only when Back still walks an inner wizard step
+    /// (not the Admin top screens — use Exit Admin for those).
+    /// </summary>
+    public bool ShowBack =>
+        Step is WizardStep.Session or WizardStep.EventFile
+        || (Step == WizardStep.Admin && AdminBackStaysInAdmin);
+
+    /// <summary>
+    /// True when Admin Back peels a Setup / Edit sub-step instead of leaving Admin entirely.
+    /// </summary>
+    private bool AdminBackStaysInAdmin =>
+        (_adminSection == AdminSection.SetupNewEvent
+         && _adminNewEventSubStep != AdminNewEventSubStep.Layout)
+        || (_adminSection == AdminSection.EditCurrentEvent
+            && _adminEventsSubStep != AdminEventsSubStep.Office);
 
     public bool ShowAdminHeaderLink => Step != WizardStep.Admin;
+
+    public bool ShowExitAdmin => Step == WizardStep.Admin;
 
     public bool ShowRolePicker => !HasActive && Step is WizardStep.Office or WizardStep.Session;
 
@@ -1278,6 +1296,18 @@ public sealed class MainViewModel : INotifyPropertyChanged
             WizardStep.Admin => HasActive ? WizardStep.Active : WizardStep.Office,
             _ => Step
         };
+    }
+
+    /// <summary>
+    /// Leave Admin in one click (office list, or Active when a checkout is open).
+    /// Does not walk Setup / Edit wizard steps — use Back for that.
+    /// </summary>
+    public void ExitAdmin()
+    {
+        if (Step != WizardStep.Admin)
+            return;
+
+        Step = HasActive ? WizardStep.Active : WizardStep.Office;
     }
 
     /// <summary>
@@ -3885,6 +3915,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(StepTitle));
         OnPropertyChanged(nameof(StepSubtitle));
         OnPropertyChanged(nameof(ShowAdminHeaderLink));
+        OnPropertyChanged(nameof(ShowExitAdmin));
+        OnPropertyChanged(nameof(ShowBack));
     }
 
     private void NotifyAdminTsSetup()
