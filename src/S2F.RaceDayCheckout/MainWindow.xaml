@@ -304,27 +304,27 @@
                            Text="When you're done: close RunScore and Timing &amp; Scoring, then tap Finish below. Finish asks you to confirm the main timing .event, uploads the race (including every .event in Active), and clears live autosave."/>
               </Border>
 
-              <Button Content="Finish" Style="{StaticResource SaveButton}"
-                      HorizontalAlignment="Stretch" FontSize="18" MinHeight="56" Margin="0,0,0,16"
-                      IsEnabled="{Binding CanTapPrimaryActions}"
-                      Click="Finish_Click"/>
-
-              <!-- Persist Save As map while Active has no .event yet (dialog alone is easy to forget). -->
+              <!-- Visible after Create a New Timing & Scoring (or when Active has no .event yet). -->
               <Border Background="#F7F8FA" BorderBrush="{StaticResource LineBrush}" BorderThickness="1"
-                      CornerRadius="8" Padding="16"
+                      CornerRadius="8" Padding="14" Margin="0,0,0,16"
                       Visibility="{Binding ShowActiveSaveAsGuide, Converter={StaticResource BoolVis}}">
                 <StackPanel>
-                  <TextBlock Text="T&amp;S Save As Location" FontSize="15" FontWeight="SemiBold"
-                             Margin="0,0,0,10"/>
+                  <TextBlock Text="T&amp;S Save As Path" FontSize="15" FontWeight="SemiBold"
+                             Margin="0,0,0,8"/>
                   <TextBlock Text="{Binding ActiveSaveAsFolderGuide}"
                              FontFamily="Consolas, Cascadia Mono, Courier New"
-                             FontSize="13" LineHeight="20" TextWrapping="Wrap"
+                             FontSize="13" TextWrapping="Wrap"
                              Foreground="{StaticResource MutedBrush}"/>
-                  <TextBlock TextWrapping="Wrap" FontSize="13" Margin="0,12,0,0"
+                  <TextBlock TextWrapping="Wrap" FontSize="13" Margin="0,10,0,0"
                              Foreground="{StaticResource MutedBrush}"
-                             Text="Main timing .event and any announcer / video .event files all Save As into this same Active folder. Finish lets you mark which file is main timing; other .event files are for Announcer T&amp;S Laptop."/>
+                             Text="In Timing &amp; Scoring Save As, use This PC (not Documents) and save into this folder. Announcer / video files go here too — Finish uploads every .event in Active."/>
                 </StackPanel>
               </Border>
+
+              <Button Content="Finish" Style="{StaticResource SaveButton}"
+                      HorizontalAlignment="Stretch" FontSize="18" MinHeight="56" Margin="0,0,0,0"
+                      IsEnabled="{Binding CanTapPrimaryActions}"
+                      Click="Finish_Click"/>
             </StackPanel>
           </ScrollViewer>
         </Border>
@@ -600,50 +600,77 @@
                 </ListBox.ItemTemplate>
               </ListBox>
 
-              <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
-                            Visibility="{Binding IsAdminEventsAssign, Converter={StaticResource BoolVis}}">
-                <StackPanel>
-                  <StackPanel Visibility="{Binding ShowAdminTsSetup, Converter={StaticResource BoolVis}}">
+              <DockPanel Visibility="{Binding IsAdminEventsAssign, Converter={StaticResource BoolVis}}">
+                <!-- Main timing assignment stays above the scroll — not buried under Launch / Save As. -->
+                <Border DockPanel.Dock="Top"
+                        Background="#F3FBF6" BorderBrush="{StaticResource SaveBrush}" BorderThickness="1"
+                        CornerRadius="8" Padding="16" Margin="0,0,0,14"
+                        Visibility="{Binding ShowAdminSaveAssignment, Converter={StaticResource BoolVis}}">
+                  <StackPanel>
+                    <TextBlock Text="Main Timing .event" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,6"/>
+                    <TextBlock TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" FontSize="13" Margin="0,0,0,10"
+                               Text="Choose which .event is the primary timing file for this race, then Save Main Timing File. Other .event files (announcer, video) stay available on Announcer T&amp;S Laptop."/>
+                    <ComboBox ItemsSource="{Binding AdminEventFiles}"
+                              SelectedItem="{Binding SelectedTimingFile}"
+                              Padding="8,6" MinHeight="40" Margin="0,0,0,12"/>
+                    <Button Content="Save Main Timing File" Style="{StaticResource PrimaryButton}"
+                            HorizontalAlignment="Stretch" MinHeight="48"
+                            Click="SaveEventRoles_Click"
+                            ToolTip="Saves which .event is main timing (local + OneDrive when signed in)."/>
+                  </StackPanel>
+                </Border>
+
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                  <StackPanel>
                     <TextBlock TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" FontSize="14" Margin="0,0,0,12"
-                               Text="No Timing &amp; Scoring .event yet. Launch Timing &amp; Scoring, Save As into the Active folder below, then Refresh Event Files to mark main timing — or Finish later and pick primary then."/>
-                    <Button Content="Launch Timing &amp; Scoring" Style="{StaticResource PrimaryButton}"
+                               Visibility="{Binding ShowAdminTsEmptyHint, Converter={StaticResource BoolVis}}"
+                               Text="No Timing &amp; Scoring .event yet. Use Create a New Timing &amp; Scoring, Save As into the Active folder below, then Refresh Event Files and Save Main Timing File."/>
+                    <TextBlock TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" FontSize="14" Margin="0,0,0,12"
+                               Visibility="{Binding ShowAdminTsAddSecondaryHint, Converter={StaticResource BoolVis}}"
+                               Text="Open Current opens the .event selected above. Create a New Timing &amp; Scoring starts blank so you can build an announcer / video file and Save As into the same Active folder."/>
+
+                    <Button Content="Open Current Timing &amp; Scoring" Style="{StaticResource SecondaryButton}"
                             HorizontalAlignment="Stretch" MinHeight="48" Margin="0,0,0,10"
-                            Click="AdminLaunchTs_Click"
-                            ToolTip="Opens Timing &amp; Scoring. Checks out this race first when needed so Save As matches Finish."/>
+                            Click="AdminOpenCurrentTs_Click"
+                            Visibility="{Binding ShowAdminTsAddSecondaryHint, Converter={StaticResource BoolVis}}"
+                            ToolTip="Opens the .event selected as Main Timing (checks out this race if needed)."/>
+                    <Button Content="Create a New Timing &amp; Scoring" Style="{StaticResource PrimaryButton}"
+                            HorizontalAlignment="Stretch" MinHeight="48" Margin="0,0,0,10"
+                            Click="AdminNewEmptyTs_Click"
+                            Visibility="{Binding ShowAdminTsEmptyHint, Converter={StaticResource BoolVis}}"
+                            ToolTip="Starts blank Timing &amp; Scoring. Save As the first .event into the Active folder below."/>
+                    <Button Content="Create a New Timing &amp; Scoring" Style="{StaticResource SecondaryButton}"
+                            HorizontalAlignment="Stretch" MinHeight="48" Margin="0,0,0,10"
+                            Click="AdminNewEmptyTs_Click"
+                            Visibility="{Binding ShowAdminTsAddSecondaryHint, Converter={StaticResource BoolVis}}"
+                            ToolTip="Starts blank Timing &amp; Scoring for a new announcer / video .event. Save As into the Active folder below."/>
+
                     <Button Content="Refresh Event Files" Style="{StaticResource SecondaryButton}"
                             HorizontalAlignment="Left" MinHeight="40" Margin="0,0,0,14"
                             Click="AdminRefreshEventFiles_Click"
                             ToolTip="Reload .event names from Active, Library, and OneDrive after Save As."/>
                     <Border Background="#F7F8FA" BorderBrush="{StaticResource LineBrush}" BorderThickness="1"
-                            CornerRadius="8" Padding="16" Margin="0,0,0,8">
+                            CornerRadius="8" Padding="14" Margin="0,0,0,8"
+                            Visibility="{Binding ShowAdminTsSetup, Converter={StaticResource BoolVis}}">
                       <StackPanel>
-                        <TextBlock Text="T&amp;S Save As Location" FontSize="15" FontWeight="SemiBold"
-                                   Margin="0,0,0,10"/>
+                        <TextBlock Text="T&amp;S Save As Path" FontSize="15" FontWeight="SemiBold"
+                                   Margin="0,0,0,8"/>
                         <TextBlock Text="{Binding AdminSaveAsFolderGuide}"
                                    FontFamily="Consolas, Cascadia Mono, Courier New"
-                                   FontSize="13" LineHeight="20" TextWrapping="Wrap"
+                                   FontSize="13" TextWrapping="Wrap"
                                    Foreground="{StaticResource MutedBrush}"/>
                       </StackPanel>
                     </Border>
-                  </StackPanel>
 
-                  <StackPanel Visibility="{Binding ShowAdminSaveAssignment, Converter={StaticResource BoolVis}}">
-                    <TextBlock Text="Main Timing .event" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}" FontSize="12"/>
-                    <ComboBox ItemsSource="{Binding AdminEventFiles}"
-                              SelectedItem="{Binding SelectedTimingFile}"
-                              Padding="8,6" MinHeight="36" Margin="0,0,0,8"/>
-                    <TextBlock TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" FontSize="12" Margin="0,4,0,0"
-                               Text="Any other .event in this folder (announcer, video display, special callouts) is available on Announcer T&amp;S Laptop — staff pick which one at checkout."/>
+                    <Border Background="#FFF8E8" BorderBrush="#E6C35C" BorderThickness="1"
+                            CornerRadius="8" Padding="12" Margin="0,14,0,0"
+                            Visibility="{Binding ShowAddRaceToGroup, Converter={StaticResource BoolVis}}">
+                      <TextBlock TextWrapping="Wrap" FontSize="13"
+                                 Text="This race sits under a Race Group. Use Add Race to This Race Group to create another event folder under the same group. Move to Past Races archives the whole Race Group."/>
+                    </Border>
                   </StackPanel>
-
-                  <Border Background="#FFF8E8" BorderBrush="#E6C35C" BorderThickness="1"
-                          CornerRadius="8" Padding="12" Margin="0,14,0,0"
-                          Visibility="{Binding ShowAddRaceToGroup, Converter={StaticResource BoolVis}}">
-                    <TextBlock TextWrapping="Wrap" FontSize="13"
-                               Text="This race sits under a Race Group. Use Add Race to This Race Group to create another event folder under the same group. Move to Past Races archives the whole Race Group."/>
-                  </Border>
-                </StackPanel>
-              </ScrollViewer>
+                </ScrollViewer>
+              </DockPanel>
             </Grid>
           </DockPanel>
 
@@ -874,9 +901,9 @@
                     MinWidth="180" Margin="0,0,12,0" Click="AdminMoveToPastRaces_Click"
                     Visibility="{Binding ShowMoveToPastRaces, Converter={StaticResource BoolVis}}"
                     ToolTip="Move this race (or whole Race Group) from the live office into Past Races on OneDrive."/>
-            <Button Content="Save Assignment" MinWidth="180" Click="SaveEventRoles_Click"
+            <Button Content="Save Main Timing File" MinWidth="200" Click="SaveEventRoles_Click"
                     Visibility="{Binding ShowAdminSaveAssignment, Converter={StaticResource BoolVis}}"
-                    ToolTip="Enter — save the main timing .event">
+                    ToolTip="Enter — save which .event is main timing">
               <Button.Style>
                 <Style TargetType="Button" BasedOn="{StaticResource PrimaryButton}">
                   <Setter Property="IsDefault" Value="False"/>

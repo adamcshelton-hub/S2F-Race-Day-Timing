@@ -93,55 +93,79 @@ public sealed class VendorLauncher
         }
     }
 
-    public LaunchResult LaunchTimingAndScoring(ActiveCheckout active, AppSettings settings)
+    /// <param name="bare">
+    /// When true, always start empty T&amp;S (no .event) so staff can build a new file and Save As —
+    /// used for first .event or announcer / video secondaries. When false, open an existing .event
+    /// (<paramref name="eventFileOverride"/> or resolved primary).
+    /// </param>
+    /// <param name="eventFileOverride">Optional .event file name under Active (Open Current).</param>
+    public LaunchResult LaunchTimingAndScoring(
+        ActiveCheckout active,
+        AppSettings settings,
+        bool bare = false,
+        string? eventFileOverride = null)
     {
         Directory.CreateDirectory(active.ActivePath);
-
-        // Prefer a real .event on disk (may have been Save As'd after a bare launch).
-        var primary = ResolvePrimaryEventFile(active);
-        var eventPath = string.IsNullOrWhiteSpace(primary)
-            ? null
-            : Path.Combine(active.ActivePath, primary);
 
         try
         {
             var exe = ResolveTimingAndScoringExe(settings);
-            if (eventPath is not null && File.Exists(eventPath))
+
+            if (!bare)
             {
-                if (exe is not null)
+                var fileName = SessionRoleStore.NormalizeFileName(eventFileOverride)
+                               ?? ResolvePrimaryEventFile(active);
+                var eventPath = string.IsNullOrWhiteSpace(fileName)
+                    ? null
+                    : Path.Combine(active.ActivePath, fileName);
+
+                if (eventPath is not null && File.Exists(eventPath))
                 {
-                    Process.Start(new ProcessStartInfo
+                    if (exe is not null)
                     {
-                        FileName = exe,
-                        Arguments = $"\"{eventPath}\"",
-                        WorkingDirectory = active.ActivePath,
-                        UseShellExecute = true
-                    });
-                }
-                else
-                {
-                    Process.Start(new ProcessStartInfo
+                        Process.Start(new ProcessStartInfo
+                        {
+                            FileName = exe,
+                            Arguments = $"\"{eventPath}\"",
+                            WorkingDirectory = active.ActivePath,
+                            UseShellExecute = true
+                        });
+                    }
+                    else
                     {
-                        FileName = eventPath,
-                        UseShellExecute = true
-                    });
+                        Process.Start(new ProcessStartInfo
+                        {
+                            FileName = eventPath,
+                            UseShellExecute = true
+                        });
+                    }
+
+                    return new LaunchResult
+                    {
+                        Success = true,
+                        Message = $"Launched Timing & Scoring with {Path.GetFileName(eventPath)}."
+                    };
                 }
 
-                return new LaunchResult
+                if (!string.IsNullOrWhiteSpace(fileName))
                 {
-                    Success = true,
-                    Message = $"Launched Timing & Scoring with {primary}."
-                };
+                    return new LaunchResult
+                    {
+                        Success = false,
+                        Message = $"Timing & Scoring file not in Active yet: {fileName}.\n\n"
+                                  + "Checkout / Refresh Event Files, or use Create a New Timing & Scoring and Save As."
+                    };
+                }
             }
 
-            // No .event yet (Templates): launch bare T&S so staff can Start a new event → Save As.
+            // Bare / no .event: launch empty T&S so staff can Start a new event → Save As.
             if (exe is null)
             {
                 return new LaunchResult
                 {
                     Success = false,
                     Message = "Timing & Scoring path is not set.\n\n"
-                              + "Set it in Admin (top-right), then try Open Timing & Scoring again."
+                              + "Set it in Admin (top-right), then try again."
                 };
             }
 
@@ -152,11 +176,12 @@ public sealed class VendorLauncher
                 UseShellExecute = true
             });
 
-            // Folder map is shown at checkout (no .event) — don't popup again over T&S splash.
             return new LaunchResult
             {
                 Success = true,
-                Message = "Launched Timing & Scoring (no .event yet)."
+                Message = bare
+                    ? "Launched Create a New Timing & Scoring — Save As into the Active folder."
+                    : "Launched Timing & Scoring (no .event yet)."
             };
         }
         catch (Exception ex)
@@ -202,6 +227,22 @@ public sealed class VendorLauncher
             "(T&S often opens Documents — don't leave it there):");
 
     /// <summary>
+    /// Compact Save As path for Admin (no “no .event yet” copy, no vertical folder tree).
+    /// One Windows path line + suggested file name — T&amp;S Save As still needs This PC click-through.
+    /// </summary>
+    public static string FormatSaveAsPathInline(string activePath, string suggestedEventFileName)
+    {
+        var folder = NormalizeWindowsPathDisplay(activePath);
+        var suggested = string.IsNullOrWhiteSpace(suggestedEventFileName)
+            ? "Race.event"
+            : Path.GetFileName(suggestedEventFileName.Trim());
+        if (string.IsNullOrWhiteSpace(suggested))
+            suggested = "Race.event";
+
+        return folder + "\\" + suggested;
+    }
+
+    /// <summary>
     /// Same folder map as checkout, worded for the Active screen (stays under Finish).
     /// </summary>
     public static string FormatActiveSaveAsReminder(ActiveCheckout active) =>
@@ -211,6 +252,20 @@ public sealed class VendorLauncher
             "Save the Timing & Scoring .event here (not Documents).",
             "Save announcer / video .event files into this same folder.",
             "T&S often opens Documents — don't leave it there.");
+
+    private static string NormalizeWindowsPathDisplay(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return string.Empty;
+
+        var trimmed = path.Trim().TrimEnd('\\', '/');
+        var parts = trimmed.Split(new[] { '\\', '/' }, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0)
+            return string.Empty;
+
+        // Keep drive letter as C: then join with backslashes for Windows Save As.
+        return string.Join("\\", parts);
+    }
 
     private static string BuildSaveAsFolderGuide(
         string activePath,

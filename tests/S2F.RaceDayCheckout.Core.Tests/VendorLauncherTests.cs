@@ -49,6 +49,19 @@ public class VendorLauncherTests
     }
 
     [Fact]
+    public void FormatSaveAsPathInline_IsSingleWindowsPath_NoNoEventCopy()
+    {
+        var path = VendorLauncher.FormatSaveAsPathInline(
+            @"C:\S2F\RaceDay\Active\Memphis\2026 - Gateway to the Delta",
+            "Gateway to the Delta.event");
+        Assert.Equal(
+            @"C:\S2F\RaceDay\Active\Memphis\2026 - Gateway to the Delta\Gateway to the Delta.event",
+            path);
+        Assert.DoesNotContain("No Timing", path, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("This PC", path, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void FormatActiveSaveAsReminder_KeepsFolderTreeForActiveScreen()
     {
         var guide = VendorLauncher.FormatActiveSaveAsReminder(

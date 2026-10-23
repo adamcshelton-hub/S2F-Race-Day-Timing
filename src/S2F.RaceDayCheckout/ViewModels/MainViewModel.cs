@@ -117,10 +117,22 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private DateTimeOffset? _adminUnlockedUntil;
     private static readonly TimeSpan AdminUnlockDuration = TimeSpan.FromHours(8);
     /// <summary>
-    /// True when Active was checked out from Admin (Setup / Edit Launch T&amp;S). Finish returns to Admin
-    /// only then — not merely because the PIN is still unlocked from an earlier Admin visit.
+    /// Where Finish should return when Active was opened from Admin (Setup vs Edit Current Event).
+    /// Not set for normal race-day checkout — Finish goes to office / shutdown guidance.
     /// </summary>
-    private bool _finishReturnsToAdmin;
+    private enum FinishAdminReturn
+    {
+        None,
+        SetupNewEvent,
+        EditCurrentEvent
+    }
+
+    private FinishAdminReturn _finishAdminReturn = FinishAdminReturn.None;
+    /// <summary>
+    /// Keep the Active-page Save As path visible after Create a New Timing &amp; Scoring
+    /// (even when a primary .event already exists — staff are Save As'ing announcer/video).
+    /// </summary>
+    private bool _pinActiveSaveAsGuide;
     /// <summary>Prevent stacking takeover dialogs from heartbeat while one is open.</summary>
     private bool _lockTakenOverPromptOpen;
     /// <summary>After we detect a lost lock, skip cloud writes until user Close Local / Force.</summary>
@@ -488,10 +500,10 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 AdminEventsSubStep.Assign => _adminSession is null
                     ? "Mark the main timing .event, then Save."
                     : AdminEventFiles.Count == 0
-                        ? $"{_adminSession.DisplayName} — Launch Timing & Scoring, Save As, then Refresh Event Files."
+                        ? $"{_adminSession.DisplayName} — Create a New Timing & Scoring, Save As, then Refresh Event Files."
                         : IsAdminSessionRaceGroupLeaf
-                            ? $"{_adminSession.DisplayName} — mark main timing, or add another race to this Race Group."
-                            : $"{_adminSession.DisplayName} — mark the main timing .event, then Save.",
+                            ? $"{_adminSession.DisplayName} — save main timing, open current T&S, or create a new T&S for announcer / video."
+                            : $"{_adminSession.DisplayName} — save main timing, open current T&S, or create a new T&S for announcer / video.",
                 _ => "Mark the main timing .event for a race."
             },
             _ => "For setup staff only — not needed on race morning."
@@ -594,9 +606,15 @@ public sealed class MainViewModel : INotifyPropertyChanged
             _adminSession.Office, StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
-    /// Edit Current Event assign with no .event yet — Launch T&amp;S + same Save As map as checkout setup.
+    /// Edit Current Event assign — Launch T&amp;S + Save As map (create first .event or add announcer/video).
     /// </summary>
-    public bool ShowAdminTsSetup => IsAdminEventsAssign && AdminEventFiles.Count == 0;
+    public bool ShowAdminTsSetup => IsAdminEventsAssign;
+
+    /// <summary>No .event yet — first Save As guidance.</summary>
+    public bool ShowAdminTsEmptyHint => IsAdminEventsAssign && AdminEventFiles.Count == 0;
+
+    /// <summary>Already has .event(s) — guidance to Save As extra announcer/video files into Active.</summary>
+    public bool ShowAdminTsAddSecondaryHint => IsAdminEventsAssign && AdminEventFiles.Count > 0;
 
     public bool ShowAdminSaveAssignment => IsAdminEventsAssign && AdminEventFiles.Count > 0;
 
@@ -611,7 +629,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 ? Active!.ActivePath
                 : _paths.GetActivePath(_settings, _adminSession.Office, _adminSession.RelativePath);
             var suggested = VendorLauncher.SuggestEventFileNameFromRaceName(_adminSession.SessionName);
-            return VendorLauncher.FormatSaveAsFolderGuide(activePath, suggested);
+            return VendorLauncher.FormatSaveAsPathInline(activePath, suggested);
         }
     }
 
@@ -811,15 +829,33 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public bool HasOpenCheckout => _checkout.GetActive() is not null;
 
     /// <summary>
-    /// Timing Active with no .event in the Active folder yet — keep Save As folder map under Finish.
+    /// Timing Active Save As path: always when no .event yet, or after Create a New Timing &amp; Scoring
+    /// (announcer / video Save As while a primary already exists).
     /// </summary>
     public bool ShowActiveSaveAsGuide =>
         IsTimingActive
         && Active is not null
-        && EventFileSelector.ListEventFiles(Active.ActivePath).Count == 0;
+        && (_pinActiveSaveAsGuide
+            || EventFileSelector.ListEventFiles(Active.ActivePath).Count == 0);
 
     public string ActiveSaveAsFolderGuide =>
-        Active is null ? string.Empty : VendorLauncher.FormatActiveSaveAsReminder(Active);
+        Active is null
+            ? string.Empty
+            : VendorLauncher.FormatSaveAsPathInline(
+                Active.ActivePath,
+                VendorLauncher.SuggestEventFileName(Active));
+
+    private void PinActiveSaveAsGuide()
+    {
+        _pinActiveSaveAsGuide = true;
+        NotifyActiveSaveAsGuide();
+    }
+
+    private void ClearActiveSaveAsGuidePin()
+    {
+        _pinActiveSaveAsGuide = false;
+        NotifyActiveSaveAsGuide();
+    }
 
     private void NotifyActiveSaveAsGuide()
     {
@@ -1135,7 +1171,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         if (Active is not null)
         {
             // Restart / same-machine reclaim — treat as race-day, not Admin setup checkout.
-            _finishReturnsToAdmin = false;
+            _finishAdminReturn = FinishAdminReturn.None;
             SetCloudWritesBlocked(false);
             ClearLockTakenOverSnooze();
             Step = WizardStep.Active;
@@ -1506,7 +1542,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         if (SelectedSession is null)
             return;
 
-        _finishReturnsToAdmin = false;
+        _finishAdminReturn = FinishAdminReturn.None;
 
         var assigned = SessionRoleStore.TryLoad(SelectedSession.Path)?.PrimaryEventFile;
         if (!string.IsNullOrWhiteSpace(assigned))
@@ -1559,12 +1595,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
         if (IsAnnouncerRole)
         {
-            _finishReturnsToAdmin = false;
+            _finishAdminReturn = FinishAdminReturn.None;
             _ = DownloadAndCheckoutAnnouncerAsync(SelectedEventFile!);
             return;
         }
 
-        _finishReturnsToAdmin = false;
+        _finishAdminReturn = FinishAdminReturn.None;
         _ = CheckoutAsync();
     }
 
@@ -1809,7 +1845,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
             return;
         }
 
-        // Show busy immediately — Graph lock confirm can take a few seconds on cellular.
+        // Primary confirm may open a modal — do it before busy so the overlay does not flash off/on.
+        // Missing .event does not hard-block Finish.
+        if (!await ConfirmPrimaryEventBeforeFinishAsync().ConfigureAwait(true))
+            return;
+
+        // One continuous busy overlay for lock check → wait for RS → upload (no ClearBusy mid-flight).
         SetBusy(
             closingApp ? "Closing — saving your race" : "Saving your race",
             "Confirming this laptop still holds the race…");
@@ -1829,16 +1870,6 @@ public sealed class MainViewModel : INotifyPropertyChanged
                     "OneDrive didn't confirm this laptop still holds the race. Nothing was uploaded. Try Finish again.");
                 return;
         }
-
-        // Optional: confirm main timing .event when files are present. Missing .event does not block Finish.
-        ClearBusy();
-        if (!await ConfirmPrimaryEventBeforeFinishAsync().ConfigureAwait(true))
-            return;
-
-        SetBusy(
-            closingApp ? "Closing — saving your race" : "Saving your race",
-            "Please wait…\nDo not shut down this laptop yet.");
-        await YieldUiAsync().ConfigureAwait(true);
 
         // Pause live mirror so it cannot recreate RUNSCORE\_autosave while Finish deletes it.
         _mirrorTimer.Stop();
@@ -1970,11 +2001,35 @@ public sealed class MainViewModel : INotifyPropertyChanged
             Active = null;
             SelectedSession = null;
             SelectedEventFile = null;
+            ClearActiveSaveAsGuidePin();
             LoadOffices();
 
-            var returnToAdmin = _finishReturnsToAdmin;
-            _finishReturnsToAdmin = false;
-            if (returnToAdmin)
+            var adminReturn = _finishAdminReturn;
+            _finishAdminReturn = FinishAdminReturn.None;
+
+            // AwaitingOneDriveConfirm here means RetainActiveForCloudRetry was already handled above.
+            var doneBody = "Your race is saved.";
+            if (adminReturn == FinishAdminReturn.None)
+                doneBody += "\n\nSafe to shut down this laptop.";
+            else if (adminReturn == FinishAdminReturn.EditCurrentEvent)
+                doneBody += "\n\nNext: Edit Current Event for this race — refresh files or save main timing if you added a .event.";
+            else if (adminReturn == FinishAdminReturn.SetupNewEvent)
+                doneBody += "\n\nNext: Setup New Event.";
+            if (!result.AutosaveCleared)
+            {
+                doneBody +=
+                    "\n\nWarning: some live autosave files (RUNSCORE\\_autosave) could not be removed. "
+                    + "Ask setup to delete that folder before the next race so post-event edits are not overwritten.";
+            }
+
+            // Same branded overlay — OK to dismiss. Navigate after OK so Edit Current load doesn't flash Busy.
+            await ShowBusyResultAsync("Done", doneBody);
+
+            if (adminReturn == FinishAdminReturn.EditCurrentEvent)
+            {
+                await ReturnToEditCurrentEventAfterFinishAsync().ConfigureAwait(true);
+            }
+            else if (adminReturn == FinishAdminReturn.SetupNewEvent)
             {
                 EnterAdminSetup("Finish complete — ready for the next setup.");
             }
@@ -1990,20 +2045,6 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 Step = WizardStep.Office;
                 Status = string.Empty;
             }
-
-            // AwaitingOneDriveConfirm here means RetainActiveForCloudRetry was already handled above.
-            var doneBody = "Your race is saved.";
-            if (!returnToAdmin)
-                doneBody += "\n\nSafe to shut down this laptop.";
-            if (!result.AutosaveCleared)
-            {
-                doneBody +=
-                    "\n\nWarning: some live autosave files (RUNSCORE\\_autosave) could not be removed. "
-                    + "Ask setup to delete that folder before the next race so post-event edits are not overwritten.";
-            }
-
-            // Same branded overlay — OK to dismiss. No second Windows dialog.
-            await ShowBusyResultAsync("Done", doneBody);
         }
         catch (Exception ex)
         {
@@ -2220,6 +2261,22 @@ public sealed class MainViewModel : INotifyPropertyChanged
         Status = ShowActiveSaveAsGuide
             ? "Timing & Scoring opening… Save As path is below Finish."
             : "Timing & Scoring opening…";
+    }
+
+    /// <summary>Race-day / Active: open empty T&amp;S for Save As (announcer or first .event).</summary>
+    public void LaunchEmptyTimingAndScoring()
+    {
+        if (Active is null) return;
+
+        var result = _launcher.LaunchTimingAndScoring(Active, _settings, bare: true);
+        if (!result.Success)
+        {
+            Alert("Timing & Scoring", result.Message);
+            return;
+        }
+
+        PinActiveSaveAsGuide();
+        Status = "Create a New Timing & Scoring opening… Save As path is on this page (above Finish).";
     }
 
     public void OpenWorkingFolder()
@@ -2975,6 +3032,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
             Active = null;
             SelectedSession = null;
             SelectedEventFile = null;
+            ClearActiveSaveAsGuidePin();
             LoadOffices();
             if (Offices.Count == 1)
                 await SelectOfficeAsync(Offices[0]).ConfigureAwait(true);
@@ -3746,45 +3804,129 @@ public sealed class MainViewModel : INotifyPropertyChanged
     }
 
     /// <summary>
-    /// Edit Current Event — no .event yet: same Save As Active path as checkout, then Launch T&amp;S.
-    /// Checks out this race when needed so Save As lands where Finish will see it.
+    /// Edit Current Event — open the selected (or main) .event already in this race.
     /// </summary>
-    public async Task LaunchAdminTimingAndScoringAsync()
+    public async Task LaunchAdminOpenCurrentTsAsync()
+    {
+        if (!await EnsureAdminTimingCheckoutAsync().ConfigureAwait(true))
+            return;
+
+        EnsureAdminEventFileInActive(SelectedTimingFile);
+        var result = _launcher.LaunchTimingAndScoring(
+            Active!,
+            _settings,
+            bare: false,
+            eventFileOverride: SelectedTimingFile);
+        if (!result.Success)
+        {
+            Alert("Open Current Timing & Scoring", result.Message);
+            return;
+        }
+
+        await LoadAdminEventFilesAsync(_adminSession!).ConfigureAwait(true);
+        Status = $"Opened {SelectedTimingFile ?? Active!.PrimaryEventFile} — edit and save in Timing & Scoring.";
+    }
+
+    /// <summary>
+    /// Edit Current Event — empty T&amp;S so staff can build a new .event (first timing or announcer/video)
+    /// and Save As into Active.
+    /// </summary>
+    public async Task LaunchAdminNewEmptyTsAsync()
+    {
+        if (!await EnsureAdminTimingCheckoutAsync().ConfigureAwait(true))
+            return;
+
+        var result = _launcher.LaunchTimingAndScoring(Active!, _settings, bare: true);
+        if (!result.Success)
+        {
+            Alert("Create a New Timing & Scoring", result.Message);
+            return;
+        }
+
+        PinActiveSaveAsGuide();
+        NotifyAdminTsSetup();
+        Status = "Create a New Timing & Scoring opening… Save As path is on this page (above Finish).";
+    }
+
+    /// <summary>Checkout this Admin race as Timing when needed so Active + Backup match Save As / Finish.</summary>
+    private async Task<bool> EnsureAdminTimingCheckoutAsync()
     {
         if (_adminSession is null || !IsAdminEditCurrentEvent)
-            return;
+            return false;
 
         if (HasActive && !AdminSessionIsActive())
         {
             Alert(
                 "Already Checked Out",
                 "Finish the current race before launching Timing & Scoring for another event.");
-            return;
+            return false;
         }
 
-        if (!HasActive)
+        // Even if already Active, Finish should return to Edit Current Event (not race-day office).
+        _finishAdminReturn = FinishAdminReturn.EditCurrentEvent;
+
+        if (HasActive)
+            return true;
+
+        SelectedSession = _adminSession;
+        SelectedEventFile = string.Empty;
+        EventFiles.Clear();
+        _sessionPackPulled = SessionPackLooksUsable(_adminSession.Path);
+        _checkoutRole = CheckoutRole.Timing;
+        OnPropertyChanged(nameof(IsTimingRole));
+        OnPropertyChanged(nameof(IsAnnouncerRole));
+        await CheckoutAsync().ConfigureAwait(true);
+        return Active is not null;
+    }
+
+    /// <summary>After Finish from Edit Current Event Launch/Create T&amp;S — restore assign step for that race.</summary>
+    private async Task ReturnToEditCurrentEventAfterFinishAsync()
+    {
+        Step = WizardStep.Admin;
+        _adminSection = AdminSection.EditCurrentEvent;
+        GrantAdminUnlock();
+
+        if (_adminSession is not null)
         {
-            SelectedSession = _adminSession;
-            SelectedEventFile = string.Empty;
-            EventFiles.Clear();
-            _sessionPackPulled = SessionPackLooksUsable(_adminSession.Path);
-            _checkoutRole = CheckoutRole.Timing;
-            _finishReturnsToAdmin = true;
-            OnPropertyChanged(nameof(IsTimingRole));
-            OnPropertyChanged(nameof(IsAnnouncerRole));
-            await CheckoutAsync().ConfigureAwait(true);
-            if (Active is null)
-                return;
-            LaunchTimingAndScoring();
-            return;
+            _adminEventsSubStep = AdminEventsSubStep.Assign;
+            await LoadAdminEventFilesAsync(_adminSession).ConfigureAwait(true);
+            Status = $"Finish complete — {_adminSession.DisplayName}. Refresh Event Files or Save Main Timing File if you added a .event.";
+        }
+        else
+        {
+            _adminEventsSubStep = AdminEventsSubStep.Office;
+            Status = "Finish complete — pick the event again under Edit Current Event.";
         }
 
-        LaunchTimingAndScoring();
-        await LoadAdminEventFilesAsync(_adminSession).ConfigureAwait(true);
-        if (IsAdminEventsAssign)
-            Status = ShowAdminTsSetup
-                ? "Timing & Scoring opening… Save As path is shown below. Tap Refresh Event Files after you save."
-                : $"Ready to mark the main timing file for {_adminSession.DisplayName}.";
+        NotifyAdminSection();
+        NotifyAdminTsSetup();
+        NotifyGraphStatus();
+    }
+
+    /// <summary>Copy Library .event into Active when Open Current needs a file not staged yet.</summary>
+    private void EnsureAdminEventFileInActive(string? eventFileName)
+    {
+        if (Active is null || string.IsNullOrWhiteSpace(eventFileName))
+            return;
+
+        var name = Path.GetFileName(eventFileName.Trim());
+        var dest = Path.Combine(Active.ActivePath, name);
+        if (File.Exists(dest))
+            return;
+
+        var src = Path.Combine(Active.LibrarySessionPath, name);
+        if (!File.Exists(src))
+            return;
+
+        try
+        {
+            Directory.CreateDirectory(Active.ActivePath);
+            File.Copy(src, dest, overwrite: true);
+        }
+        catch
+        {
+            // Launch will report missing file.
+        }
     }
 
     public async Task RefreshAdminEventFilesAsync()
@@ -3803,9 +3945,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
             if (!IsAdminEventsAssign || _adminSession is null)
                 return;
 
-            Status = ShowAdminTsSetup
-                ? "No .event found yet — Save As into the Active folder, then Refresh Event Files."
-                : $"Ready to mark the main timing file for {_adminSession.DisplayName}.";
+            Status = AdminEventFiles.Count == 0
+                ? "No .event found yet — use Create a New Timing & Scoring, Save As into Active, then Refresh Event Files."
+                : $"Found {AdminEventFiles.Count} .event file(s). Save Main Timing File when the primary is correct.";
         }
         finally
         {
@@ -3930,6 +4072,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(ShowAddRaceToGroup));
         OnPropertyChanged(nameof(ShowMoveToPastRaces));
         OnPropertyChanged(nameof(ShowAdminTsSetup));
+        OnPropertyChanged(nameof(ShowAdminTsEmptyHint));
+        OnPropertyChanged(nameof(ShowAdminTsAddSecondaryHint));
         OnPropertyChanged(nameof(ShowAdminSaveAssignment));
         OnPropertyChanged(nameof(AdminSaveAsFolderGuide));
         OnPropertyChanged(nameof(ShowAdminListFilter));
@@ -3947,8 +4091,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private void NotifyAdminTsSetup()
     {
         OnPropertyChanged(nameof(ShowAdminTsSetup));
+        OnPropertyChanged(nameof(ShowAdminTsEmptyHint));
+        OnPropertyChanged(nameof(ShowAdminTsAddSecondaryHint));
         OnPropertyChanged(nameof(ShowAdminSaveAssignment));
         OnPropertyChanged(nameof(AdminSaveAsFolderGuide));
+        OnPropertyChanged(nameof(StepSubtitle));
     }
 
     private bool AdminSessionIsActive() =>
@@ -4398,7 +4545,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
         _sessionPackPulled = true;
         _checkoutRole = CheckoutRole.Timing;
-        _finishReturnsToAdmin = true;
+        _finishAdminReturn = FinishAdminReturn.SetupNewEvent;
         OnPropertyChanged(nameof(IsTimingRole));
         OnPropertyChanged(nameof(IsAnnouncerRole));
 
@@ -4413,7 +4560,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
                     "No T&S .event yet",
                     VendorLauncher.FormatSaveAsFolderGuide(activePath, suggested)))
             {
-                _finishReturnsToAdmin = false;
+                _finishAdminReturn = FinishAdminReturn.None;
                 Status = "Checkout cancelled — you can still add another race under the Race Group.";
                 return;
             }
@@ -4497,7 +4644,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
 
         _checkoutRole = CheckoutRole.Timing;
-        _finishReturnsToAdmin = true;
+        _finishAdminReturn = FinishAdminReturn.SetupNewEvent;
         OnPropertyChanged(nameof(IsTimingRole));
         OnPropertyChanged(nameof(IsAnnouncerRole));
         await CheckoutAsync();
@@ -5046,7 +5193,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
         Active = null;
         SelectedSession = null;
         SelectedEventFile = null;
-        _finishReturnsToAdmin = false;
+        _finishAdminReturn = FinishAdminReturn.None;
+        ClearActiveSaveAsGuidePin();
         SetCloudWritesBlocked(false);
         ClearLockTakenOverSnooze();
         _mirror.Resume();

@@ -440,8 +440,11 @@ public partial class MainWindow : Window
     private async void SaveEventRoles_Click(object sender, RoutedEventArgs e) =>
         await _vm.SaveAdminEventRolesAsync();
 
-    private async void AdminLaunchTs_Click(object sender, RoutedEventArgs e) =>
-        await _vm.LaunchAdminTimingAndScoringAsync();
+    private async void AdminOpenCurrentTs_Click(object sender, RoutedEventArgs e) =>
+        await _vm.LaunchAdminOpenCurrentTsAsync();
+
+    private async void AdminNewEmptyTs_Click(object sender, RoutedEventArgs e) =>
+        await _vm.LaunchAdminNewEmptyTsAsync();
 
     private async void AdminRefreshEventFiles_Click(object sender, RoutedEventArgs e) =>
         await _vm.RefreshAdminEventFilesAsync();
