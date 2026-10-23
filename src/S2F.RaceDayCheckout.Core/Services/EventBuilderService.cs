@@ -81,7 +81,7 @@ public sealed class EventBuilderService
     }
 
     /// <summary>
-    /// Past packs live at Past Races\{Office}\{Year}\{Race}\ (session leaf = RUNSCORE).
+    /// Past packs live at Past Races\{Office} Past Races\{Year}\{Race}\ (session leaf = RUNSCORE).
     /// Returns full paths, newest year first.
     /// </summary>
     public IReadOnlyList<(string Display, string Path)> ListPastRaceSessions(string libraryRoot, string office)
@@ -89,7 +89,9 @@ public sealed class EventBuilderService
         if (string.IsNullOrWhiteSpace(office))
             return Array.Empty<(string, string)>();
 
-        var officeRoot = Path.Combine(GetPastRacesRoot(libraryRoot), office);
+        var officeRoot = Path.Combine(
+            GetPastRacesRoot(libraryRoot),
+            PastRacesArchivePaths.OfficeBucketName(office));
         if (!Directory.Exists(officeRoot))
             return Array.Empty<(string, string)>();
 

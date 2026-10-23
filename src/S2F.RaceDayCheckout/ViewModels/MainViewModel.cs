@@ -53,7 +53,14 @@ public enum AdminNewEventSubStep
 
 public sealed record NewEventSourceItem(string Display, string Path, bool IsFolder = false);
 
-public sealed record NewEventSourceKindOption(string Display, bool UseTemplates);
+public enum NewEventCopyFrom
+{
+    Templates = 0,
+    PastRaces = 1,
+    CurrentEvents = 2
+}
+
+public sealed record NewEventSourceKindOption(string Display, NewEventCopyFrom Kind);
 
 /// <summary>One Race (flat) vs Race Group (top-level folder with one leaf per event).</summary>
 public sealed record NewEventLayoutOption(string Display, bool IsRaceGroup, string? Detail = null);
@@ -145,8 +152,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private string? _newEventParentFolder;
     /// <summary>Leaf just created under the Race Group (for success UI / checkout label).</summary>
     private string _lastCreatedRaceName = string.Empty;
-    /// <summary>0 = Templates, 1 = Past Races.</summary>
-    private int _newEventSourceKind;
+    private NewEventCopyFrom _newEventCopyFrom = NewEventCopyFrom.Templates;
     private NewEventSourceItem? _newEventSource;
     private string _newEventPastRelative = string.Empty;
     private string _newEventRaceName = string.Empty;
@@ -189,8 +195,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
         NewEventSources = new ObservableCollection<NewEventSourceItem>();
         NewEventSourceKinds = new ObservableCollection<NewEventSourceKindOption>
         {
-            new("Templates Folder", UseTemplates: true),
-            new("Past Races (This Office)", UseTemplates: false)
+            new("Templates Folder", NewEventCopyFrom.Templates),
+            new("Past Races", NewEventCopyFrom.PastRaces),
+            new("Current Events (This Office)", NewEventCopyFrom.CurrentEvents)
         };
         NewEventLayouts = new ObservableCollection<NewEventLayoutOption>
         {
@@ -456,10 +463,15 @@ public sealed class MainViewModel : INotifyPropertyChanged
                     ? "Choose which office to build this Race Group in."
                     : "Choose which office to build this Event in.",
                 AdminNewEventSubStep.Parent => "Name the Race Group and set its year (Year - Name on disk).",
-                AdminNewEventSubStep.SourceKind => "Copy from a Template, or from a past race in this office.",
-                AdminNewEventSubStep.Source => _newEventSourceKind <= 0
-                    ? "Double-click the Template to copy."
-                    : "Open a year folder, or double-click a past race to copy.",
+                AdminNewEventSubStep.SourceKind =>
+                    "Copy from a Template, Past Races, or a current event in this office.",
+                AdminNewEventSubStep.Source => _newEventCopyFrom switch
+                {
+                    NewEventCopyFrom.Templates => "Double-click the Template to copy.",
+                    NewEventCopyFrom.PastRaces =>
+                        "Open an office Past Races folder, then a year, or double-click a race to copy.",
+                    _ => "Open a Race Group if needed, or double-click a current event to duplicate."
+                },
                 AdminNewEventSubStep.Details => _newEventIsRaceGroup
                     ? "Enter this race’s name and date, then Create. You can add another race under the same Race Group after."
                     : "Enter race name and date, then Create event.",
@@ -680,6 +692,24 @@ public sealed class MainViewModel : INotifyPropertyChanged
             _ => string.Empty
         };
 
+    private static string FormatBrowseRelative(string relative) =>
+        relative.Replace("/", " / ", StringComparison.Ordinal)
+            .Replace("\\", " / ", StringComparison.Ordinal);
+
+    private string NewEventSourceBreadcrumb =>
+        _newEventCopyFrom switch
+        {
+            NewEventCopyFrom.Templates => "Choose Template",
+            NewEventCopyFrom.PastRaces => string.IsNullOrEmpty(_newEventPastRelative)
+                ? EventBuilderService.PastRacesFolderName
+                : EventBuilderService.PastRacesFolderName + " / " + FormatBrowseRelative(_newEventPastRelative),
+            _ => string.IsNullOrEmpty(_newEventOffice)
+                ? "Current Events"
+                : string.IsNullOrEmpty(_newEventPastRelative)
+                    ? $"{_newEventOffice} — Current Events"
+                    : $"{_newEventOffice} / {FormatBrowseRelative(_newEventPastRelative)}"
+        };
+
     public string AdminNewEventBreadcrumb =>
         _adminNewEventSubStep switch
         {
@@ -693,13 +723,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 : _newEventIsRaceGroup && !string.IsNullOrEmpty(_newEventParentFolder)
                     ? $"{_newEventOffice} / {_newEventParentFolder} — Copy From"
                     : $"{_newEventOffice} — Copy From",
-            AdminNewEventSubStep.Source => _newEventSourceKind <= 0
-                ? "Choose Template"
-                : string.IsNullOrEmpty(_newEventPastRelative)
-                    ? $"Past Races / {_newEventOffice}"
-                    : $"Past Races / {_newEventOffice} / "
-                      + _newEventPastRelative.Replace("/", " / ", StringComparison.Ordinal)
-                          .Replace("\\", " / ", StringComparison.Ordinal),
+            AdminNewEventSubStep.Source => NewEventSourceBreadcrumb,
             AdminNewEventSubStep.Details => _newEventSource is null
                 ? "Race Details"
                 : _newEventIsRaceGroup && !string.IsNullOrEmpty(_newEventParentFolder)
@@ -1203,7 +1227,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
             if (_adminNewEventSubStep == AdminNewEventSubStep.Source)
             {
-                if (_newEventSourceKind > 0 && !string.IsNullOrEmpty(_newEventPastRelative))
+                if (_newEventCopyFrom != NewEventCopyFrom.Templates
+                    && !string.IsNullOrEmpty(_newEventPastRelative))
                 {
                     _ = PopNewEventPastFolderAsync();
                     return;
@@ -3043,7 +3068,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         if (_newEventParentYear is < 2000 or > 2100)
             _newEventParentYear = DateTime.Today.Year;
         _newEventSource = null;
-        _newEventSourceKind = 0;
+        _newEventCopyFrom = NewEventCopyFrom.Templates;
         _newEventPastRelative = string.Empty;
         _newEventRaceName = string.Empty;
         _newEventResultsId = string.Empty;
@@ -3196,27 +3221,27 @@ public sealed class MainViewModel : INotifyPropertyChanged
         UpdateNewEventPreview();
     }
 
-    public async Task SelectNewEventSourceKindAsync(bool useTemplates)
+    public async Task SelectNewEventSourceKindAsync(NewEventCopyFrom kind)
     {
         if (!IsAdminSetupNewEvent || string.IsNullOrWhiteSpace(_newEventOffice))
             return;
 
-        _newEventSourceKind = useTemplates ? 0 : 1;
+        _newEventCopyFrom = kind;
         _newEventSource = null;
         _newEventPastRelative = string.Empty;
         ClearAdminListFilter();
         _adminNewEventSubStep = AdminNewEventSubStep.Source;
         NotifyAdminSection();
 
-        if (useTemplates)
+        if (kind == NewEventCopyFrom.Templates)
         {
             await EnsureTemplatesFromGraphIfNeededAsync().ConfigureAwait(true);
             LoadNewEventTemplates();
         }
         else
         {
-            await EnsureNewEventPastLevelFromGraphIfNeededAsync(force: false).ConfigureAwait(true);
-            LoadNewEventPastBrowser();
+            await EnsureNewEventSourceLevelFromGraphIfNeededAsync(force: false).ConfigureAwait(true);
+            LoadNewEventSourceBrowser();
         }
 
         ApplyAdminListFilter();
@@ -3233,8 +3258,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 ? item.Display
                 : _newEventPastRelative.TrimEnd('/', '\\') + "/" + item.Display;
             ClearAdminListFilter();
-            await EnsureNewEventPastLevelFromGraphIfNeededAsync(force: false).ConfigureAwait(true);
-            LoadNewEventPastBrowser();
+            await EnsureNewEventSourceLevelFromGraphIfNeededAsync(force: false).ConfigureAwait(true);
+            LoadNewEventSourceBrowser();
             ApplyAdminListFilter();
             NotifyAdminSection();
             return;
@@ -3254,8 +3279,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
         var slash = rel.LastIndexOf('/');
         _newEventPastRelative = slash < 0 ? string.Empty : rel[..slash];
         ClearAdminListFilter();
-        await EnsureNewEventPastLevelFromGraphIfNeededAsync(force: false).ConfigureAwait(true);
-        LoadNewEventPastBrowser();
+        await EnsureNewEventSourceLevelFromGraphIfNeededAsync(force: false).ConfigureAwait(true);
+        LoadNewEventSourceBrowser();
         ApplyAdminListFilter();
         NotifyAdminSection();
     }
@@ -3295,47 +3320,31 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
     }
 
-    private string NewEventPastGraphCacheKey =>
-        "newevent:past:" + (_newEventOffice ?? "") + ":" + _newEventPastRelative.Replace('\\', '/');
-
-    private async Task EnsureNewEventPastLevelFromGraphIfNeededAsync(bool force)
+    /// <summary>
+    /// Graph for Setup New Event copy-from: Past Races uses the same one-level cache as race-day;
+    /// Current Events indexes the destination office once.
+    /// </summary>
+    private async Task EnsureNewEventSourceLevelFromGraphIfNeededAsync(bool force)
     {
-        if (!_cloud.IsAvailable || string.IsNullOrWhiteSpace(_newEventOffice))
+        if (_newEventCopyFrom == NewEventCopyFrom.Templates)
             return;
 
-        var cacheKey = NewEventPastGraphCacheKey;
-        if (!force && _graphIndexedOffices.Contains(cacheKey))
+        if (_newEventCopyFrom == NewEventCopyFrom.PastRaces)
+        {
+            await RefreshPastRacesLevelAtAsync(
+                    _newEventPastRelative,
+                    PastRacesCacheKey(_newEventPastRelative),
+                    force)
+                .ConfigureAwait(true);
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(_newEventOffice))
             return;
 
-        var relative = string.IsNullOrEmpty(_newEventPastRelative)
-            ? EventBuilderService.PastRacesFolderName + "/" + _newEventOffice
-            : EventBuilderService.PastRacesFolderName + "/" + _newEventOffice + "/"
-              + _newEventPastRelative.Replace('\\', '/');
-        // Under Past Races/{office}: years first; inside a year, probe race session leaves.
-        var probeLeaves = !string.IsNullOrEmpty(_newEventPastRelative);
-
-        try
-        {
-            Busy = true;
-            BusyTitle = probeLeaves ? "Loading past races…" : "Loading years…";
-            var result = await _cloud.RefreshFolderChildrenAsync(
-                _settings.LibraryRoot,
-                _settings.GraphDriveRoot,
-                relative,
-                probeSessionLeaves: probeLeaves,
-                new Progress<string>(s => Status = s)).ConfigureAwait(true);
-            Status = result.Message;
-            if (result.Success)
-                _graphIndexedOffices.Add(cacheKey);
-        }
-        catch (Exception ex)
-        {
-            Alert("OneDrive Past Races", ex.Message);
-        }
-        finally
-        {
-            Busy = false;
-        }
+        // Live office: one office index (session leaves). Nested Race Group folders then list locally.
+        await EnsureOfficeSessionsFromGraphIfNeededAsync(_newEventOffice, manageBusy: true)
+            .ConfigureAwait(true);
     }
 
     private void LoadNewEventTemplates()
@@ -3345,38 +3354,56 @@ public sealed class MainViewModel : INotifyPropertyChanged
             _newEventSourceSource.Add(new NewEventSourceItem(Path.GetFileName(path), path));
     }
 
-    private void LoadNewEventPastBrowser()
+    /// <summary>
+    /// One folder level under Past Races root, or under the destination office (Current Events).
+    /// </summary>
+    private void LoadNewEventSourceBrowser()
     {
         _newEventSourceSource.Clear();
-        if (string.IsNullOrWhiteSpace(_newEventOffice))
-            return;
 
-        var folder = Path.Combine(
-            _settings.LibraryRoot,
-            EventBuilderService.PastRacesFolderName,
-            _newEventOffice);
+        string folder;
+        if (_newEventCopyFrom == NewEventCopyFrom.PastRaces)
+        {
+            folder = Path.Combine(_settings.LibraryRoot, EventBuilderService.PastRacesFolderName);
+        }
+        else if (_newEventCopyFrom == NewEventCopyFrom.CurrentEvents)
+        {
+            if (string.IsNullOrWhiteSpace(_newEventOffice))
+                return;
+            folder = Path.Combine(_settings.LibraryRoot, _newEventOffice);
+        }
+        else
+        {
+            return;
+        }
+
         if (!string.IsNullOrEmpty(_newEventPastRelative))
             folder = Path.Combine(folder, _newEventPastRelative.Replace('/', Path.DirectorySeparatorChar));
 
         if (!Directory.Exists(folder))
             return;
 
-        foreach (var dir in Directory.GetDirectories(folder)
-                     .OrderBy(d => Path.GetFileName(d), StringComparer.OrdinalIgnoreCase))
-        {
-            var name = Path.GetFileName(dir);
-            if (string.Equals(name, PathService.RunScoreFolderName, StringComparison.OrdinalIgnoreCase)
-                || string.Equals(name, SharedFolderLinkService.DbsFolderName, StringComparison.OrdinalIgnoreCase)
-                || string.Equals(name, "Pre-Race", StringComparison.OrdinalIgnoreCase)
-                || name.StartsWith("._", StringComparison.Ordinal)
-                || string.Equals(name, PathService.AutosaveFolderName, StringComparison.OrdinalIgnoreCase))
-                continue;
+        // Match race-day Past Races ordering (year folders newest first).
+        var entries = LibraryScanner.ListImmediateChildFolders(folder)
+            .Select(dir =>
+            {
+                var name = Path.GetFileName(dir);
+                var isSession = _paths.IsSessionLeaf(dir)
+                                || Directory.Exists(Path.Combine(dir, PathService.RunScoreFolderName));
+                return new NewEventSourceItem(name, dir, IsFolder: !isSession);
+            })
+            .OrderBy(e => LooksLikeYearFolderName(e.Display) ? 0 : 1)
+            .ThenByDescending(e => LooksLikeYearFolderName(e.Display) ? e.Display : "", StringComparer.OrdinalIgnoreCase)
+            .ThenBy(e => e.Display, StringComparer.OrdinalIgnoreCase);
 
-            var isSession = _paths.IsSessionLeaf(dir)
-                            || Directory.Exists(Path.Combine(dir, PathService.RunScoreFolderName));
-            _newEventSourceSource.Add(new NewEventSourceItem(name, dir, IsFolder: !isSession));
-        }
+        foreach (var entry in entries)
+            _newEventSourceSource.Add(entry);
     }
+
+    private static bool LooksLikeYearFolderName(string? name) =>
+        name is { Length: 4 }
+        && name[0] is >= '1' and <= '9'
+        && char.IsDigit(name[1]) && char.IsDigit(name[2]) && char.IsDigit(name[3]);
 
     private void UpdateNewEventPreview()
     {
@@ -4034,12 +4061,17 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
         if (_newEventSource is null || string.IsNullOrWhiteSpace(_newEventSource.Path))
         {
-            var hint = _newEventSourceKind <= 0
-                ? Path.Combine(_settings.LibraryRoot, EventBuilderService.TemplatesFolderName)
-                : Path.Combine(_settings.LibraryRoot, EventBuilderService.PastRacesFolderName, _newEventOffice);
+            var hint = _newEventCopyFrom switch
+            {
+                NewEventCopyFrom.Templates =>
+                    Path.Combine(_settings.LibraryRoot, EventBuilderService.TemplatesFolderName),
+                NewEventCopyFrom.PastRaces =>
+                    Path.Combine(_settings.LibraryRoot, EventBuilderService.PastRacesFolderName),
+                _ => Path.Combine(_settings.LibraryRoot, _newEventOffice ?? "")
+            };
             Alert(
                 "New event",
-                "Select a Template or past race to copy.\n\nLooking under:\n" + hint);
+                "Select a Template, past race, or current event to copy.\n\nLooking under:\n" + hint);
             return;
         }
 

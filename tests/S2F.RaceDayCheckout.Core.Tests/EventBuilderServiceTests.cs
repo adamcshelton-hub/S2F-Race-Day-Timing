@@ -160,7 +160,7 @@ public class EventBuilderServiceTests
     public void ListPastRaceSessions_FindsOfficeYearRaceLeaves()
     {
         var root = Path.Combine(Path.GetTempPath(), "s2f-past-" + Guid.NewGuid().ToString("N"));
-        var race = Path.Combine(root, "Past Races", "Memphis", "2025", "Pumpkin Run");
+        var race = Path.Combine(root, "Past Races", "Memphis Past Races", "2025", "Pumpkin Run");
         Directory.CreateDirectory(Path.Combine(race, "RUNSCORE"));
         File.WriteAllText(Path.Combine(race, "RUNSCORE", "ENTRIES.FRM"), "x");
 

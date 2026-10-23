@@ -399,7 +399,7 @@ public partial class MainWindow : Window
     {
         if (NewEventSourceKindList.SelectedItem is not NewEventSourceKindOption kind)
             return;
-        await _vm.SelectNewEventSourceKindAsync(useTemplates: kind.UseTemplates);
+        await _vm.SelectNewEventSourceKindAsync(kind.Kind);
     }
 
     private async void NewEventSourceContinue_Click(object sender, RoutedEventArgs e) =>
