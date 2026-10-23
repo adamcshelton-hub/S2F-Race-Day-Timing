@@ -31,12 +31,28 @@ Admin → **Check for updates** forces a check anytime.
 
 ### RemotePC deploy redist (ops)
 
-Not committed (account-scoped). For a release pack that can enroll hosts:
+Not committed (account-scoped). Local Debug uses `redist/` on disk. **GitHub Release Setup** needs Actions secrets — the MSI is ~1.2 MB and **cannot** fit in GitHub’s 64 KB secret limit, so CI downloads it from a URL.
 
 1. RemotePC web → **Deploy Package** → download the **MSI** and copy the **Configuration ID**.
-2. Rename the MSI to `remotepc-host.bin` (Velopack must not re-sign it as an exe).
-3. Copy `redist/remotepc-deploy.example.json` → `redist/remotepc-deploy.json` and paste the Configuration ID (set `groupName` as desired).
-4. Place both files under `publish/<rid>/redist/` before `vpk pack` (or add a CI secret copy step).
+2. Locally (gitignored):
+   - Rename MSI → `redist/remotepc-host.bin`
+   - `redist/remotepc-deploy.json` with your Configuration ID (see `remotepc-deploy.example.json`)
+3. Host `remotepc-host.bin` somewhere CI can `GET` without a browser login (private Azure blob SAS, internal HTTPS, etc.).
+4. Repo → **Settings → Secrets and variables → Actions**:
+
+| Secret | Value |
+| --- | --- |
+| `REMOTEPC_HOST_BIN_URL` | HTTPS URL that returns the MSI/bin bytes |
+| `REMOTEPC_DEPLOY_JSON` | Raw contents of `remotepc-deploy.json` (small) |
+
+```bash
+# set deploy JSON from your local file (from repo root)
+gh secret set REMOTEPC_DEPLOY_JSON < redist/remotepc-deploy.json
+# then set the MSI URL (paste when prompted)
+gh secret set REMOTEPC_HOST_BIN_URL
+```
+
+5. Next release pack should log `Bundled RemotePC deploy into …`. If either secret is missing, pack still succeeds and RemotePC deploy is skipped.
 
 See [RemotePC mass deployment](https://www.remotepc.com/mass-deployment-windows).
 

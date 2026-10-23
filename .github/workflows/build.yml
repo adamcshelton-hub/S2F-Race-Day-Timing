@@ -64,10 +64,14 @@ jobs:
         shell: pwsh
         run: ./build/fetch-notepadpp.ps1 -Rid "${{ matrix.rid }}" -Destination "publish/${{ matrix.rid }}/redist"
 
-      # Optional: when redist/remotepc-host.bin + remotepc-deploy.json exist on the runner
-      # (local pack, or future private artifact), bundle them. Skips cleanly when absent.
+      # Optional: MSI via URL secret (too large for Actions' 64KB secret limit) + deploy.json secret.
+      # Skips cleanly when unset — Setup still packs.
       - name: Bundle RemotePC deploy (optional)
         shell: pwsh
+        env:
+          REMOTEPC_HOST_BIN_URL: ${{ secrets.REMOTEPC_HOST_BIN_URL }}
+          REMOTEPC_DEPLOY_JSON_B64: ${{ secrets.REMOTEPC_DEPLOY_JSON_B64 }}
+          REMOTEPC_DEPLOY_JSON: ${{ secrets.REMOTEPC_DEPLOY_JSON }}
         run: ./build/copy-remotepc-redist.ps1 -Destination "publish/${{ matrix.rid }}/redist"
 
       - name: Check Artifact Signing config
