@@ -2283,7 +2283,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
             Status = $"Signed in as {_graphAuth.AccountEmail}.";
             NotifyGraphStatus();
-            await SyncVendorSecretsFromGraphAsync(force: true).ConfigureAwait(true);
+            await SyncVendorSecretsFromGraphAsync().ConfigureAwait(true);
             await RefreshLibraryFromGraphAsync();
             // After sign-in, allow single-office auto-advance into the session list.
             if (!HasActive)
@@ -2329,15 +2329,13 @@ public sealed class MainViewModel : INotifyPropertyChanged
     }
 
     /// <summary>
-    /// Pull <c>._s2f/runscore-vendor-secrets.json</c> into AppData cache.
-    /// Soft-fail; never blocks checkout. <paramref name="force"/> refreshes even when cache exists
-    /// (sign-in / intentional office refresh); otherwise only pulls when cache is missing.
+    /// Pull <c>._s2f/runscore-vendor-secrets.json</c> into AppData cache and pin HKCU.
+    /// Soft-fail; never blocks checkout. Tiny known-path GET — always refresh when signed in so
+    /// rotated OneDrive credentials are not stuck behind a stale AppData cache.
     /// </summary>
-    private async Task SyncVendorSecretsFromGraphAsync(bool force)
+    private async Task SyncVendorSecretsFromGraphAsync()
     {
         if (!_cloud.IsAvailable)
-            return;
-        if (!force && new RunScoreVendorSecretsStore().HasCache)
             return;
 
         try
@@ -2372,11 +2370,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
     }
 
     /// <summary>
-    /// Already signed in (MSAL cache): fill vendor secrets cache if missing.
+    /// Already signed in (MSAL cache): refresh vendor secrets from OneDrive (tiny GET).
     /// Soft — does not block landing / race day. Call from window load.
     /// </summary>
     public Task EnsureVendorSecretsIfSignedInAsync() =>
-        SyncVendorSecretsFromGraphAsync(force: false);
+        SyncVendorSecretsFromGraphAsync();
 
     /// <summary>Admin / sign-in: probe office folders only (no event trees — cellular).</summary>
     public async Task RefreshLibraryFromGraphAsync(bool blockUi = true)
@@ -2398,7 +2396,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 Status = "Checking office folders on OneDrive…";
 
             // Intentional Graph moment — also pick up rotated OneDrive vendor secrets.
-            await SyncVendorSecretsFromGraphAsync(force: true).ConfigureAwait(true);
+            await SyncVendorSecretsFromGraphAsync().ConfigureAwait(true);
 
             _graphIndexedOffices.Clear();
             var result = await _cloud.RefreshOfficeListAsync(

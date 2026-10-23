@@ -340,9 +340,10 @@ public sealed class CheckoutService
         };
         _activeStore.Save(active);
 
-        // Soft: if vendor secrets cache is missing and Graph is up, one short GET before SOP pin.
-        // Never blocks checkout on failure — ApplySop leaves registry alone when cache is empty.
-        await TrySyncVendorSecretsIfCacheMissingAsync(request.Settings.GraphDriveRoot, cancellationToken)
+        // Soft: always re-pull vendor secrets (tiny GET) before SOP pin so rotated OneDrive
+        // credentials apply. Admin RaceRoster/RunSignUp overrides still win at pin time.
+        // Never blocks checkout on failure — ApplySop uses prior cache / leaves registry alone.
+        await TrySyncVendorSecretsAsync(request.Settings.GraphDriveRoot, cancellationToken)
             .ConfigureAwait(false);
 
         // Point RunScore alternate-save folders at this checkout's Backup before the timer opens RS.
@@ -1202,13 +1203,15 @@ public sealed class CheckoutService
         }
     }
 
-    private async Task TrySyncVendorSecretsIfCacheMissingAsync(
+    /// <summary>
+    /// Always re-pull vendor secrets on checkout (tiny known-path GET). Soft-fail — rotated
+    /// OneDrive credentials must not stay stuck behind a stale AppData cache.
+    /// </summary>
+    private async Task TrySyncVendorSecretsAsync(
         string graphDriveRoot,
         CancellationToken cancellationToken)
     {
         if (!_cloud.IsAvailable)
-            return;
-        if (new RunScoreVendorSecretsStore().HasCache)
             return;
 
         try
