@@ -320,39 +320,69 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
                 return new CloudSyncResult { Success = false, Message = "Session path is outside LibraryRoot." };
 
             using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            // Ceiling for full packs. Mid-race announcer DB's refresh passes MidRacePublishBudget
+            // on cancellationToken so the shorter budget wins.
             budget.CancelAfter(GraphSyncPolicy.SessionDownloadBudget);
+            var dbsOnly = options?.DbsOnly == true;
 
             // Graph does not support folder-as-ZIP on personal OneDrive (?format=zip is for Office→PDF).
             // Enumerate once, then download several files at a time.
             var slim = options?.Role == CheckoutRole.Announcer;
             var overlayOnly = options?.AutosaveOverlayOnly == true;
             status?.Report(
-                slim ? "Listing announcer files…"
+                dbsOnly ? "Listing announcer DB's…"
+                : slim ? "Listing announcer files…"
                 : overlayOnly ? "Listing live autosave…"
                 : "Listing race files…");
             Directory.CreateDirectory(librarySessionPath);
             var jobs = new List<DownloadJob>();
-            await CollectDownloadJobsAsync(
-                    relative, librarySessionPath, librarySessionPath, jobs, budget.Token, options)
-                .ConfigureAwait(false);
+            if (dbsOnly)
+            {
+                // Start at DB's — skip session-root listing (cellular).
+                var dbsCloud = JoinDrivePath(relative, SharedFolderLinkService.DbsFolderName);
+                var dbsLocal = Path.Combine(librarySessionPath, SharedFolderLinkService.DbsFolderName);
+                await CollectDownloadJobsAsync(
+                        dbsCloud, dbsLocal, librarySessionPath, jobs, budget.Token, options)
+                    .ConfigureAwait(false);
+            }
+            else
+            {
+                await CollectDownloadJobsAsync(
+                        relative, librarySessionPath, librarySessionPath, jobs, budget.Token, options)
+                    .ConfigureAwait(false);
+            }
+
+            var maxBytes = dbsOnly
+                ? GraphSyncPolicy.MidRaceMaxFileBytes
+                : GraphSyncPolicy.FinishMaxFileBytes;
 
             // Normal pack: skip unchanged by size (cellular). Live _autosave reclaim must always
             // re-pull — Entries.DTA / results often change content without a size change, and a
             // stale local overlay would otherwise win after force take-over.
-            var todo = jobs
-                .Where(j => j.Size is null or <= GraphSyncPolicy.FinishMaxFileBytes)
+            // Announcer DB's mid-race: also re-pull when remote lastModified is newer (same-size CSV edits).
+            var downloadQueue = jobs
+                .Where(j => j.Size is null || j.Size.Value <= maxBytes)
                 .Where(j =>
                 {
                     if (overlayOnly)
                         return true;
                     if (!File.Exists(j.LocalPath) || j.Size is not long remoteSize)
                         return true;
-                    try { return new FileInfo(j.LocalPath).Length != remoteSize; }
+                    try
+                    {
+                        var local = new FileInfo(j.LocalPath);
+                        if (local.Length != remoteSize)
+                            return true;
+                        if (dbsOnly && j.LastModifiedUtc is { } remoteUtc
+                            && local.LastWriteTimeUtc < remoteUtc.AddSeconds(-2))
+                            return true;
+                        return false;
+                    }
                     catch { return true; }
                 })
                 .ToList();
 
-            if (todo.Count == 0)
+            if (downloadQueue.Count == 0)
             {
                 return new CloudSyncResult
                 {
@@ -361,17 +391,21 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
                     Message = jobs.Count > 0
                         ? (overlayOnly
                             ? "No live autosave files on OneDrive."
-                            : "Race files already on this laptop.")
-                        : "OneDrive session had no files (using local library if present)."
+                            : dbsOnly
+                                ? "Announcer DB's already current on this laptop."
+                                : "Race files already on this laptop.")
+                        : dbsOnly
+                            ? "No DB's folder on OneDrive yet."
+                            : "OneDrive session had no files (using local library if present)."
                 };
             }
 
-            status?.Report($"Downloading 0/{todo.Count}…");
+            status?.Report($"Downloading 0/{downloadQueue.Count}…");
             var done = 0;
             await using var gate = new AdaptiveTransferGate(
                 GraphSyncPolicy.DownloadParallelism,
                 GraphSyncPolicy.DownloadParallelismFloor);
-            var tasks = todo.Select(async job =>
+            var tasks = downloadQueue.Select(async job =>
             {
                 await using (await gate.AcquireAsync(budget.Token).ConfigureAwait(false))
                 {
@@ -379,7 +413,7 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
                     {
                         await DownloadFileWithGuardsAsync(job, gate, budget.Token).ConfigureAwait(false);
                         var n = Interlocked.Increment(ref done);
-                        status?.Report($"Downloading {n}/{todo.Count}…");
+                        status?.Report($"Downloading {n}/{downloadQueue.Count}…");
                     }
                     catch (OperationCanceledException)
                     {
@@ -405,7 +439,7 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
             {
                 Success = true,
                 FilesTransferred = done,
-                Message = $"Downloaded {done} of {todo.Count} file(s) from OneDrive."
+                Message = $"Downloaded {done} of {downloadQueue.Count} file(s) from OneDrive."
             };
         }
         catch (OperationCanceledException)
@@ -1231,13 +1265,18 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
             }
 
             new RunScoreVendorSecretsStore().Save(secrets);
+            var parts = new List<string>();
+            if (secrets.HasAnyCompletePair)
+                parts.Add("vendor credentials");
+            if (secrets.HasLicense)
+                parts.Add("license");
             return new CloudSyncResult
             {
                 Success = true,
                 FilesTransferred = 1,
-                Message = secrets.HasAnyCompletePair
-                    ? "RunScore vendor credentials updated from OneDrive."
-                    : "Vendor secrets file downloaded (no complete login/password pairs yet)."
+                Message = parts.Count > 0
+                    ? "RunScore " + string.Join(" + ", parts) + " updated from OneDrive."
+                    : "Vendor secrets file downloaded (no complete login/password pairs or license yet)."
             };
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
@@ -1548,7 +1587,7 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
     {
         var results = new List<DriveChild>();
         // Cellular: skip unused Graph item facets on every children page.
-        var url = ItemPathUrl(parentPath, "children?$select=id,name,size,folder,file");
+        var url = ItemPathUrl(parentPath, "children?$select=id,name,size,folder,file,lastModifiedDateTime");
         while (!string.IsNullOrEmpty(url))
         {
             using var req = await CreateRequestAsync(HttpMethod.Get, url, cancellationToken).ConfigureAwait(false);
@@ -1569,7 +1608,8 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
                         Name = item.Name,
                         IsFolder = item.Folder is not null,
                         IsFile = item.File is not null,
-                        Size = item.Size
+                        Size = item.Size,
+                        LastModifiedUtc = item.LastModifiedDateTime?.UtcDateTime
                     });
                 }
             }
@@ -1666,7 +1706,7 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
                 }
                 else if (slim && !AnnouncerDownloadPolicy.ShouldIncludeFile(relative, options?.AnnouncerEventFile))
                     continue;
-                jobs.Add(new DownloadJob(childCloud, childLocal, item.Name, item.Size));
+                jobs.Add(new DownloadJob(childCloud, childLocal, item.Name, item.Size, item.LastModifiedUtc));
             }
         }
     }
@@ -2322,7 +2362,12 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
         }
     }
 
-    private sealed record DownloadJob(string CloudPath, string LocalPath, string Name, long? Size);
+    private sealed record DownloadJob(
+        string CloudPath,
+        string LocalPath,
+        string Name,
+        long? Size,
+        DateTime? LastModifiedUtc = null);
 
     private sealed record UploadJob(
         string LocalPath,
@@ -2440,6 +2485,7 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
         public bool IsFolder { get; init; }
         public bool IsFile { get; init; }
         public long? Size { get; init; }
+        public DateTime? LastModifiedUtc { get; init; }
     }
 
     private sealed class GraphChildrenPage
@@ -2456,6 +2502,7 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
         public long? Size { get; set; }
         public object? Folder { get; set; }
         public object? File { get; set; }
+        public DateTimeOffset? LastModifiedDateTime { get; set; }
     }
 
     private sealed class UploadSessionResponse

@@ -15,7 +15,9 @@ public class RunScoreVendorSecretsTests
               "raceRosterLogin": "rr@x.com",
               "raceRosterPassword": "rrPass",
               "runSignUpLogin": "rsu@x.com",
-              "runSignUpPassword": "rsuPass"
+              "runSignUpPassword": "rsuPass",
+              "licenseName": "Start 2 Finish",
+              "licenseKey": "ABCD-1234-EFGH"
             }
             """;
 
@@ -27,7 +29,22 @@ public class RunScoreVendorSecretsTests
         Assert.Equal("rrPass", secrets.RaceRosterPassword);
         Assert.Equal("rsu@x.com", secrets.RunSignUpLogin);
         Assert.Equal("rsuPass", secrets.RunSignUpPassword);
+        Assert.Equal("Start 2 Finish", secrets.LicenseName);
+        Assert.Equal("ABCD-1234-EFGH", secrets.LicenseKey);
         Assert.True(secrets.HasAnyCompletePair);
+        Assert.True(secrets.HasLicense);
+    }
+
+    [Fact]
+    public void HasLicense_RequiresBothFields()
+    {
+        Assert.False(new RunScoreVendorSecrets { LicenseName = "Only Name" }.HasLicense);
+        Assert.False(new RunScoreVendorSecrets { LicenseKey = "Only-Key" }.HasLicense);
+        Assert.True(new RunScoreVendorSecrets
+        {
+            LicenseName = "Start 2 Finish",
+            LicenseKey = "ABCD-1234"
+        }.HasLicense);
     }
 
     [Fact]

@@ -190,37 +190,97 @@ public class AutosaveMirrorServiceTests
     }
 
     [Fact]
-    public async Task MirrorOnce_SkipsAnnouncerCheckout()
+    public async Task MirrorOnce_AnnouncerDoesNotTouchAutosave_PullsDbsIntoActive()
     {
         var root = Path.Combine(Path.GetTempPath(), "s2f-announcer-mirror-" + Guid.NewGuid().ToString("N"));
-        var backup = Path.Combine(root, "Backup", "Event");
-        var autosave = Path.Combine(root, "autosave");
-        var activePath = Path.Combine(root, "Active", "Event");
-        Directory.CreateDirectory(backup);
-        Directory.CreateDirectory(activePath);
-        File.WriteAllText(Path.Combine(backup, "ENTRIES.DTA"), "live");
-
-        var store = new ActiveCheckoutStore(Path.Combine(root, "active.json"));
-        store.Save(new Models.ActiveCheckout
+        try
         {
-            Office = "Test",
-            ParentEvent = "Event",
-            SessionName = "Event",
-            RelativePath = "Event",
-            LibrarySessionPath = root,
-            ActivePath = activePath,
-            BackupPath = backup,
-            AutosavePath = autosave,
-            DbsPath = Path.Combine(root, "DB's"),
-            PrimaryEventFile = "Event-announcer.event",
-            Role = Models.CheckoutRole.Announcer,
-            CheckedOutAt = DateTimeOffset.UtcNow
-        });
+            var libraryEvent = Path.Combine(root, "Library", "Event");
+            var backup = Path.Combine(root, "Backup", "Event");
+            var autosave = Path.Combine(libraryEvent, "RUNSCORE", "_autosave");
+            var activePath = Path.Combine(root, "Active", "Event");
+            Directory.CreateDirectory(backup);
+            Directory.CreateDirectory(activePath);
+            File.WriteAllText(Path.Combine(backup, "ENTRIES.DTA"), "live");
 
-        var mirror = new AutosaveMirrorService(new FileCopyService(), store);
-        await mirror.MirrorOnceAsync();
-        Assert.False(Directory.Exists(autosave));
-        Assert.True(File.Exists(Path.Combine(backup, "ENTRIES.DTA")));
+            var store = new ActiveCheckoutStore(Path.Combine(root, "active.json"));
+            store.Save(new Models.ActiveCheckout
+            {
+                Office = "Test",
+                ParentEvent = "Event",
+                SessionName = "Event",
+                RelativePath = "Event",
+                LibrarySessionPath = libraryEvent,
+                ActivePath = activePath,
+                BackupPath = backup,
+                AutosavePath = autosave,
+                DbsPath = Path.Combine(activePath, "DB's"),
+                PrimaryEventFile = "Event-announcer.event",
+                Role = Models.CheckoutRole.Announcer,
+                CheckedOutAt = DateTimeOffset.UtcNow
+            });
+
+            var cloud = new AnnouncerDbsPullCloud(libraryEvent);
+            var mirror = new AutosaveMirrorService(
+                new FileCopyService(),
+                store,
+                cloud,
+                () => new Models.AppSettings { LibraryRoot = Path.Combine(root, "Library") });
+            await mirror.MirrorOnceAsync();
+
+            Assert.False(Directory.Exists(autosave), "announcer must not create timing _autosave");
+            Assert.True(File.Exists(Path.Combine(backup, "ENTRIES.DTA")));
+            Assert.Equal(1, cloud.DownloadCalls);
+            Assert.True(cloud.LastOptions?.DbsOnly == true);
+            Assert.True(File.Exists(Path.Combine(activePath, "DB's", "race announcer.csv")));
+            Assert.Equal("from-graph", File.ReadAllText(Path.Combine(activePath, "DB's", "race announcer.csv")));
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); } catch { /* temp */ }
+        }
+    }
+
+    [Fact]
+    public async Task MirrorOnce_AnnouncerSkipsWhenGraphUnavailable()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "s2f-announcer-offline-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var libraryEvent = Path.Combine(root, "Library", "Event");
+            var activePath = Path.Combine(root, "Active", "Event");
+            Directory.CreateDirectory(libraryEvent);
+            Directory.CreateDirectory(activePath);
+
+            var store = new ActiveCheckoutStore(Path.Combine(root, "active.json"));
+            store.Save(new Models.ActiveCheckout
+            {
+                Office = "Test",
+                ParentEvent = "Event",
+                SessionName = "Event",
+                RelativePath = "Event",
+                LibrarySessionPath = libraryEvent,
+                ActivePath = activePath,
+                BackupPath = Path.Combine(root, "Backup"),
+                AutosavePath = Path.Combine(libraryEvent, "RUNSCORE", "_autosave"),
+                DbsPath = Path.Combine(activePath, "DB's"),
+                PrimaryEventFile = "Event-announcer.event",
+                Role = Models.CheckoutRole.Announcer,
+                CheckedOutAt = DateTimeOffset.UtcNow
+            });
+
+            var cloud = new AnnouncerDbsPullCloud(libraryEvent) { Available = false };
+            var mirror = new AutosaveMirrorService(
+                new FileCopyService(), store, cloud,
+                () => new Models.AppSettings { LibraryRoot = Path.Combine(root, "Library") });
+            await mirror.MirrorOnceAsync();
+            Assert.Equal(0, cloud.DownloadCalls);
+            Assert.False(Directory.Exists(Path.Combine(activePath, "DB's")));
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); } catch { /* temp */ }
+        }
     }
 
     [Fact]
@@ -278,6 +338,86 @@ public class AutosaveMirrorServiceTests
         {
             try { Directory.Delete(root, recursive: true); } catch { /* temp */ }
         }
+    }
+
+    private sealed class AnnouncerDbsPullCloud : ICloudLibrarySync
+    {
+        private readonly string _librarySessionPath;
+        public bool Available { get; set; } = true;
+        public int DownloadCalls { get; private set; }
+        public SessionDownloadOptions? LastOptions { get; private set; }
+        public bool IsAvailable => Available;
+
+        public AnnouncerDbsPullCloud(string librarySessionPath) => _librarySessionPath = librarySessionPath;
+
+        public Task<CloudSyncResult> DownloadSessionAsync(
+            string librarySessionPath, string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default, SessionDownloadOptions? options = null)
+        {
+            DownloadCalls++;
+            LastOptions = options;
+            var dbs = Path.Combine(_librarySessionPath, "DB's");
+            Directory.CreateDirectory(dbs);
+            var csv = Path.Combine(dbs, "race announcer.csv");
+            File.WriteAllText(csv, "from-graph");
+            File.SetLastWriteTimeUtc(csv, DateTime.UtcNow.AddMinutes(1));
+            return Task.FromResult(new CloudSyncResult { Success = true, FilesTransferred = 1 });
+        }
+
+        public Task<CloudSyncResult> RefreshOfficeListAsync(
+            string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new CloudSyncResult { Success = true });
+
+        public Task<CloudSyncResult> RefreshOfficeSessionsAsync(
+            string libraryRoot, string graphDriveRoot, string officeName, IProgress<string>? status = null, CancellationToken cancellationToken = default, string? protectSessionPath = null) =>
+            Task.FromResult(new CloudSyncResult { Success = true });
+
+        public Task<CloudSyncResult> RefreshFolderChildrenAsync(
+            string libraryRoot, string graphDriveRoot, string relativeUnderLibrary, bool probeSessionLeaves = false, IProgress<string>? status = null, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new CloudSyncResult { Success = true });
+
+        public Task<CloudSyncResult> DownloadSessionRolesAsync(
+            IReadOnlyList<string> librarySessionPaths, string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new CloudSyncResult { Success = true });
+
+        public Task<IReadOnlyList<string>> ListRemoteEventFileNamesAsync(
+            string librarySessionPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<string>>(Array.Empty<string>());
+
+        public Task<CloudSyncResult> UploadSessionRolesAsync(
+            string librarySessionPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new CloudSyncResult { Success = true });
+
+        public Task<CloudSyncResult> UploadSessionAsync(
+            string librarySessionPath, string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default, IReadOnlyList<string>? onlyRelativePaths = null) =>
+            Task.FromResult(new CloudSyncResult { Success = true });
+
+        public Task<CloudSyncResult> UploadFolderAsync(
+            string localFolderPath, string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new CloudSyncResult { Success = true });
+
+        public Task<CloudSyncResult> UploadLocalFilesAsync(
+            IReadOnlyList<string> localFilePaths, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new CloudSyncResult { Success = true });
+
+        public Task<CloudSyncResult> UploadCheckoutLockAsync(
+            string librarySessionPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new CloudSyncResult { Success = true });
+
+        public Task<CloudSyncResult> DownloadCheckoutLockAsync(
+            string librarySessionPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new CloudSyncResult { Success = true });
+
+        public Task<CloudSyncResult> ClearRemoteFolderAsync(
+            string localFolderPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new CloudSyncResult { Success = true });
+
+        public Task<CloudSyncResult> MoveOfficeItemToPastRacesAsync(
+            string libraryRoot, string graphDriveRoot, string officeName, string itemFolderName, IProgress<string>? status = null, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new CloudSyncResult { Success = true });
+
+        public Task<CloudSyncResult> SyncRunScoreVendorSecretsAsync(
+            string graphDriveRoot, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new CloudSyncResult { Success = true });
     }
 
     private sealed class FailThenSucceedUploadCloud : ICloudLibrarySync

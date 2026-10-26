@@ -93,4 +93,16 @@ public sealed class AppSettings
     /// Blank keeps the current registry password when only the login is customized.
     /// </summary>
     public string RunSignUpPasswordOverride { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Company RunScore License name for Help → Register RunScore on new installs.
+    /// Filled from OneDrive <c>runscore-vendor-secrets.json</c> when present; editable in Admin.
+    /// </summary>
+    public string RunScoreLicenseName { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Company RunScore License key for Help → Register RunScore on new installs.
+    /// Filled from OneDrive <c>runscore-vendor-secrets.json</c> when present; editable in Admin.
+    /// </summary>
+    public string RunScoreLicenseKey { get; set; } = string.Empty;
 }

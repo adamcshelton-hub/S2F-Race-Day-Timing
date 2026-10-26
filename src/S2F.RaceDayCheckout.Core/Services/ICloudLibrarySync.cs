@@ -61,7 +61,8 @@ public interface ICloudLibrarySync
     /// Download a session pack into the local library path.
     /// Timing (default): RUNSCORE, .event, ._checkin files, DB's. Skips _autosave.
     /// Reclaim (<see cref="SessionDownloadOptions.ForReclaimAutosaveOverlay"/>): only RUNSCORE\_autosave.
-    /// Announcer (<see cref="SessionDownloadOptions"/>): assigned .event + DB's only.
+    /// Announcer (<see cref="SessionDownloadOptions.ForAnnouncer"/>): assigned .event + DB's only.
+    /// Announcer mid-race (<see cref="SessionDownloadOptions.ForAnnouncerDbsRefresh"/>): DB's only.
     /// </summary>
     Task<CloudSyncResult> DownloadSessionAsync(
         string librarySessionPath,

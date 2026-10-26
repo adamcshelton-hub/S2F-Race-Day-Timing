@@ -1126,6 +1126,18 @@ public sealed class MainViewModel : INotifyPropertyChanged
         set { _settings.RunSignUpPasswordOverride = value; OnPropertyChanged(); }
     }
 
+    public string RunScoreLicenseName
+    {
+        get => _settings.RunScoreLicenseName;
+        set { _settings.RunScoreLicenseName = value; OnPropertyChanged(); }
+    }
+
+    public string RunScoreLicenseKey
+    {
+        get => _settings.RunScoreLicenseKey;
+        set { _settings.RunScoreLicenseKey = value; OnPropertyChanged(); }
+    }
+
     public bool IsGraphSignedIn => _graphAuth.IsSignedIn;
 
     public string GraphAccountStatus =>
@@ -1178,9 +1190,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
             Status = Active.Role == CheckoutRole.Announcer
                 ? "Announcer T&S files loaded — tap Done when you're finished."
                 : "Checked out — finish before starting another event.";
-            // Do not wait for the first mirror timer tick — push Backup → _autosave → Graph now.
-            if (Active.Role == CheckoutRole.Timing)
-                KickAutosaveMirror();
+            // Timing: Backup → _autosave → Graph. Announcer: Graph DB's → Active for T&S CSV auto-load.
+            KickAutosaveMirror();
             return;
         }
 
@@ -2386,7 +2397,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
     }
 
     /// <summary>
-    /// Pull <c>._s2f/runscore-vendor-secrets.json</c> into AppData cache and pin HKCU.
+    /// Pull <c>._s2f/runscore-vendor-secrets.json</c> into AppData cache, refresh Admin license
+    /// fields when present, and pin vendor logins to HKCU.
     /// Soft-fail; never blocks checkout. Tiny known-path GET — always refresh when signed in so
     /// rotated OneDrive credentials are not stuck behind a stale AppData cache.
     /// </summary>
@@ -2401,6 +2413,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 .ConfigureAwait(true);
             if (!result.Success)
                 return;
+
+            ApplyLicenseFromVendorSecretsCache();
 
             // Pin HKCU as soon as the cache is fresh — do not wait for checkout / Open RunScore.
             // Admin RaceRoster / RunSignUp overrides win over the OneDrive file.
@@ -2423,6 +2437,35 @@ public sealed class MainViewModel : INotifyPropertyChanged
         catch
         {
             // Non-fatal — race day uses existing cache / leaves registry alone.
+        }
+    }
+
+    /// <summary>
+    /// Company license from OneDrive secrets → Admin Settings fields (settings.json).
+    /// Cloud wins when both name and key are present; does not clear local Admin edits when cloud omits them.
+    /// </summary>
+    private void ApplyLicenseFromVendorSecretsCache()
+    {
+        try
+        {
+            var secrets = new RunScoreVendorSecretsStore().Load();
+            if (secrets is null || !secrets.HasLicense)
+                return;
+
+            var name = secrets.LicenseName.Trim();
+            var key = secrets.LicenseKey.Trim();
+            var changed = !string.Equals(_settings.RunScoreLicenseName, name, StringComparison.Ordinal)
+                          || !string.Equals(_settings.RunScoreLicenseKey, key, StringComparison.Ordinal);
+            if (!changed)
+                return;
+
+            RunScoreLicenseName = name;
+            RunScoreLicenseKey = key;
+            _settingsStore.Save(_settings);
+        }
+        catch
+        {
+            // Non-fatal — Admin keeps whatever is already in settings.json.
         }
     }
 
@@ -2999,6 +3042,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
             Active = result.Active;
             Step = WizardStep.Active;
             Status = string.Empty;
+            // First Graph DB's → Active tick now so T&S auto-load is fresh before the 60s timer.
+            KickAutosaveMirror();
             ClearBusy();
         }
         catch (Exception ex)
@@ -3017,15 +3062,52 @@ public sealed class MainViewModel : INotifyPropertyChanged
         if (Active?.Role != CheckoutRole.Announcer)
             return;
 
-        SetBusy("Clearing this laptop", "Removing the Announcer T&S copy. Nothing is uploaded.");
+        if (Busy)
+            return;
+
+        SetBusy("Saving Announcer .event", "Uploading to OneDrive, then clearing this laptop…");
+        await YieldUiAsync().ConfigureAwait(true);
+
+        // Pause DB's pull so it cannot recreate Active files while Done clears them.
+        _mirrorTimer.Stop();
+        _mirror.Pause();
         try
         {
-            var result = _checkout.DoneAnnouncer();
+            try { await _mirror.DrainAsync().ConfigureAwait(true); }
+            catch { /* continue Done */ }
+
+            var statusProgress = new Progress<string>(s =>
+            {
+                if (string.IsNullOrWhiteSpace(s))
+                    return;
+                if (s.StartsWith("done:copy", StringComparison.OrdinalIgnoreCase)
+                    || s.StartsWith("finish:copy", StringComparison.OrdinalIgnoreCase))
+                    SetBusy("Saving Announcer .event", "Copying the .event into the local library…");
+                else if (s.StartsWith("done:sync", StringComparison.OrdinalIgnoreCase)
+                         || s.StartsWith("finish:sync", StringComparison.OrdinalIgnoreCase)
+                         || s.StartsWith("finish:upload", StringComparison.OrdinalIgnoreCase))
+                    SetBusy("Saving Announcer .event", "Uploading the .event to OneDrive…");
+                else
+                    SetBusy("Saving Announcer .event", FriendlyProgress(s));
+            });
+
+            var result = await _checkout.DoneAnnouncerAsync(
+                _settings,
+                statusProgress).ConfigureAwait(true);
             if (!result.Success)
             {
                 await ShowBusyResultAsync(
-                    result.BlockingProcesses.Count > 0 ? "Still open" : "Couldn't clear announcer files",
+                    result.BlockingProcesses.Count > 0 ? "Still Open" : "Couldn't Finish Announcer",
                     result.Message);
+                return;
+            }
+
+            if (result.RetainActiveForCloudRetry)
+            {
+                await ShowBusyResultAsync(
+                    "Saved on This Laptop — Cloud Still Needed",
+                    result.Message
+                    + "\n\nDo not shut down yet. Keep this app open and tap Done again when cellular signal is better.");
                 return;
             }
 
@@ -3043,10 +3125,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
         catch (Exception ex)
         {
-            await ShowBusyResultAsync("Couldn't clear announcer files", ex.Message);
+            await ShowBusyResultAsync("Couldn't Finish Announcer", ex.Message);
         }
         finally
         {
+            _mirror.Resume();
+            _mirrorTimer.Start();
             if (Busy && !BusyNeedsAcknowledge)
                 ClearBusy();
         }
@@ -3517,6 +3601,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public void ShowAdminSettings()
     {
         _adminSection = AdminSection.Settings;
+        // Offline / already-cached company file: surface license without waiting on Graph.
+        ApplyLicenseFromVendorSecretsCache();
         NotifyAdminSection();
     }
 
@@ -4166,6 +4252,61 @@ public sealed class MainViewModel : INotifyPropertyChanged
         catch (Exception ex)
         {
             Alert("RunScore SOP", "Could not open runscore-sop.json:\n" + ex.Message);
+        }
+    }
+
+    /// <summary>Open a vendor download page in the default browser (Admin → Settings → Software Installs).</summary>
+    public void OpenSoftwareInstallUrl(string url)
+    {
+        if (string.IsNullOrWhiteSpace(url)
+            || !Uri.TryCreate(url.Trim(), UriKind.Absolute, out var uri)
+            || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+        {
+            Alert("Software Installs", "That download link is missing or invalid.");
+            return;
+        }
+
+        try
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = uri.AbsoluteUri,
+                UseShellExecute = true
+            });
+            Status = "Opened download page in your browser.";
+        }
+        catch (Exception ex)
+        {
+            Alert("Software Installs", "Could not open the download page:\n" + ex.Message);
+        }
+    }
+
+    public void CopyRunScoreLicenseName() =>
+        CopyRunScoreLicenseField(RunScoreLicenseName, "License name", "License Name");
+
+    public void CopyRunScoreLicenseKey() =>
+        CopyRunScoreLicenseField(RunScoreLicenseKey, "License key", "License Key");
+
+    private void CopyRunScoreLicenseField(string value, string emptyLabel, string copiedLabel)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            Alert(
+                "RunScore License",
+                $"No {emptyLabel} saved yet.\n\n"
+                + "Enter it here and tap Save, or add licenseName / licenseKey to "
+                + "OneDrive ._s2f/runscore-vendor-secrets.json and refresh OneDrive.");
+            return;
+        }
+
+        try
+        {
+            System.Windows.Clipboard.SetText(value.Trim());
+            Status = $"Copied RunScore {copiedLabel} — paste into Help → Register RunScore.";
+        }
+        catch (Exception ex)
+        {
+            Alert("RunScore License", "Could not copy to the clipboard:\n" + ex.Message);
         }
     }
 
@@ -5336,14 +5477,14 @@ public sealed class MainViewModel : INotifyPropertyChanged
     }
 
     /// <summary>
-    /// Push Backup → Library \_autosave → Graph immediately (do not wait for the mirror timer).
-    /// Critical so another laptop's force takeover can see live overlay files.
+    /// Run one mid-race mirror tick immediately (do not wait for the timer).
+    /// Timing: Backup → Library \_autosave → Graph (failover). Announcer: Graph DB's → Active (T&amp;S CSV).
     /// </summary>
     private void KickAutosaveMirror()
     {
-        if (Active is null || Active.Role != CheckoutRole.Timing)
+        if (Active is null)
             return;
-        if (_cloudWritesBlockedUntilResolved)
+        if (Active.Role == CheckoutRole.Timing && _cloudWritesBlockedUntilResolved)
             return;
 
         _mirror.Resume();

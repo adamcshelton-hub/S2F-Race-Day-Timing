@@ -14,10 +14,22 @@ public sealed class SessionDownloadOptions
     /// </summary>
     public bool AutosaveOverlayOnly { get; init; }
 
+    /// <summary>
+    /// Announcer mid-race: pull only session <c>DB's</c> (no .event). Timing publishes CSVs;
+    /// announcer T&amp;S auto-loads them from Active <c>DB's</c>.
+    /// </summary>
+    public bool DbsOnly { get; init; }
+
     public static SessionDownloadOptions ForAnnouncer(string announcerEventFile) => new()
     {
         Role = CheckoutRole.Announcer,
         AnnouncerEventFile = announcerEventFile
+    };
+
+    public static SessionDownloadOptions ForAnnouncerDbsRefresh() => new()
+    {
+        Role = CheckoutRole.Announcer,
+        DbsOnly = true
     };
 
     public static SessionDownloadOptions ForReclaimAutosaveOverlay() => new()

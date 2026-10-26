@@ -1289,7 +1289,8 @@ public class CheckoutServiceTests
         Assert.Equal("OTHERMACHINE", locks.TryRead(packPath)!.MachineId);
         Assert.NotNull(activeStore.Load());
 
-        var done = service.DoneAnnouncer();
+        // Unchanged .event → skip Graph (cellular); timing lock left alone.
+        var done = await service.DoneAnnouncerAsync(settings);
         Assert.True(done.Success, done.Message);
         Assert.Null(activeStore.Load());
         Assert.False(Directory.Exists(result.Active.ActivePath));
@@ -1300,6 +1301,117 @@ public class CheckoutServiceTests
         Assert.Equal(0, cloud.LockUploads);
         Assert.Equal("OTHERMACHINE", locks.TryRead(packPath)!.MachineId);
         Assert.Equal(LockLifecycleStatus.Active, locks.TryRead(packPath)!.Status);
+    }
+
+    [Fact]
+    public async Task DoneAnnouncer_UploadsChangedEventToGraph_WithoutTouchingLock()
+    {
+        var (packPath, libraryRoot) = CreateFlatPack();
+        File.WriteAllText(Path.Combine(packPath, "Sample Event-announcer.event"), "announcer-event");
+        SessionRoleStore.Save(packPath, new SessionRoles
+        {
+            PrimaryEventFile = "Sample Event.event"
+        });
+
+        var raceDay = Path.Combine(Path.GetTempPath(), "s2f-rd-" + Guid.NewGuid().ToString("N"));
+        var activeStorePath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".json");
+        var settings = new AppSettings { LibraryRoot = libraryRoot, RaceDayRoot = raceDay, DisplayName = "Adam" };
+        var paths = new PathService();
+        var other = new CheckoutLockService(paths, new OtherMachine());
+        other.Acquire(packPath, "Memphis", "2026 - Sample Event", "2026 - Sample Event", "Timer",
+            new[] { "RUNSCORE" }, "Sample Event.event");
+
+        var cloud = new TrackingCloud();
+        var activeStore = new ActiveCheckoutStore(activeStorePath);
+        var service = new CheckoutService(
+            paths, new CheckoutLockService(paths, new FakeMachine()), new FileCopyService(),
+            new NoProcesses(), activeStore, new InstantSync(), cloud: cloud);
+
+        var checkout = await service.CheckoutAsync(new CheckoutRequest
+        {
+            Pack = PackInfo(packPath, "Memphis", "2026 - Sample Event"),
+            Settings = settings,
+            HolderName = "Announcer",
+            Role = CheckoutRole.Announcer,
+            PrimaryEventFileOverride = "Sample Event-announcer.event"
+        });
+        Assert.True(checkout.Success, checkout.Message);
+
+        var activeEvent = Path.Combine(checkout.Active!.ActivePath, "Sample Event-announcer.event");
+        File.WriteAllText(activeEvent, "announcer-event-edited");
+        File.SetLastWriteTimeUtc(activeEvent, DateTime.UtcNow.AddMinutes(1));
+
+        var done = await service.DoneAnnouncerAsync(settings);
+        Assert.True(done.Success, done.Message);
+        Assert.False(done.RetainActiveForCloudRetry);
+        Assert.Null(activeStore.Load());
+        Assert.Equal(1, cloud.SessionUploads);
+        Assert.Equal(0, cloud.LockUploads);
+        Assert.NotNull(cloud.LastOnlyRelativePaths);
+        Assert.Contains(
+            cloud.LastOnlyRelativePaths!,
+            p => p.Equals("Sample Event-announcer.event", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(
+            cloud.LastOnlyRelativePaths!,
+            p => p.Contains("RUNSCORE", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(
+            "announcer-event-edited",
+            File.ReadAllText(Path.Combine(packPath, "Sample Event-announcer.event")));
+        Assert.Equal("OTHERMACHINE", other.TryRead(packPath)!.MachineId);
+        Assert.Equal(LockLifecycleStatus.Active, other.TryRead(packPath)!.Status);
+    }
+
+    [Fact]
+    public async Task DoneAnnouncer_RetainsActiveWhenGraphUploadFails()
+    {
+        var (packPath, libraryRoot) = CreateFlatPack();
+        File.WriteAllText(Path.Combine(packPath, "Sample Event-announcer.event"), "announcer-event");
+        SessionRoleStore.Save(packPath, new SessionRoles
+        {
+            PrimaryEventFile = "Sample Event.event"
+        });
+
+        var raceDay = Path.Combine(Path.GetTempPath(), "s2f-rd-" + Guid.NewGuid().ToString("N"));
+        var activeStorePath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".json");
+        var settings = new AppSettings { LibraryRoot = libraryRoot, RaceDayRoot = raceDay, DisplayName = "Adam" };
+        var paths = new PathService();
+        var activeStore = new ActiveCheckoutStore(activeStorePath);
+        var service = new CheckoutService(
+            paths, new CheckoutLockService(paths, new FakeMachine()), new FileCopyService(),
+            new NoProcesses(), activeStore, new InstantSync(), cloud: new FailingCloudSync());
+
+        var checkout = await service.CheckoutAsync(new CheckoutRequest
+        {
+            Pack = PackInfo(packPath, "Memphis", "2026 - Sample Event"),
+            Settings = settings,
+            HolderName = "Announcer",
+            Role = CheckoutRole.Announcer,
+            PrimaryEventFileOverride = "Sample Event-announcer.event"
+        });
+        Assert.True(checkout.Success, checkout.Message);
+
+        var activeEvent = Path.Combine(checkout.Active!.ActivePath, "Sample Event-announcer.event");
+        File.WriteAllText(activeEvent, "announcer-event-edited");
+        File.SetLastWriteTimeUtc(activeEvent, DateTime.UtcNow.AddMinutes(1));
+
+        // Seed a timing autosave — Done must not wipe it on Graph fail.
+        var autosave = Path.Combine(packPath, "RUNSCORE", "_autosave");
+        Directory.CreateDirectory(autosave);
+        File.WriteAllText(Path.Combine(autosave, "ENTRIES.FRM"), "timing-live");
+
+        var done = await service.DoneAnnouncerAsync(settings);
+        Assert.True(done.Success, done.Message);
+        Assert.True(done.RetainActiveForCloudRetry);
+        Assert.NotNull(activeStore.Load());
+        Assert.NotNull(activeStore.Load()!.PendingFinishUploadRelativePaths);
+        Assert.Contains(
+            activeStore.Load()!.PendingFinishUploadRelativePaths!,
+            p => p.Equals("Sample Event-announcer.event", StringComparison.OrdinalIgnoreCase));
+        Assert.True(Directory.Exists(checkout.Active.ActivePath));
+        Assert.True(File.Exists(Path.Combine(autosave, "ENTRIES.FRM")));
+        Assert.Equal(
+            "announcer-event-edited",
+            File.ReadAllText(Path.Combine(packPath, "Sample Event-announcer.event")));
     }
 
     [Fact]
@@ -1331,7 +1443,7 @@ public class CheckoutServiceTests
         });
         Assert.True(checkout.Success, checkout.Message);
 
-        var done = service.DoneAnnouncer();
+        var done = await service.DoneAnnouncerAsync(settings);
         Assert.False(done.Success);
         Assert.NotEmpty(done.BlockingProcesses);
         Assert.NotNull(activeStore.Load());
@@ -1345,6 +1457,7 @@ public class CheckoutServiceTests
         public int LockUploads { get; private set; }
         public CheckoutRole? LastDownloadRole { get; private set; }
         public string? LastAnnouncerFile { get; private set; }
+        public IReadOnlyList<string>? LastOnlyRelativePaths { get; private set; }
 
         public Task<CloudSyncResult> RefreshOfficeListAsync(
             string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default) =>
@@ -1382,7 +1495,12 @@ public class CheckoutServiceTests
             string librarySessionPath, string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default, IReadOnlyList<string>? onlyRelativePaths = null)
         {
             SessionUploads++;
-            return Task.FromResult(new CloudSyncResult { Success = true });
+            LastOnlyRelativePaths = onlyRelativePaths;
+            return Task.FromResult(new CloudSyncResult
+            {
+                Success = true,
+                FilesTransferred = onlyRelativePaths?.Count ?? 0
+            });
         }
 
         public Task<CloudSyncResult> UploadFolderAsync(

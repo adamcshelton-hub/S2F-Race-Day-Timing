@@ -554,16 +554,21 @@ public sealed class CheckoutService
             Success = true,
             Active = active,
             Message = "Announcer files are on this laptop. Open Timing & Scoring when you're ready. "
-                      + "Done removes them from this laptop only — nothing uploads."
+                      + "Keep this app open — about every minute it pulls DB's (announcer.csv) from OneDrive for T&S auto-load. "
+                      + "Done uploads this laptop's .event to OneDrive, then clears the local copy. "
+                      + "The timing laptop's checkout lock is not affected."
                       + dbsNote
         };
     }
 
     /// <summary>
-    /// Announcer leave: delete the local Active tree and clear active.json.
-    /// Does not upload and does not release a timing lock.
+    /// Announcer leave: copy Active *.event into Library, Graph-upload those diffs, then clear Active.
+    /// Does not upload RUNSCORE/DB's and does not release a timing lock.
     /// </summary>
-    public CheckinResult DoneAnnouncer()
+    public async Task<CheckinResult> DoneAnnouncerAsync(
+        AppSettings settings,
+        IProgress<string>? statusProgress = null,
+        CancellationToken cancellationToken = default)
     {
         var active = _activeStore.Load();
         if (active is null)
@@ -589,18 +594,132 @@ public sealed class CheckoutService
             };
         }
 
+        // Announcer Done = .event only (cellular). Never push DB's / RUNSCORE from this laptop.
+        var uploadRelativePaths = FinishUploadPlanner.PlanUploadRelativePaths(active)
+            .Where(p => p.EndsWith(".event", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        var mustRetainCloudPending = uploadRelativePaths.Count > 0;
+
+        if (!_cloud.IsAvailable)
+        {
+            if (active.PendingFinishUploadRelativePaths is { Count: > 0 })
+            {
+                return new CheckinResult
+                {
+                    Success = true,
+                    RetainActiveForCloudRetry = true,
+                    AwaitingOneDriveConfirm = true,
+                    Message =
+                        "Announcer .event from the last Done is still waiting to upload. "
+                        + "Sign in to OneDrive, then tap Done again."
+                };
+            }
+
+            if (mustRetainCloudPending)
+            {
+                return new CheckinResult
+                {
+                    Success = false,
+                    Message =
+                        "Sign in to OneDrive to Done. This laptop does not use the OneDrive desktop app — "
+                        + "the announcer .event uploads through this app only. Your Active copy is unchanged."
+                };
+            }
+
+            // No .event changes — clear local Active without Graph.
+        }
+
+        try
+        {
+            if (uploadRelativePaths.Count > 0)
+            {
+                statusProgress?.Report("done:copy");
+                foreach (var rel in uploadRelativePaths)
+                {
+                    var activeEvent = Path.Combine(active.ActivePath, rel);
+                    if (!File.Exists(activeEvent))
+                        continue;
+                    var libraryEvent = Path.Combine(active.LibrarySessionPath, rel);
+                    Directory.CreateDirectory(Path.GetDirectoryName(libraryEvent)!);
+                    File.Copy(activeEvent, libraryEvent, overwrite: true);
+                }
+
+                statusProgress?.Report("done:sync");
+                IReadOnlyList<string>? stillPending = null;
+                bool syncOk;
+                string syncMessage;
+                try
+                {
+                    using var uploadCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                    uploadCts.CancelAfter(GraphSyncPolicy.FinishUploadBudget);
+                    var upload = await _cloud.UploadSessionAsync(
+                        active.LibrarySessionPath,
+                        settings.LibraryRoot,
+                        settings.GraphDriveRoot,
+                        statusProgress,
+                        uploadCts.Token,
+                        onlyRelativePaths: uploadRelativePaths).ConfigureAwait(false);
+                    syncOk = upload.Success;
+                    syncMessage = upload.Message;
+                    if (!syncOk)
+                    {
+                        stillPending = upload.FailedRelativePaths.Count > 0
+                            ? upload.FailedRelativePaths
+                                .Where(p => p.EndsWith(".event", StringComparison.OrdinalIgnoreCase))
+                                .ToList()
+                            : uploadRelativePaths;
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    syncOk = false;
+                    stillPending = uploadRelativePaths;
+                    syncMessage = cancellationToken.IsCancellationRequested
+                        ? "Done was interrupted before cloud upload finished. The .event is saved on this laptop — tap Done again."
+                        : "Cloud upload timed out on cellular. The .event is saved on this laptop — tap Done again when signal improves.";
+                }
+
+                if (!syncOk)
+                    return RetainAnnouncerForCloudRetry(active, stillPending, syncMessage);
+
+                if (active.PendingFinishUploadRelativePaths is { Count: > 0 })
+                    _activeStore.Save(active.WithPendingFinishUpload(null));
+            }
+        }
+        catch (OperationCanceledException) when (mustRetainCloudPending)
+        {
+            return RetainAnnouncerForCloudRetry(
+                active,
+                uploadRelativePaths,
+                cancellationToken.IsCancellationRequested
+                    ? "Done was interrupted while saving the .event. It is on this laptop — tap Done again."
+                    : "Done timed out while saving the .event. It is on this laptop — tap Done again when signal improves.");
+        }
+        catch (Exception ex) when (mustRetainCloudPending)
+        {
+            return RetainAnnouncerForCloudRetry(
+                active,
+                uploadRelativePaths,
+                "Done could not finish uploading the .event to OneDrive. It is saved on this laptop — tap Done again.\n\n"
+                + ex.Message);
+        }
+
         var filesCleared = true;
         if (Directory.Exists(active.ActivePath))
             filesCleared = _links.DeleteActiveTreeSafe(active.ActivePath);
 
         _activeStore.Save(null);
+        var uploadedNote = uploadRelativePaths.Count > 0
+            ? "Announcer .event was uploaded to OneDrive. "
+            : "No .event changes to upload. ";
         return new CheckinResult
         {
             Success = true,
             AutosaveCleared = true,
             Message = filesCleared
-                ? "Done. Announcer files were removed from this laptop. Nothing was uploaded."
-                : "Done (checkout cleared). Some Active files are still locked — close Timing & Scoring, then delete the leftover folder under RaceDay\\Active if it remains."
+                ? "Done. " + uploadedNote + "Local announcer files were removed. The timing laptop was not affected."
+                : "Done. " + uploadedNote
+                  + "Checkout cleared, but some Active files are still locked — close Timing & Scoring, then delete the leftover folder under RaceDay\\Active if it remains."
         };
     }
 
@@ -706,7 +825,7 @@ public sealed class CheckoutService
             return new CheckinResult
             {
                 Success = false,
-                Message = "Announcer checkout does not upload. Close Timing & Scoring, then tap Done."
+                Message = "Announcer checkout uses Done (uploads the .event to OneDrive). Close Timing & Scoring, then tap Done."
             };
         }
 
@@ -986,6 +1105,37 @@ public sealed class CheckoutService
                 "Finish complete. Race files were uploaded to OneDrive. You can shut down this laptop."
                 + autosaveNote
                 + lockNote
+        };
+    }
+
+    /// <summary>
+    /// Persist pending announcer .event Graph paths and keep Active.
+    /// Does not touch RUNSCORE\_autosave (timing laptop owns that) or the checkout lock.
+    /// </summary>
+    private CheckinResult RetainAnnouncerForCloudRetry(
+        ActiveCheckout active,
+        IReadOnlyList<string>? stillPending,
+        string message)
+    {
+        var candidates = (stillPending ?? Array.Empty<string>())
+            .Concat(active.PendingFinishUploadRelativePaths ?? Array.Empty<string>())
+            .Where(p => !string.IsNullOrWhiteSpace(p)
+                        && p.EndsWith(".event", StringComparison.OrdinalIgnoreCase))
+            .Select(FinishUploadPlanner.NormalizeRelative)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var existing = FinishUploadPlanner.ExistingLibraryRelativePaths(
+            active.LibrarySessionPath, candidates);
+        var toSave = existing.Count > 0 ? existing : candidates;
+
+        _activeStore.Save(active.WithPendingFinishUpload(toSave.Count > 0 ? toSave : stillPending));
+        return new CheckinResult
+        {
+            Success = true,
+            RetainActiveForCloudRetry = true,
+            AwaitingOneDriveConfirm = true,
+            AutosaveCleared = true,
+            Message = message
         };
     }
 

@@ -473,6 +473,18 @@ public partial class MainWindow : Window
 
     private void EditRunScoreSop_Click(object sender, RoutedEventArgs e) => _vm.EditRunScoreSop();
 
+    private void OpenSoftwareInstall_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button { Tag: string url })
+            _vm.OpenSoftwareInstallUrl(url);
+    }
+
+    private void CopyRunScoreLicenseName_Click(object sender, RoutedEventArgs e) =>
+        _vm.CopyRunScoreLicenseName();
+
+    private void CopyRunScoreLicenseKey_Click(object sender, RoutedEventArgs e) =>
+        _vm.CopyRunScoreLicenseKey();
+
     /// <summary>
     /// Windows shutdown/logoff. Cancel immediately when a race is checked out so the
     /// session-end timeout does not kill the app before Finish. The close prompt runs

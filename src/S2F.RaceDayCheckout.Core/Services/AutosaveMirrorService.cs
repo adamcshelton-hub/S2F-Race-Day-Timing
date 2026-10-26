@@ -3,16 +3,15 @@ using S2F.RaceDayCheckout.Core.Models;
 namespace S2F.RaceDayCheckout.Core.Services;
 
 /// <summary>
-/// Mid-race failover overlay — <b>not</b> a full RUNSCORE sync.
+/// Mid-race Graph helper — timing publish + announcer DB's pull.
 /// <para>
-/// Intended model: last finished pack on OneDrive + small RS alternate-save files
-/// (Save entries/results dir → RaceDay\Backup). On reclaim, download the pack then
-/// overlay <c>RUNSCORE\_autosave</c>. This service only pushes those small Backup
-/// artifacts into Library <c>_autosave</c> (and Graph). Never mirrors Active RUNSCORE.
+/// <b>Timing:</b> Backup → Library <c>RUNSCORE\_autosave</c> + Active <c>DB's</c> → Graph
+/// (never mirrors Active RUNSCORE). Graph publish retries until confirmed.
 /// </para>
-/// Graph publish retries until confirmed: MirrorNewer alone is not enough — after a failed
-/// PUT the local files match Backup so a naive "only publish what just copied" never retries.
-/// Also heals mangled siblings beside Backup (missing trailing-slash registry bug).
+/// <para>
+/// <b>Announcer:</b> Graph pull session <c>DB's</c> → Library → Active <c>DB's</c> so T&amp;S
+/// auto-load sees timing's announcer.csv (~60s). No upload, no lock, no .event mid-race.
+/// </para>
 /// Requires the desktop app to stay open (not a Windows service).
 /// </summary>
 public sealed class AutosaveMirrorService
@@ -81,8 +80,17 @@ public sealed class AutosaveMirrorService
                 return;
 
             var active = _activeStore.Load();
-            if (active is null || active.Role == CheckoutRole.Announcer)
+            if (active is null)
                 return;
+
+            if (active.Role == CheckoutRole.Announcer)
+            {
+                // Release gate before Graph so the next tick is never blocked by cellular.
+                _gate.Release();
+                released = true;
+                await PullAnnouncerDbsAsync(active, cancellationToken).ConfigureAwait(false);
+                return;
+            }
 
             // Soft/force takeover on another laptop — do not write Library _autosave or Graph.
             if (_stillOwnsLockAsync is not null
@@ -141,6 +149,50 @@ public sealed class AutosaveMirrorService
         {
             if (!released)
                 _gate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Announcer mid-race: Graph → Library <c>DB's</c> → Active <c>DB's</c> for T&amp;S CSV auto-load.
+    /// </summary>
+    private async Task PullAnnouncerDbsAsync(ActiveCheckout active, CancellationToken cancellationToken)
+    {
+        if (!_cloud.IsAvailable)
+            return;
+
+        try
+        {
+            var settings = _settings();
+            using var pullCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            pullCts.CancelAfter(GraphSyncPolicy.MidRacePublishBudget);
+            await _cloud.DownloadSessionAsync(
+                active.LibrarySessionPath,
+                settings.LibraryRoot,
+                settings.GraphDriveRoot,
+                status: null,
+                pullCts.Token,
+                SessionDownloadOptions.ForAnnouncerDbsRefresh()).ConfigureAwait(false);
+        }
+        catch
+        {
+            // Weak signal — next tick retries; Active DB's stays at last good copy.
+            return;
+        }
+
+        var libraryDbs = Path.Combine(active.LibrarySessionPath, SharedFolderLinkService.DbsFolderName);
+        var activeDbs = Path.Combine(active.ActivePath, SharedFolderLinkService.DbsFolderName);
+        if (!Directory.Exists(libraryDbs))
+            return;
+
+        try
+        {
+            Directory.CreateDirectory(activeDbs);
+            await _copy.MirrorNewerFilesAsync(
+                libraryDbs, activeDbs, cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            // T&S may have the CSV open briefly — next tick retries.
         }
     }
 

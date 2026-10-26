@@ -329,7 +329,7 @@
           </ScrollViewer>
         </Border>
 
-        <!-- ACTIVE announcer — stays open; Done clears this laptop only -->
+        <!-- ACTIVE announcer — stays open; Done uploads .event then clears this laptop -->
         <Border Grid.Row="1" Background="{StaticResource CardBrush}" CornerRadius="10"
                 BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Padding="28"
                 Visibility="{Binding IsAnnouncerActive, Converter={StaticResource BoolVis}}">
@@ -345,17 +345,18 @@
             <Border Background="#FFF8E8" BorderBrush="#E6C35C" BorderThickness="1"
                     CornerRadius="8" Padding="16" Margin="0,0,0,12">
               <TextBlock TextWrapping="Wrap" FontSize="14"
-                         Text="CSV and race database exports are in this race's DB's folder. Keep this app open while you announce. Open Timing &amp; Scoring again any time — it does not upload during the race."/>
+                         Text="Keep this app open while you announce. About every minute it pulls the race DB's folder (including announcer.csv) from OneDrive into this laptop so Timing &amp; Scoring can auto-load new participants. Open Timing &amp; Scoring again any time."/>
             </Border>
 
             <Border Background="#F3FBF6" BorderBrush="{StaticResource SaveBrush}" BorderThickness="1"
                     CornerRadius="8" Padding="16" Margin="0,0,0,16">
               <TextBlock TextWrapping="Wrap" FontSize="14"
-                         Text="When you're finished, close Timing &amp; Scoring, then tap Done. Done removes the announcer files from this laptop only. Nothing is uploaded, and the timing laptop is not affected."/>
+                         Text="When you're finished, close Timing &amp; Scoring, then tap Done. Done uploads this laptop's .event to OneDrive, then removes the announcer files from this laptop. The timing laptop's checkout is not affected."/>
             </Border>
 
             <Button Content="Done" Style="{StaticResource SaveButton}"
-                    HorizontalAlignment="Stretch" FontSize="18" MinHeight="56" Click="Done_Click"/>
+                    HorizontalAlignment="Stretch" FontSize="18" MinHeight="56" Click="Done_Click"
+                    ToolTip="Uploads the announcer .event to OneDrive, then clears this laptop."/>
           </StackPanel>
         </Border>
 
@@ -680,6 +681,53 @@
             <StackPanel>
               <TextBlock TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" FontSize="13" Margin="0,0,0,16"
                          Text="Library and race-day folders are fixed at C:\S2F\Library and C:\S2F\RaceDay (Graph cache + Active). New packs are under Setup New Event; main timing .event assignment is under Edit Current Event."/>
+
+              <TextBlock Text="Software Installs" Margin="0,0,0,4" FontWeight="SemiBold"/>
+              <TextBlock TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" FontSize="13" Margin="0,0,0,10"
+                         Text="Download or update race-day apps on this laptop. Each button opens the vendor page in your browser."/>
+              <WrapPanel Margin="0,0,0,16">
+                <Button Content="RunScore" Style="{StaticResource SecondaryButton}"
+                        MinHeight="40" MinWidth="120" Margin="0,0,12,8"
+                        Click="OpenSoftwareInstall_Click"
+                        Tag="https://runscore.com/downloads"
+                        ToolTip="Opens runscore.com/downloads"/>
+                <Button Content="Timing &amp; Scoring" Style="{StaticResource SecondaryButton}"
+                        MinHeight="40" MinWidth="160" Margin="0,0,12,8"
+                        Click="OpenSoftwareInstall_Click"
+                        Tag="https://portal.mylaps.com/s/downloads-timing-and-scoring"
+                        ToolTip="Opens the MYLAPS Timing &amp; Scoring download page — partner login required"/>
+                <Button Content="OBS" Style="{StaticResource SecondaryButton}"
+                        MinHeight="40" MinWidth="100" Margin="0,0,12,8"
+                        Click="OpenSoftwareInstall_Click"
+                        Tag="https://obsproject.com/download"
+                        ToolTip="Opens obsproject.com/download"/>
+                <Button Content="VLC" Style="{StaticResource SecondaryButton}"
+                        MinHeight="40" MinWidth="100" Margin="0,0,12,8"
+                        Click="OpenSoftwareInstall_Click"
+                        Tag="https://www.videolan.org/vlc/"
+                        ToolTip="Opens videolan.org/vlc"/>
+              </WrapPanel>
+
+              <TextBlock Text="RunScore License" Margin="0,4,0,4" FontWeight="SemiBold"/>
+              <TextBlock TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" FontSize="13" Margin="0,0,0,10"
+                         Text="On a new RunScore install: open RSServer → Help → Register RunScore → paste License Name and License Key → restart RunScore. Values sync from OneDrive when signed in (._s2f/runscore-vendor-secrets.json), or Save them here."/>
+              <TextBlock Text="License Name" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}" FontSize="12"/>
+              <DockPanel Margin="0,0,0,8" LastChildFill="True">
+                <Button DockPanel.Dock="Right" Content="Copy" Style="{StaticResource SecondaryButton}"
+                        MinHeight="40" MinWidth="88" Margin="12,0,0,0" Click="CopyRunScoreLicenseName_Click"
+                        ToolTip="Copy License Name for Register RunScore"/>
+                <TextBox Text="{Binding RunScoreLicenseName, UpdateSourceTrigger=PropertyChanged}" Padding="10,8"
+                         VerticalContentAlignment="Center"/>
+              </DockPanel>
+              <TextBlock Text="License Key" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}" FontSize="12"/>
+              <DockPanel Margin="0,0,0,16" LastChildFill="True">
+                <Button DockPanel.Dock="Right" Content="Copy" Style="{StaticResource SecondaryButton}"
+                        MinHeight="40" MinWidth="88" Margin="12,0,0,0" Click="CopyRunScoreLicenseKey_Click"
+                        ToolTip="Copy License Key for Register RunScore"/>
+                <TextBox Text="{Binding RunScoreLicenseKey, UpdateSourceTrigger=PropertyChanged}" Padding="10,8"
+                         VerticalContentAlignment="Center"
+                         FontFamily="Consolas"/>
+              </DockPanel>
 
               <TextBlock Text="OneDrive" Margin="0,0,0,4" FontWeight="SemiBold"/>
               <TextBlock Text="{Binding GraphAccountStatus}" TextWrapping="Wrap" Margin="0,0,0,8" FontSize="13"/>
