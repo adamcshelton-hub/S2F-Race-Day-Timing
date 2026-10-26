@@ -11,7 +11,7 @@ public interface IGraphTokenProvider
     Task SignOutAsync();
 }
 
-/// <summary>No Graph auth — file-based Library / OneDrive Desktop path only.</summary>
+/// <summary>No Graph auth — local Library/Active only (tests / offline stubs). Not OneDrive Desktop.</summary>
 public sealed class NullGraphTokenProvider : IGraphTokenProvider
 {
     public bool IsSignedIn => false;

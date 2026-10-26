@@ -1,0 +1,30 @@
+---
+description: OneDrive Desktop is gone — Graph is the only cloud path
+alwaysApply: true
+---
+
+# Graph-only OneDrive (hard constraint)
+
+**OneDrive Desktop is not available** on race-day laptops, Adam’s Windows VM, or any environment this app targets. Do not treat it as a fallback, diagnostic source, or layout oracle.
+
+## Product rule
+
+- Cloud I/O = **Microsoft Graph** only (`/me/drive`, MSAL sign-in inside this app).
+- Local race cache = **`C:\S2F\Library`** + Active under **`C:\S2F\RaceDay`** — filled by Graph checkout / index, never by mirroring a Desktop sync folder.
+- User-facing “OneDrive” means **cloud files via this app**, not the Windows OneDrive client.
+
+## Agents must not
+
+- Probe, read, rsync, robocopy, or “verify against” `C:\Users\…\OneDrive` (or `OneDrive - …`) for app data, vendor secrets, race packs, or folder layout.
+- Assume Files On-Demand hydrate, Desktop settle waits, or Explorer sync status matter for Finish / checkout / mid-race.
+- Diagnose “file missing on laptop” by looking under the Desktop tree — use Graph GET/list or `C:\S2F\…`.
+- Reintroduce `OneDriveSyncMonitor`, hydration helpers, or Finish “wait for Desktop sync” copy — those were removed.
+
+## When changing sync / checkout / Admin
+
+Ask: “Does this path assume a local OneDrive Desktop folder exists?” If yes, delete that path or rewrite it to Graph + `C:\S2F`.
+
+## Related
+
+- Cellular budgets and list/download discipline: `cellular-first-sync.mdc`
+- Transfer parallelism / upload set: `sync-speed-audit.mdc`

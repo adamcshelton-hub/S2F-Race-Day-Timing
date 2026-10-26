@@ -981,28 +981,17 @@ public sealed class MainViewModel : INotifyPropertyChanged
             return;
         }
 
-        if (status.StartsWith("finish:sync-stable:", StringComparison.OrdinalIgnoreCase))
-        {
-            var parts = status.Split(':');
-            var cur = parts.Length > 2 ? parts[2] : "?";
-            var need = parts.Length > 3 ? parts[3] : "?";
-            SetFinishProgress(
-                "3 · Uploading to OneDrive",
-                $"Cloud upload looks stable ({cur}/{need}).\nAlmost done — keep this window open.");
-            return;
-        }
-
         switch (status)
         {
             case "finish:backup":
                 SetFinishProgress(
                     "2 · Saving your race",
-                    "Backing up the current OneDrive race files…");
+                    "Backing up the current library race files…");
                 return;
             case "finish:copy":
                 SetFinishProgress(
                     "2 · Saving your race",
-                    "Copying this laptop's race files to OneDrive…");
+                    "Saving this laptop's race files to the local library…");
                 return;
             case "finish:prefs":
                 SetFinishProgress(
@@ -1025,13 +1014,10 @@ public sealed class MainViewModel : INotifyPropertyChanged
                     "Clearing mid-race autosave on OneDrive…");
                 return;
             case "finish:sync":
-            case "finish:sync-wait":
             case "finish:upload":
                 SetFinishProgress(
                     "3 · Uploading to OneDrive",
-                    _cloud.IsAvailable
-                        ? "Uploading changed race files to OneDrive.\nKeep this window open."
-                        : "Waiting for OneDrive to finish uploading.\nThis can take a minute — keep this window open.");
+                    "Uploading changed race files to OneDrive.\nKeep this window open.");
                 return;
             case "finish:cleanup":
                 SetFinishProgress(
@@ -1126,17 +1112,13 @@ public sealed class MainViewModel : INotifyPropertyChanged
         set { _settings.RunSignUpPasswordOverride = value; OnPropertyChanged(); }
     }
 
-    public string RunScoreLicenseName
-    {
-        get => _settings.RunScoreLicenseName;
-        set { _settings.RunScoreLicenseName = value; OnPropertyChanged(); }
-    }
+    /// <summary>Read-only — from OneDrive <c>._s2f/runscore-vendor-secrets.json</c> (local AppData cache).</summary>
+    public string RunScoreLicenseName =>
+        new RunScoreVendorSecretsStore().Load()?.LicenseName?.Trim() ?? string.Empty;
 
-    public string RunScoreLicenseKey
-    {
-        get => _settings.RunScoreLicenseKey;
-        set { _settings.RunScoreLicenseKey = value; OnPropertyChanged(); }
-    }
+    /// <summary>Read-only — from OneDrive <c>._s2f/runscore-vendor-secrets.json</c> (local AppData cache).</summary>
+    public string RunScoreLicenseKey =>
+        new RunScoreVendorSecretsStore().Load()?.LicenseKey?.Trim() ?? string.Empty;
 
     public bool IsGraphSignedIn => _graphAuth.IsSignedIn;
 
@@ -1960,20 +1942,19 @@ public sealed class MainViewModel : INotifyPropertyChanged
                     return;
             }
 
-            SetFinishProgress("2 · Saving your race", "Starting file save to OneDrive…");
+            SetFinishProgress("2 · Saving your race", "Starting local save, then OneDrive upload…");
             var copyProgress = new Progress<CopyProgress>(p =>
                 SetFinishProgress(
                     "2 · Saving your race",
                     p.FilesCopied > 0
-                        ? $"Copying race files to OneDrive… ({p.FilesCopied} files)"
-                        : "Copying race files to OneDrive…"));
+                        ? $"Saving race files to the local library… ({p.FilesCopied} files)"
+                        : "Saving race files to the local library…"));
             var statusProgress = new Progress<string>(ApplyFinishStatus);
 
             var result = await _checkout.CheckinAsync(
                 _settings,
                 DisplayName.Trim(),
                 removeActive: true,
-                waitForOneDrive: true,
                 progress: copyProgress,
                 statusProgress: statusProgress);
 
@@ -2018,7 +1999,6 @@ public sealed class MainViewModel : INotifyPropertyChanged
             var adminReturn = _finishAdminReturn;
             _finishAdminReturn = FinishAdminReturn.None;
 
-            // AwaitingOneDriveConfirm here means RetainActiveForCloudRetry was already handled above.
             var doneBody = "Your race is saved.";
             if (adminReturn == FinishAdminReturn.None)
                 doneBody += "\n\nSafe to shut down this laptop.";
@@ -2414,7 +2394,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
             if (!result.Success)
                 return;
 
-            ApplyLicenseFromVendorSecretsCache();
+            NotifyRunScoreLicenseFields();
 
             // Pin HKCU as soon as the cache is fresh — do not wait for checkout / Open RunScore.
             // Admin RaceRoster / RunSignUp overrides win over the OneDrive file.
@@ -2440,33 +2420,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
     }
 
-    /// <summary>
-    /// Company license from OneDrive secrets → Admin Settings fields (settings.json).
-    /// Cloud wins when both name and key are present; does not clear local Admin edits when cloud omits them.
-    /// </summary>
-    private void ApplyLicenseFromVendorSecretsCache()
+    /// <summary>Refresh Admin Settings license display from the vendor-secrets AppData cache.</summary>
+    private void NotifyRunScoreLicenseFields()
     {
-        try
-        {
-            var secrets = new RunScoreVendorSecretsStore().Load();
-            if (secrets is null || !secrets.HasLicense)
-                return;
-
-            var name = secrets.LicenseName.Trim();
-            var key = secrets.LicenseKey.Trim();
-            var changed = !string.Equals(_settings.RunScoreLicenseName, name, StringComparison.Ordinal)
-                          || !string.Equals(_settings.RunScoreLicenseKey, key, StringComparison.Ordinal);
-            if (!changed)
-                return;
-
-            RunScoreLicenseName = name;
-            RunScoreLicenseKey = key;
-            _settingsStore.Save(_settings);
-        }
-        catch
-        {
-            // Non-fatal — Admin keeps whatever is already in settings.json.
-        }
+        OnPropertyChanged(nameof(RunScoreLicenseName));
+        OnPropertyChanged(nameof(RunScoreLicenseKey));
     }
 
     /// <summary>
@@ -3602,7 +3560,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     {
         _adminSection = AdminSection.Settings;
         // Offline / already-cached company file: surface license without waiting on Graph.
-        ApplyLicenseFromVendorSecretsCache();
+        NotifyRunScoreLicenseFields();
         NotifyAdminSection();
     }
 
@@ -4293,9 +4251,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
         {
             Alert(
                 "RunScore License",
-                $"No {emptyLabel} saved yet.\n\n"
-                + "Enter it here and tap Save, or add licenseName / licenseKey to "
-                + "OneDrive ._s2f/runscore-vendor-secrets.json and refresh OneDrive.");
+                $"No {emptyLabel} on this laptop yet.\n\n"
+                + "Add licenseName and licenseKey to OneDrive ._s2f/runscore-vendor-secrets.json, "
+                + "then Sign In (or Refresh Offices) so this app can pull them.");
             return;
         }
 

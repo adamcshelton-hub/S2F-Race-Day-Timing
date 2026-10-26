@@ -27,8 +27,8 @@ Race-day laptops often run on **cellular hotspot**. Treat bandwidth and latency 
 
 Ask: “On a weak cell connection, does this add list/download calls the timer doesn’t need right now?” If yes, cut it or gate it behind the user’s next selection.
 
-## Dev note — VM OneDrive vs Library cache
+## Dev note — Library cache
 
-On Adam’s Windows VM, `C:\Users\adam\OneDrive` is the same tree as online My files. Agents may **read it only to learn folder layout** (Past Races → office bucket → year → race, etc.).
+**OneDrive Desktop is gone** (see `graph-only-onedrive.mdc`). Learn folder layout via Graph list/GET or existing `C:\S2F\Library` placeholders — never from `C:\Users\…\OneDrive`.
 
-**Do not** copy, rsync, robocopy, or otherwise mirror that OneDrive tree into `C:\S2F\Library`. Library is filled only by the app’s Graph path: office placeholders → one-level / one-office index → one session download on checkout.
+Library is filled only by the app’s Graph path: office placeholders → one-level / one-office index → one session download on checkout.

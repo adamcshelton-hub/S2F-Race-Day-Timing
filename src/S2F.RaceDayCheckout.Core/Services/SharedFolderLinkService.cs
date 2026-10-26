@@ -100,8 +100,7 @@ public sealed class SharedFolderLinkService
     }
 
     /// <summary>
-    /// Graph mode: real local DB's folder under Active (app publishes CSVs via Graph).
-    /// Replaces the OneDrive junction used when Desktop sync is the transport.
+    /// Real local DB's folder under Active (app publishes CSVs via Graph). Not a OneDrive Desktop junction.
     /// </summary>
     public LinkResult EnsureLocalDbsFolder(string activeSessionPath, string? seedFromLibrarySession = null)
     {

@@ -39,7 +39,6 @@ public sealed class CheckinResult
     public bool Success { get; init; }
     public string Message { get; init; } = string.Empty;
     public IReadOnlyList<string> BlockingProcesses { get; init; } = Array.Empty<string>();
-    public bool AwaitingOneDriveConfirm { get; init; }
     /// <summary>False when Finish could not delete OneDrive RUNSCORE\_autosave (retry / ask setup).</summary>
     public bool AutosaveCleared { get; init; } = true;
     /// <summary>
@@ -66,16 +65,10 @@ public sealed class CheckoutService
         IFileCopyService copy,
         IProcessGuard processes,
         ActiveCheckoutStore activeStore,
-        IOneDriveSyncMonitor? syncMonitor = null,
-        IOneDriveHydrationService? hydrate = null,
         RunScorePreferencesService? runScorePrefs = null,
         SharedFolderLinkService? links = null,
         ICloudLibrarySync? cloud = null)
     {
-        // syncMonitor / hydrate kept as optional ctor params for call-site compat; Graph-only
-        // Finish no longer settles via the OneDrive desktop client or Files On-Demand hydrate.
-        _ = syncMonitor;
-        _ = hydrate;
         _paths = paths;
         _locks = locks;
         _copy = copy;
@@ -256,7 +249,7 @@ public sealed class CheckoutService
         TryRemoveAutosaveTombstone(autosavePath);
 
         // Graph-only: Library under C:\S2F\Library is real files from Graph download (or a
-        // prior pull). No OneDrive Files On-Demand hydrate — desktop client is not installed.
+        // prior pull). Library bytes come from Graph download only.
         statusProgress?.Report("Copying race files to this laptop…");
         await _copy.CopyDirectoryAsync(libraryRunScore, activeRunScore, progress, cancellationToken);
         Directory.CreateDirectory(activePath);
@@ -608,7 +601,6 @@ public sealed class CheckoutService
                 {
                     Success = true,
                     RetainActiveForCloudRetry = true,
-                    AwaitingOneDriveConfirm = true,
                     Message =
                         "Announcer .event from the last Done is still waiting to upload. "
                         + "Sign in to OneDrive, then tap Done again."
@@ -808,14 +800,10 @@ public sealed class CheckoutService
         string holderName,
         bool removeActive = true,
         bool adminOverrideProcesses = false,
-        bool waitForOneDrive = true,
         IProgress<CopyProgress>? progress = null,
         IProgress<string>? statusProgress = null,
         CancellationToken cancellationToken = default)
     {
-        // waitForOneDrive ignored — Graph-only Finish; no desktop client settle.
-        _ = waitForOneDrive;
-
         var active = _activeStore.Load();
         if (active is null)
             return new CheckinResult { Success = false, Message = "No Active checkout on this machine." };
@@ -838,7 +826,6 @@ public sealed class CheckoutService
                 {
                     Success = true,
                     RetainActiveForCloudRetry = true,
-                    AwaitingOneDriveConfirm = true,
                     Message =
                         "Race files from the last Finish are still waiting to upload. "
                         + "Sign in to OneDrive, then tap Finish again."
@@ -1133,7 +1120,6 @@ public sealed class CheckoutService
         {
             Success = true,
             RetainActiveForCloudRetry = true,
-            AwaitingOneDriveConfirm = true,
             AutosaveCleared = true,
             Message = message
         };
@@ -1167,7 +1153,6 @@ public sealed class CheckoutService
         {
             Success = true,
             RetainActiveForCloudRetry = true,
-            AwaitingOneDriveConfirm = true,
             AutosaveCleared = autosaveStill,
             Message = message
         };

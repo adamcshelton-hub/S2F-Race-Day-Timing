@@ -17,12 +17,6 @@ public class CheckoutServiceTests
         public IReadOnlyList<string> GetRunScoreProcessNames() => new[] { "RSServer" };
     }
 
-    private sealed class InstantSync : IOneDriveSyncMonitor
-    {
-        public Task<SyncWaitResult> WaitUntilSettledAsync(
-            string path, TimeSpan timeout, IProgress<string>? progress = null, CancellationToken cancellationToken = default) =>
-            Task.FromResult(new SyncWaitResult { Success = true, Message = "ok" });
-    }
 
     private sealed class FakeMachine : IMachineIdentity
     {
@@ -79,7 +73,7 @@ public class CheckoutServiceTests
             new FileCopyService(),
             new NoProcesses(),
             new ActiveCheckoutStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json")),
-            new InstantSync(), cloud: new OkCloudSync());
+            cloud: new OkCloudSync());
 
         var result = await service.CheckoutAsync(new CheckoutRequest
         {
@@ -106,7 +100,7 @@ public class CheckoutServiceTests
         var storePath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json");
         var service = new CheckoutService(
             paths, locks, new FileCopyService(), new NoProcesses(),
-            new ActiveCheckoutStore(storePath), new InstantSync(), cloud: new OkCloudSync());
+            new ActiveCheckoutStore(storePath), cloud: new OkCloudSync());
 
         var checkout = await service.CheckoutAsync(new CheckoutRequest
         {
@@ -145,7 +139,6 @@ public class CheckoutServiceTests
             new FileCopyService(),
             new NoProcesses(),
             new ActiveCheckoutStore(activeStorePath),
-            new InstantSync(),
             cloud: new OkCloudSync());
 
         var checkout = await service.CheckoutAsync(new CheckoutRequest
@@ -161,7 +154,7 @@ public class CheckoutServiceTests
         // Staff Save As'd a real .event into Active mid-checkout.
         File.WriteAllText(Path.Combine(checkout.Active.ActivePath, "No Event.event"), "mylaps-zip");
 
-        var checkin = await service.CheckinAsync(settings, "Adam", waitForOneDrive: true);
+        var checkin = await service.CheckinAsync(settings, "Adam");
         Assert.True(checkin.Success, checkin.Message);
         Assert.True(File.Exists(Path.Combine(pack, "No Event.event")));
         Assert.True(File.Exists(Path.Combine(pack, "RUNSCORE", "ENTRIES.FRM")));
@@ -180,7 +173,7 @@ public class CheckoutServiceTests
             new FileCopyService(),
             new NoProcesses(),
             new ActiveCheckoutStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json")),
-            new InstantSync(), cloud: new OkCloudSync());
+            cloud: new OkCloudSync());
 
         var result = await service.CheckoutAsync(new CheckoutRequest
         {
@@ -213,7 +206,7 @@ public class CheckoutServiceTests
         var paths = new PathService();
         var service = new CheckoutService(
             paths, new CheckoutLockService(paths, new FakeMachine()), new FileCopyService(),
-            new NoProcesses(), new ActiveCheckoutStore(activeStorePath), new InstantSync(),
+            new NoProcesses(), new ActiveCheckoutStore(activeStorePath),
             cloud: new OkCloudSync());
 
         var pack = PackInfo(packPath, "Memphis", "2026 - Sample Event");
@@ -230,7 +223,7 @@ public class CheckoutServiceTests
         Assert.False(File.Exists(Path.Combine(packPath, "DB's", "from-runscore.csv")));
         Assert.True(File.Exists(Path.Combine(packPath, "DB's", "live.csv")));
 
-        var checkin = await service.CheckinAsync(settings, "Adam", waitForOneDrive: true);
+        var checkin = await service.CheckinAsync(settings, "Adam");
         Assert.True(checkin.Success, checkin.Message);
         Assert.False(Directory.Exists(result.Active.ActivePath));
         Assert.True(File.Exists(Path.Combine(packPath, "DB's", "from-runscore.csv")));
@@ -248,7 +241,7 @@ public class CheckoutServiceTests
         var locks = new CheckoutLockService(paths, new FakeMachine());
         var service = new CheckoutService(
             paths, locks, new FileCopyService(), new NoProcesses(),
-            new ActiveCheckoutStore(activeStorePath), new InstantSync(),
+            new ActiveCheckoutStore(activeStorePath),
             cloud: new OkCloudSync());
 
         var pack = PackInfo(packPath, "Memphis", "2026 - Sample Event");
@@ -258,7 +251,7 @@ public class CheckoutServiceTests
         File.WriteAllText(Path.Combine(result.Active!.ActivePath, "RUNSCORE", "NEW.txt"), "local edit");
         File.WriteAllText(Path.Combine(packPath, "DB's", "announcer-wrote.csv"), "from other laptop");
 
-        var checkin = await service.CheckinAsync(settings, "Adam", waitForOneDrive: true);
+        var checkin = await service.CheckinAsync(settings, "Adam");
         Assert.True(checkin.Success, checkin.Message);
         Assert.True(File.Exists(Path.Combine(packPath, "RUNSCORE", "NEW.txt")));
         Assert.True(File.Exists(Path.Combine(packPath, "DB's", "live.csv")));
@@ -277,7 +270,7 @@ public class CheckoutServiceTests
         var service = new CheckoutService(
             paths, new CheckoutLockService(paths, new FakeMachine()), new FileCopyService(),
             new NoProcesses(), new ActiveCheckoutStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json")),
-            new InstantSync(), cloud: new NullCloudLibrarySync());
+            cloud: new NullCloudLibrarySync());
 
         var checkout = await service.CheckoutAsync(new CheckoutRequest
         {
@@ -301,7 +294,7 @@ public class CheckoutServiceTests
         var activeStore = new ActiveCheckoutStore(activeStorePath);
         var online = new CheckoutService(
             paths, locks, new FileCopyService(), new NoProcesses(), activeStore,
-            new InstantSync(), cloud: new OkCloudSync());
+            cloud: new OkCloudSync());
 
         var checkout = await online.CheckoutAsync(new CheckoutRequest
         {
@@ -313,7 +306,7 @@ public class CheckoutServiceTests
 
         var offline = new CheckoutService(
             paths, locks, new FileCopyService(), new NoProcesses(), activeStore,
-            new InstantSync(), cloud: new NullCloudLibrarySync());
+            cloud: new NullCloudLibrarySync());
         var checkin = await offline.CheckinAsync(settings, "Adam");
         Assert.False(checkin.Success);
         Assert.Contains("Sign in to OneDrive", checkin.Message, StringComparison.OrdinalIgnoreCase);
@@ -331,7 +324,7 @@ public class CheckoutServiceTests
         var service = new CheckoutService(
             paths, new CheckoutLockService(paths, new FakeMachine()), new FileCopyService(),
             new RunScoreRunning(), new ActiveCheckoutStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json")),
-            new InstantSync(), cloud: new OkCloudSync());
+            cloud: new OkCloudSync());
 
         var result = await service.CheckoutAsync(new CheckoutRequest
         {
@@ -361,7 +354,7 @@ public class CheckoutServiceTests
         var service = new CheckoutService(
             paths, new CheckoutLockService(paths, new FakeMachine()), new FileCopyService(),
             new NoProcesses(), new ActiveCheckoutStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json")),
-            new InstantSync(), cloud: new OkCloudSync());
+            cloud: new OkCloudSync());
 
         var result = await service.CheckoutAsync(new CheckoutRequest
         {
@@ -408,7 +401,7 @@ public class CheckoutServiceTests
         var service = new CheckoutService(
             paths, locks, new FileCopyService(),
             new NoProcesses(), new ActiveCheckoutStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json")),
-            new InstantSync(), cloud: new OkCloudSync());
+            cloud: new OkCloudSync());
 
         var result = await service.CheckoutAsync(new CheckoutRequest
         {
@@ -440,7 +433,7 @@ public class CheckoutServiceTests
         var service = new CheckoutService(
             paths, new CheckoutLockService(paths, new FakeMachine()), new FileCopyService(),
             new NoProcesses(), new ActiveCheckoutStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json")),
-            new InstantSync(), cloud: new OkCloudSync());
+            cloud: new OkCloudSync());
 
         var blocked = await service.CheckoutAsync(new CheckoutRequest
         {
@@ -482,7 +475,7 @@ public class CheckoutServiceTests
         var service = new CheckoutService(
             paths, new CheckoutLockService(paths, new FakeMachine()), new FileCopyService(),
             new NoProcesses(), new ActiveCheckoutStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json")),
-            new InstantSync(), cloud: cloud);
+            cloud: cloud);
 
         var forced = await service.CheckoutAsync(new CheckoutRequest
         {
@@ -532,7 +525,7 @@ public class CheckoutServiceTests
         var service = new CheckoutService(
             paths, locks, new FileCopyService(),
             new NoProcesses(), new ActiveCheckoutStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json")),
-            new InstantSync(), cloud: cloud);
+            cloud: cloud);
 
         var result = await service.CheckoutAsync(new CheckoutRequest
         {
@@ -581,7 +574,7 @@ public class CheckoutServiceTests
         var paths = new PathService();
         var service = new CheckoutService(
             paths, new CheckoutLockService(paths, new FakeMachine()), new FileCopyService(),
-            new NoProcesses(), new ActiveCheckoutStore(activeStorePath), new InstantSync(),
+            new NoProcesses(), new ActiveCheckoutStore(activeStorePath),
             cloud: new OkCloudSync());
 
         var pack = PackInfo(packPath, "Memphis", "2026 - Sample Event");
@@ -592,7 +585,7 @@ public class CheckoutServiceTests
         Directory.CreateDirectory(autosave);
         File.WriteAllText(Path.Combine(autosave, "ENTRIES.FRM"), "mid-race");
 
-        var checkin = await service.CheckinAsync(settings, "Adam", waitForOneDrive: true);
+        var checkin = await service.CheckinAsync(settings, "Adam");
         Assert.True(checkin.Success, checkin.Message);
         Assert.True(checkin.AutosaveCleared);
         Assert.True(CheckoutService.IsAutosaveCleared(autosave));
@@ -644,7 +637,7 @@ public class CheckoutServiceTests
         var service = new CheckoutService(
             paths, new CheckoutLockService(paths, new FakeMachine()), new FileCopyService(),
             new NoProcesses(), new ActiveCheckoutStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json")),
-            new InstantSync(), cloud: new OkCloudSync());
+            cloud: new OkCloudSync());
 
         var relative = Path.Combine("2026 - LRM Weekend", "Sunday");
         var result = await service.CheckoutAsync(new CheckoutRequest
@@ -871,7 +864,7 @@ public class CheckoutServiceTests
         var activeStore = new ActiveCheckoutStore(activeStorePath);
         var service = new CheckoutService(
             paths, locks, new FileCopyService(), new NoProcesses(), activeStore,
-            new InstantSync(), cloud: new FailingCloudSync());
+            cloud: new FailingCloudSync());
 
         var checkout = await service.CheckoutAsync(new CheckoutRequest
         {
@@ -886,10 +879,9 @@ public class CheckoutServiceTests
             Path.Combine(checkout.Active!.ActivePath, "RUNSCORE", "ENTRIES.FRM"),
             "race-day-edit");
 
-        var checkin = await service.CheckinAsync(settings, "Adam", waitForOneDrive: true);
+        var checkin = await service.CheckinAsync(settings, "Adam");
         Assert.True(checkin.Success, checkin.Message);
         Assert.True(checkin.RetainActiveForCloudRetry);
-        Assert.True(checkin.AwaitingOneDriveConfirm);
         var retained = activeStore.Load();
         Assert.NotNull(retained);
         Assert.NotNull(retained.PendingFinishUploadRelativePaths);
@@ -911,7 +903,7 @@ public class CheckoutServiceTests
         var cloud = new RecordingCloudSync(failFirstCalls: 1);
         var service = new CheckoutService(
             paths, locks, new FileCopyService(), new NoProcesses(), activeStore,
-            new InstantSync(), cloud: cloud);
+            cloud: cloud);
 
         var checkout = await service.CheckoutAsync(new CheckoutRequest
         {
@@ -925,14 +917,14 @@ public class CheckoutServiceTests
             Path.Combine(checkout.Active!.ActivePath, "RUNSCORE", "ENTRIES.FRM"),
             "race-day-edit");
 
-        var first = await service.CheckinAsync(settings, "Adam", waitForOneDrive: true);
+        var first = await service.CheckinAsync(settings, "Adam");
         Assert.True(first.RetainActiveForCloudRetry);
         Assert.Equal(1, cloud.UploadCalls);
         Assert.NotNull(cloud.LastOnlyRelativePaths);
         Assert.NotEmpty(cloud.LastOnlyRelativePaths!);
 
         // Active already copied into Library — fresh diff alone would be empty.
-        var second = await service.CheckinAsync(settings, "Adam", waitForOneDrive: true, removeActive: true);
+        var second = await service.CheckinAsync(settings, "Adam", removeActive: true);
         Assert.True(second.Success, second.Message);
         Assert.False(second.RetainActiveForCloudRetry);
         Assert.Equal(2, cloud.UploadCalls);
@@ -960,7 +952,7 @@ public class CheckoutServiceTests
         var cloud = new RecordingCloudSync(failFirstCalls: 99);
         var service = new CheckoutService(
             paths, locks, new FileCopyService(), new NoProcesses(), activeStore,
-            new InstantSync(), cloud: cloud);
+            cloud: cloud);
 
         var checkout = await service.CheckoutAsync(new CheckoutRequest
         {
@@ -975,7 +967,7 @@ public class CheckoutServiceTests
             Path.Combine(checkout.Active!.ActivePath, "RUNSCORE", "ENTRIES.FRM"),
             "edit-" + Guid.NewGuid().ToString("N"));
 
-        var checkin = await service.CheckinAsync(settings, "Adam", waitForOneDrive: true);
+        var checkin = await service.CheckinAsync(settings, "Adam");
         Assert.True(checkin.RetainActiveForCloudRetry);
         Assert.Equal(locksAfterCheckout, cloud.LockUploadCalls);
         Assert.Equal(0, cloud.RemoteClearCalls);
@@ -995,7 +987,7 @@ public class CheckoutServiceTests
         var cloud = new CancelUploadCloudSync();
         var service = new CheckoutService(
             paths, locks, new FileCopyService(), new NoProcesses(), activeStore,
-            new InstantSync(), cloud: cloud);
+            cloud: cloud);
 
         var checkout = await service.CheckoutAsync(new CheckoutRequest
         {
@@ -1011,7 +1003,7 @@ public class CheckoutServiceTests
         Assert.True(plannedBefore.Count > 0, "Active edit should produce Finish upload paths before Checkin.");
 
         // Cloud throws cancel after Library copy — must persist pending (Active≈Library trap).
-        var checkin = await service.CheckinAsync(settings, "Adam", waitForOneDrive: true);
+        var checkin = await service.CheckinAsync(settings, "Adam");
         Assert.True(checkin.RetainActiveForCloudRetry, checkin.Message);
         Assert.NotNull(cloud.CapturedOnlyRelativePaths);
         Assert.True(
@@ -1036,7 +1028,7 @@ public class CheckoutServiceTests
         // First Finish with Graph fail to create pending.
         var serviceFail = new CheckoutService(
             paths, locks, new FileCopyService(), new NoProcesses(), activeStore,
-            new InstantSync(), cloud: new FailingCloudSync());
+            cloud: new FailingCloudSync());
         var checkout = await serviceFail.CheckoutAsync(new CheckoutRequest
         {
             Pack = PackInfo(packPath, "Memphis", "2026 - Sample Event"),
@@ -1046,7 +1038,7 @@ public class CheckoutServiceTests
         File.WriteAllText(
             Path.Combine(checkout.Active!.ActivePath, "RUNSCORE", "ENTRIES.FRM"),
             "edit-" + Guid.NewGuid().ToString("N"));
-        var first = await serviceFail.CheckinAsync(settings, "Adam", waitForOneDrive: true);
+        var first = await serviceFail.CheckinAsync(settings, "Adam");
         Assert.True(first.RetainActiveForCloudRetry, first.Message);
         Assert.NotNull(activeStore.Load()!.PendingFinishUploadRelativePaths);
         Assert.NotEmpty(activeStore.Load()!.PendingFinishUploadRelativePaths!);
@@ -1054,8 +1046,8 @@ public class CheckoutServiceTests
         // Sign-out / Graph unavailable — must not release lock or drop Active.
         var serviceOffline = new CheckoutService(
             paths, locks, new FileCopyService(), new NoProcesses(), activeStore,
-            new InstantSync(), cloud: new NullCloudLibrarySync());
-        var second = await serviceOffline.CheckinAsync(settings, "Adam", waitForOneDrive: true);
+            cloud: new NullCloudLibrarySync());
+        var second = await serviceOffline.CheckinAsync(settings, "Adam");
         Assert.True(second.RetainActiveForCloudRetry);
         Assert.NotNull(activeStore.Load());
         Assert.NotEmpty(activeStore.Load()!.PendingFinishUploadRelativePaths!);
@@ -1106,7 +1098,7 @@ public class CheckoutServiceTests
         // Call 1 = backup Library→._checkin; call 2 = Active→Library.
         var service = new CheckoutService(
             paths, locks, new ThrowOnNthCopy(throwOnCall: 2), new NoProcesses(), activeStore,
-            new InstantSync(), cloud: new FailingCloudSync());
+            cloud: new FailingCloudSync());
 
         var checkout = await service.CheckoutAsync(new CheckoutRequest
         {
@@ -1119,7 +1111,7 @@ public class CheckoutServiceTests
             Path.Combine(checkout.Active!.ActivePath, "RUNSCORE", "ENTRIES.FRM"),
             "edit-" + Guid.NewGuid().ToString("N"));
 
-        var checkin = await service.CheckinAsync(settings, "Adam", waitForOneDrive: true);
+        var checkin = await service.CheckinAsync(settings, "Adam");
         Assert.True(checkin.Success, checkin.Message);
         Assert.True(checkin.RetainActiveForCloudRetry, checkin.Message);
         Assert.NotNull(activeStore.Load()?.PendingFinishUploadRelativePaths);
@@ -1140,7 +1132,7 @@ public class CheckoutServiceTests
         var cloud = new PartialFailCloudSync(failedOnly);
         var service = new CheckoutService(
             paths, new CheckoutLockService(paths, new FakeMachine()), new FileCopyService(),
-            new NoProcesses(), activeStore, new InstantSync(), cloud: cloud);
+            new NoProcesses(), activeStore, cloud: cloud);
 
         var checkout = await service.CheckoutAsync(new CheckoutRequest
         {
@@ -1152,7 +1144,7 @@ public class CheckoutServiceTests
         File.WriteAllText(Path.Combine(checkout.Active!.ActivePath, "RUNSCORE", "ENTRIES.FRM"), "edit-a");
         File.WriteAllText(Path.Combine(checkout.Active.ActivePath, "Sample Event.event"), "edit-event");
 
-        var checkin = await service.CheckinAsync(settings, "Adam", waitForOneDrive: true);
+        var checkin = await service.CheckinAsync(settings, "Adam");
         Assert.True(checkin.RetainActiveForCloudRetry);
         var pending = activeStore.Load()!.PendingFinishUploadRelativePaths!;
         Assert.Single(pending);
@@ -1211,7 +1203,7 @@ public class CheckoutServiceTests
         var service = new CheckoutService(
             paths, new CheckoutLockService(paths, new FakeMachine()), new FileCopyService(),
             new NoProcesses(), new ActiveCheckoutStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json")),
-            new InstantSync(), cloud: new OkCloudSync());
+            cloud: new OkCloudSync());
 
         var result = await service.CheckoutAsync(new CheckoutRequest
         {
@@ -1253,7 +1245,7 @@ public class CheckoutServiceTests
         var activeStore = new ActiveCheckoutStore(activeStorePath);
         var service = new CheckoutService(
             paths, locks, new FileCopyService(), new NoProcesses(), activeStore,
-            new InstantSync(), cloud: cloud);
+            cloud: cloud);
 
         var result = await service.CheckoutAsync(new CheckoutRequest
         {
@@ -1325,7 +1317,7 @@ public class CheckoutServiceTests
         var activeStore = new ActiveCheckoutStore(activeStorePath);
         var service = new CheckoutService(
             paths, new CheckoutLockService(paths, new FakeMachine()), new FileCopyService(),
-            new NoProcesses(), activeStore, new InstantSync(), cloud: cloud);
+            new NoProcesses(), activeStore, cloud: cloud);
 
         var checkout = await service.CheckoutAsync(new CheckoutRequest
         {
@@ -1378,7 +1370,7 @@ public class CheckoutServiceTests
         var activeStore = new ActiveCheckoutStore(activeStorePath);
         var service = new CheckoutService(
             paths, new CheckoutLockService(paths, new FakeMachine()), new FileCopyService(),
-            new NoProcesses(), activeStore, new InstantSync(), cloud: new FailingCloudSync());
+            new NoProcesses(), activeStore, cloud: new FailingCloudSync());
 
         var checkout = await service.CheckoutAsync(new CheckoutRequest
         {
@@ -1431,7 +1423,7 @@ public class CheckoutServiceTests
         var activeStore = new ActiveCheckoutStore(activeStorePath);
         var service = new CheckoutService(
             paths, new CheckoutLockService(paths, new FakeMachine()), new FileCopyService(),
-            new RunScoreRunning(), activeStore, new InstantSync(), cloud: new OkCloudSync());
+            new RunScoreRunning(), activeStore, cloud: new OkCloudSync());
 
         var checkout = await service.CheckoutAsync(new CheckoutRequest
         {

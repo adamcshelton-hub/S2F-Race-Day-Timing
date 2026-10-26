@@ -12,7 +12,7 @@ namespace S2F.RaceDayCheckout.Core.Services;
 /// <b>Announcer:</b> Graph pull session <c>DB's</c> → Library → Active <c>DB's</c> so T&amp;S
 /// auto-load sees timing's announcer.csv (~60s). No upload, no lock, no .event mid-race.
 /// </para>
-/// Requires the desktop app to stay open (not a Windows service).
+/// Requires this S2F app process to stay open (not a Windows service). Not OneDrive Desktop.
 /// </summary>
 public sealed class AutosaveMirrorService
 {

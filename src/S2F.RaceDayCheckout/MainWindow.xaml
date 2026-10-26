@@ -710,22 +710,24 @@
 
               <TextBlock Text="RunScore License" Margin="0,4,0,4" FontWeight="SemiBold"/>
               <TextBlock TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" FontSize="13" Margin="0,0,0,10"
-                         Text="On a new RunScore install: open RSServer → Help → Register RunScore → paste License Name and License Key → restart RunScore. Values sync from OneDrive when signed in (._s2f/runscore-vendor-secrets.json), or Save them here."/>
+                         Text="On a new RunScore install: open RSServer → Help → Register RunScore → paste License Name and License Key → restart RunScore. These values load only from OneDrive ._s2f/runscore-vendor-secrets.json (not editable here). Sign in to refresh."/>
               <TextBlock Text="License Name" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}" FontSize="12"/>
               <DockPanel Margin="0,0,0,8" LastChildFill="True">
                 <Button DockPanel.Dock="Right" Content="Copy" Style="{StaticResource SecondaryButton}"
                         MinHeight="40" MinWidth="88" Margin="12,0,0,0" Click="CopyRunScoreLicenseName_Click"
                         ToolTip="Copy License Name for Register RunScore"/>
-                <TextBox Text="{Binding RunScoreLicenseName, UpdateSourceTrigger=PropertyChanged}" Padding="10,8"
-                         VerticalContentAlignment="Center"/>
+                <TextBox Text="{Binding RunScoreLicenseName, Mode=OneWay}" Padding="10,8"
+                         VerticalContentAlignment="Center" IsReadOnly="True"
+                         Background="#F5F5F5"/>
               </DockPanel>
               <TextBlock Text="License Key" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}" FontSize="12"/>
               <DockPanel Margin="0,0,0,16" LastChildFill="True">
                 <Button DockPanel.Dock="Right" Content="Copy" Style="{StaticResource SecondaryButton}"
                         MinHeight="40" MinWidth="88" Margin="12,0,0,0" Click="CopyRunScoreLicenseKey_Click"
                         ToolTip="Copy License Key for Register RunScore"/>
-                <TextBox Text="{Binding RunScoreLicenseKey, UpdateSourceTrigger=PropertyChanged}" Padding="10,8"
-                         VerticalContentAlignment="Center"
+                <TextBox Text="{Binding RunScoreLicenseKey, Mode=OneWay}" Padding="10,8"
+                         VerticalContentAlignment="Center" IsReadOnly="True"
+                         Background="#F5F5F5"
                          FontFamily="Consolas"/>
               </DockPanel>
 
