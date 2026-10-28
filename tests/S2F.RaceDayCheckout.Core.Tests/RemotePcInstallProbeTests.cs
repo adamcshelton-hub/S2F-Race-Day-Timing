@@ -42,6 +42,77 @@ public class RemotePcInstallProbeTests
                 : "PF"));
     }
 
+    [Fact]
+    public void WaitUntilRemotePcInstalledOnWindows_TrueWhenMarkerAppearsAfterDelay()
+    {
+        var root86 = "PF86";
+        var marker = Path.Combine(root86, "RemotePC", "RemotePCService.exe");
+        var files = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var clock = DateTime.UtcNow;
+        var sleeps = 0;
+
+        Assert.True(RemotePcInstallProbe.WaitUntilRemotePcInstalledOnWindows(
+            timeout: TimeSpan.FromSeconds(10),
+            pollInterval: TimeSpan.FromSeconds(2),
+            fileExists: files.Contains,
+            getFolderPath: folder => folder == Environment.SpecialFolder.ProgramFilesX86
+                ? root86
+                : "PF",
+            delay: d =>
+            {
+                sleeps++;
+                clock += d;
+                files.Add(marker);
+            },
+            utcNow: () => clock));
+
+        Assert.Equal(1, sleeps);
+    }
+
+    [Fact]
+    public void WaitUntilRemotePcInstalledOnWindows_TrueImmediatelyWhenAlreadyInstalled()
+    {
+        var root86 = "PF86";
+        var marker = Path.Combine(root86, "RemotePC", "RemotePCService.exe");
+        var files = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { marker };
+        var sleeps = 0;
+
+        Assert.True(RemotePcInstallProbe.WaitUntilRemotePcInstalledOnWindows(
+            timeout: TimeSpan.FromSeconds(10),
+            pollInterval: TimeSpan.FromSeconds(2),
+            fileExists: files.Contains,
+            getFolderPath: folder => folder == Environment.SpecialFolder.ProgramFilesX86
+                ? root86
+                : "PF",
+            delay: _ => sleeps++,
+            utcNow: () => DateTime.UtcNow));
+
+        Assert.Equal(0, sleeps);
+    }
+
+    [Fact]
+    public void WaitUntilRemotePcInstalledOnWindows_FalseWhenMarkersNeverAppear()
+    {
+        var clock = DateTime.UtcNow;
+        var sleeps = 0;
+
+        Assert.False(RemotePcInstallProbe.WaitUntilRemotePcInstalledOnWindows(
+            timeout: TimeSpan.FromSeconds(5),
+            pollInterval: TimeSpan.FromSeconds(2),
+            fileExists: _ => false,
+            getFolderPath: folder => folder == Environment.SpecialFolder.ProgramFilesX86
+                ? "PF86"
+                : "PF",
+            delay: d =>
+            {
+                sleeps++;
+                clock += d;
+            },
+            utcNow: () => clock));
+
+        Assert.True(sleeps >= 2);
+    }
+
     [Theory]
     [InlineData("Parallels Software International Inc.", true)]
     [InlineData("Parallels ARM Virtual Machine", true)]

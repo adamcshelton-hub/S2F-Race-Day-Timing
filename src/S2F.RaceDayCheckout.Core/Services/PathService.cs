@@ -35,7 +35,7 @@ public sealed class PathService
         "Atlanta",
         "Charlotte",
         "Memphis",
-        "Northwest Arkansas",
+        "NW Arkansas",
         "St. Louis",
         // Always last on race-day + Admin office lists (not alpha with live offices).
         "Past Races",

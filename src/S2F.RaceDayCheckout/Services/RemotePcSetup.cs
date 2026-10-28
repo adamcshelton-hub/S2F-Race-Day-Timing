@@ -130,13 +130,16 @@ public static class RemotePcSetup
                     "RemotePC setup is still running. Check the system tray after it finishes.");
             }
 
+            var code = proc.ExitCode;
             if (RemotePcInstallProbe.IsRemotePcInstalledOnWindows())
                 return new InstallResult(true, string.Empty);
 
-            var code = proc.ExitCode;
-            // msiexec 0 = success; 3010 = success reboot required — treat as OK if files appeared.
+            // msiexec 0 / 3010 (reboot required) often return before Program Files markers appear.
             if (code is 0 or 3010)
             {
+                if (RemotePcInstallProbe.WaitUntilRemotePcInstalledOnWindows())
+                    return new InstallResult(true, string.Empty);
+
                 return new InstallResult(false,
                     "RemotePC setup finished but the host was not detected. "
                     + "Confirm the Configuration ID and try again, or install RemotePC manually.");

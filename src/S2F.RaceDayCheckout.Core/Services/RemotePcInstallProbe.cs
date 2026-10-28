@@ -9,6 +9,14 @@ namespace S2F.RaceDayCheckout.Core.Services;
 public static class RemotePcInstallProbe
 {
     /// <summary>
+    /// msiexec can return success before host binaries are visible under Program Files.
+    /// Poll briefly so a late-appearing install is not reported as failure.
+    /// </summary>
+    public static readonly TimeSpan PostMsiexecDetectTimeout = TimeSpan.FromSeconds(45);
+
+    public static readonly TimeSpan PostMsiexecDetectPollInterval = TimeSpan.FromSeconds(2);
+
+    /// <summary>
     /// True when any RemotePC host/suite binaries are already under Program Files.
     /// Full suite (viewer + host) and host-only both register these — do not re-run the deploy MSI.
     /// </summary>
@@ -26,6 +34,44 @@ public static class RemotePcInstallProbe
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Polls <see cref="IsRemotePcInstalledOnWindows"/> until true or <paramref name="timeout"/> elapses.
+    /// Returns true as soon as markers appear (including on the first check).
+    /// </summary>
+    public static bool WaitUntilRemotePcInstalledOnWindows(
+        TimeSpan? timeout = null,
+        TimeSpan? pollInterval = null,
+        Func<string, bool>? fileExists = null,
+        Func<Environment.SpecialFolder, string>? getFolderPath = null,
+        Action<TimeSpan>? delay = null,
+        Func<DateTime>? utcNow = null)
+    {
+        var limit = timeout ?? PostMsiexecDetectTimeout;
+        if (limit < TimeSpan.Zero)
+            limit = TimeSpan.Zero;
+
+        var interval = pollInterval ?? PostMsiexecDetectPollInterval;
+        if (interval <= TimeSpan.Zero)
+            interval = TimeSpan.FromMilliseconds(1);
+
+        var sleep = delay ?? (d => Thread.Sleep(d));
+        var now = utcNow ?? (() => DateTime.UtcNow);
+        var deadline = now() + limit;
+
+        while (true)
+        {
+            if (IsRemotePcInstalledOnWindows(fileExists, getFolderPath))
+                return true;
+
+            var remaining = deadline - now();
+            if (remaining <= TimeSpan.Zero)
+                return false;
+
+            var wait = remaining < interval ? remaining : interval;
+            sleep(wait);
+        }
     }
 
     /// <summary>
