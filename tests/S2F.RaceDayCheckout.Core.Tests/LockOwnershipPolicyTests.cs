@@ -76,5 +76,35 @@ public class LockOwnershipPolicyTests
 
         Assert.Equal(LockCloudVerdict.Unconfirmed, decision.Verdict);
         Assert.False(decision.RestoreLocalActive);
+        Assert.False(decision.ReclaimFromActiveCheckout);
+    }
+
+    [Fact]
+    public void ConfirmedReleasedLock_WithOrphanActive_Reclaims()
+    {
+        var decision = LockOwnershipPolicy.Decide(
+            downloadConfirmed: true,
+            localAfter: Lock("AAA", LockLifecycleStatus.Released),
+            ourMachineId: "AAA",
+            heldBefore: false,
+            hasLocalTimingActive: true);
+
+        Assert.Equal(LockCloudVerdict.Held, decision.Verdict);
+        Assert.False(decision.RestoreLocalActive);
+        Assert.True(decision.ReclaimFromActiveCheckout);
+    }
+
+    [Fact]
+    public void ConfirmedReleasedLock_WithoutOrphanActive_IsUnconfirmed()
+    {
+        var decision = LockOwnershipPolicy.Decide(
+            downloadConfirmed: true,
+            localAfter: Lock("AAA", LockLifecycleStatus.Released),
+            ourMachineId: "AAA",
+            heldBefore: false,
+            hasLocalTimingActive: false);
+
+        Assert.Equal(LockCloudVerdict.Unconfirmed, decision.Verdict);
+        Assert.False(decision.ReclaimFromActiveCheckout);
     }
 }

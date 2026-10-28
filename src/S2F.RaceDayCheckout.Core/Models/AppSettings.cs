@@ -55,6 +55,24 @@ public sealed class AppSettings
     public bool DefenderExclusionsApplied { get; set; }
 
     /// <summary>
+    /// Last time this laptop successfully corrected (or confirmed) system clock via launch sync.
+    /// Used to avoid repeating elevated sync when the clock is already good.
+    /// </summary>
+    public DateTimeOffset? LastSuccessfulTimeSyncUtc { get; set; }
+
+    /// <summary>
+    /// Local calendar day (yyyy-MM-dd) when the user cancelled the time-sync UAC prompt.
+    /// Skips another elevate attempt until the next local day.
+    /// </summary>
+    public string? TimeSyncUacDeclinedLocalDate { get; set; }
+
+    /// <summary>
+    /// Local calendar day (yyyy-MM-dd) when we already showed a large clock-skew warning.
+    /// Avoids nagging on every relaunch the same race morning.
+    /// </summary>
+    public string? TimeSyncSkewWarnedLocalDate { get; set; }
+
+    /// <summary>
     /// Entra app (public client) Application ID for personal OneDrive Graph sync.
     /// Default is the S2F Race Day Timing registration.
     /// </summary>

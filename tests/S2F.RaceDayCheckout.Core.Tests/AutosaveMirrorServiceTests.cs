@@ -387,6 +387,10 @@ public class AutosaveMirrorServiceTests
             string librarySessionPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
             Task.FromResult(new CloudSyncResult { Success = true });
 
+        public Task<CloudSyncResult> UploadRaceStartsAsync(
+            string librarySessionPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new CloudSyncResult { Success = true });
+
         public Task<CloudSyncResult> UploadSessionAsync(
             string librarySessionPath, string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default, IReadOnlyList<string>? onlyRelativePaths = null) =>
             Task.FromResult(new CloudSyncResult { Success = true });
@@ -477,6 +481,10 @@ public class AutosaveMirrorServiceTests
             Task.FromResult<IReadOnlyList<string>>(Array.Empty<string>());
 
         public Task<CloudSyncResult> UploadSessionRolesAsync(
+            string librarySessionPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new CloudSyncResult { Success = true });
+
+        public Task<CloudSyncResult> UploadRaceStartsAsync(
             string librarySessionPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
             Task.FromResult(new CloudSyncResult { Success = true });
 

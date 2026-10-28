@@ -201,6 +201,12 @@ public sealed class ActiveCheckout
     /// </summary>
     public IReadOnlyList<string>? PendingFinishUploadRelativePaths { get; init; }
 
+    /// <summary>
+    /// Category start times for on-site countdown / count-up (local Active only — not Graph).
+    /// Cleared when Active is removed (Finish / abandon).
+    /// </summary>
+    public IReadOnlyList<RaceStartEntry> RaceStarts { get; init; } = Array.Empty<RaceStartEntry>();
+
     public string DisplayName =>
         string.Equals(ParentEvent, SessionName, StringComparison.OrdinalIgnoreCase)
             ? SessionName
@@ -223,6 +229,26 @@ public sealed class ActiveCheckout
         CheckedOutAt = CheckedOutAt,
         PendingFinishUploadRelativePaths = pendingPaths is { Count: > 0 }
             ? pendingPaths.ToList()
-            : null
+            : null,
+        RaceStarts = RaceStarts.ToList()
+    };
+
+    public ActiveCheckout WithRaceStarts(IReadOnlyList<RaceStartEntry> raceStarts) => new()
+    {
+        Office = Office,
+        ParentEvent = ParentEvent,
+        SessionName = SessionName,
+        RelativePath = RelativePath,
+        LibrarySessionPath = LibrarySessionPath,
+        ActivePath = ActivePath,
+        BackupPath = BackupPath,
+        AutosavePath = AutosavePath,
+        DbsPath = DbsPath,
+        PrimaryEventFile = PrimaryEventFile,
+        Role = Role,
+        ScopedPaths = ScopedPaths,
+        CheckedOutAt = CheckedOutAt,
+        PendingFinishUploadRelativePaths = PendingFinishUploadRelativePaths,
+        RaceStarts = raceStarts.Count > 0 ? raceStarts.ToList() : Array.Empty<RaceStartEntry>()
     };
 }

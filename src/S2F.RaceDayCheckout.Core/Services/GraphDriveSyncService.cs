@@ -509,6 +509,25 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
                         // One missing assignment must not fail the office list.
                     }
 
+                    // Same pass: tiny race-starts.json for Admin / next checkout seed.
+                    try
+                    {
+                        var startsCloud = JoinDrivePath(
+                            relative, PathService.AppMetaFolderName + "/" + RaceStartsStore.FileName);
+                        var startsLocal = RaceStartsStore.GetPath(session);
+                        if (await TryDownloadOptionalFileAsync(startsCloud, startsLocal, budget.Token)
+                                .ConfigureAwait(false))
+                            Interlocked.Increment(ref downloaded);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
+                    catch
+                    {
+                        // Optional — timers can still add starts on site.
+                    }
+
                     var n = Interlocked.Increment(ref seen);
                     if (n == sessions.Count || n % 8 == 0)
                         status?.Report($"Checking announcer assignments… {n}/{sessions.Count}");
@@ -605,6 +624,44 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
                 Success = true,
                 FilesTransferred = 1,
                 Message = "Assignment saved to OneDrive."
+            };
+        }
+        catch (Exception ex)
+        {
+            return new CloudSyncResult
+            {
+                Success = false,
+                Message = "Saved on this laptop, but OneDrive upload failed: " + ex.Message
+            };
+        }
+    }
+
+    public async Task<CloudSyncResult> UploadRaceStartsAsync(
+        string librarySessionPath,
+        string libraryRoot,
+        string graphDriveRoot,
+        CancellationToken cancellationToken = default)
+    {
+        if (!_tokens.IsSignedIn)
+            return new CloudSyncResult { Success = true, Message = "Saved on this laptop. Sign in to OneDrive to sync race starts." };
+
+        var local = RaceStartsStore.GetPath(librarySessionPath);
+        if (!File.Exists(local))
+            return new CloudSyncResult { Success = false, Message = "No race starts file to upload." };
+
+        var relative = ToDriveRelative(librarySessionPath, libraryRoot, graphDriveRoot);
+        if (relative is null)
+            return new CloudSyncResult { Success = false, Message = "Session path is outside LibraryRoot." };
+
+        try
+        {
+            var cloud = JoinDrivePath(relative, PathService.AppMetaFolderName + "/" + RaceStartsStore.FileName);
+            await UploadFileAsync(local, cloud, cancellationToken).ConfigureAwait(false);
+            return new CloudSyncResult
+            {
+                Success = true,
+                FilesTransferred = 1,
+                Message = "Race starts saved to OneDrive."
             };
         }
         catch (Exception ex)

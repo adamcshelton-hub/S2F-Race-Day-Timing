@@ -329,7 +329,9 @@ public sealed class CheckoutService
             PrimaryEventFile = primary,
             Role = CheckoutRole.Timing,
             ScopedPaths = scoped,
-            CheckedOutAt = DateTimeOffset.UtcNow
+            CheckedOutAt = DateTimeOffset.UtcNow,
+            // Seed from pack (Admin setup / prior Finish write-back). Timers may edit on site.
+            RaceStarts = RaceStartsStore.Load(request.Pack.Path)
         };
         _activeStore.Save(active);
 
@@ -863,7 +865,14 @@ public sealed class CheckoutService
         // Diff Active vs Library BEFORE finish:copy — download/checkout timestamps must not
         // drive Graph upload (that was uploading ~100 unchanged RUNSCORE files).
         // Union with any pending paths from a prior Graph fail (Active≈Library on retry).
-        var uploadRelativePaths = FinishUploadPlanner.PlanUploadRelativePaths(active);
+        var uploadRelativePaths = FinishUploadPlanner.PlanUploadRelativePaths(active).ToList();
+
+        // Write-back on-site race starts into the pack so next checkout / next-year copy keeps them.
+        _paths.EnsureAppMetaFolder(active.LibrarySessionPath);
+        RaceStartsStore.Save(active.LibrarySessionPath, active.RaceStarts);
+        var raceStartsRel = FinishUploadPlanner.NormalizeRelative(RaceStartsStore.RelativePath);
+        if (!uploadRelativePaths.Contains(raceStartsRel, StringComparer.OrdinalIgnoreCase))
+            uploadRelativePaths.Add(raceStartsRel);
 
         // Once we mutate Library toward Active, any failure before Graph success must keep
         // pending paths — otherwise the next Finish sees Active≈Library and skips upload.
@@ -975,6 +984,10 @@ public sealed class CheckoutService
                 + ex.Message);
         }
 
+        // Drop active.json BEFORE releasing the lock. Kill mid-Finish then leaves an Active
+        // cloud lock (soft take-over) instead of Released+orphan Active (Finish permanently blocked).
+        _activeStore.Save(null);
+
         _locks.Release(active.LibrarySessionPath, holderName);
 
         // Publish Released lock AFTER local release. UploadSessionAsync (Finish) skips lock
@@ -1042,10 +1055,8 @@ public sealed class CheckoutService
             }
         }
 
-        // Drop local active record, then one last clear (mirror is paused by the UI).
-        _activeStore.Save(null);
-
         // Put office/native RSServer prefs back (race Backup paths must not stick in HKCU).
+        // active.json already cleared before lock release (see above).
         statusProgress?.Report("finish:prefs");
         string prefsNote;
         try

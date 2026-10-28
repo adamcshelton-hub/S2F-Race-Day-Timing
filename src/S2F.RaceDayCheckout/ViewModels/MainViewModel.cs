@@ -85,6 +85,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private readonly DispatcherTimer _heartbeatTimer;
     private readonly DispatcherTimer _mirrorTimer;
     private readonly DispatcherTimer _sessionLockPollTimer;
+    private readonly DispatcherTimer _clockTimer;
+    /// <summary>Last whole second painted on the header / live clocks.</summary>
+    private DateTime _lastPaintedClockSecond = DateTime.MinValue;
     private readonly SemaphoreSlim _heartbeatUploadGate = new(1, 1);
     /// <summary>Canceled when Finish is about to release the lock, so an in-flight heartbeat cannot rewrite it.</summary>
     private CancellationTokenSource _heartbeatCts = new();
@@ -218,6 +221,19 @@ public sealed class MainViewModel : INotifyPropertyChanged
             new("Race Group — Multiple Events in Series or Multi-Day Event", IsRaceGroup: true,
                 Detail: "Sets up a top-level folder with individual event folders for each race in the group.")
         };
+        RaceStarts = new ObservableCollection<RaceStartRowViewModel>();
+        RaceStartBoard = new ObservableCollection<RaceStartRowViewModel>();
+        RaceStarts.CollectionChanged += (_, _) =>
+        {
+            OnPropertyChanged(nameof(HasRaceStarts));
+            RebuildRaceStartBoard();
+        };
+        AdminRaceStarts = new ObservableCollection<RaceStartRowViewModel>();
+
+        // Poll ~20Hz and paint only when the wall-clock second flips. A 1s DispatcherTimer
+        // drifts under UI load and can lag the true second — bad for participant-facing race clocks.
+        _clockTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(50) };
+        _clockTimer.Tick += (_, _) => TickLaptopClock();
 
         _heartbeatTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(Math.Max(30, _settings.HeartbeatSeconds)) };
         _heartbeatTimer.Tick += async (_, _) =>
@@ -244,6 +260,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
         EnsureLocalRoots(); // office name folders under C:\S2F\Library — no Graph
         LoadAdminUnlock();
         ReloadFromDisk();
+        RefreshLaptopClockSyncStatus();
+        TickLaptopClock();
+        _clockTimer.Start();
         _heartbeatTimer.Start();
         _mirrorTimer.Start();
         UpdateSessionLockPolling();
@@ -819,7 +838,296 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 OnPropertyChanged(nameof(ShowLockTakenOverBanner));
                 NotifyActiveSaveAsGuide();
                 UpdateSessionLockPolling();
+                ReloadRaceStartsFromActive();
             }
+        }
+    }
+
+    public ObservableCollection<RaceStartRowViewModel> RaceStarts { get; }
+    /// <summary>Clock cards plus trailing <c>+</c> tile for Active timing board.</summary>
+    public ObservableCollection<RaceStartRowViewModel> RaceStartBoard { get; }
+    public ObservableCollection<RaceStartRowViewModel> AdminRaceStarts { get; }
+
+    public bool HasRaceStarts => RaceStarts.Count > 0;
+
+    private string _newAdminRaceStartCategory = string.Empty;
+    private string _newAdminRaceStartTime = string.Empty;
+    private RaceStartEntry? _adminRaceStartEditOriginal;
+    private string _laptopClockText = string.Empty;
+    private string _laptopClockSyncLabel = "Clock";
+    private LaptopClockSyncKind _laptopClockSyncKind = LaptopClockSyncKind.Unknown;
+    private bool _raceStartBoardRebuildSuspended;
+
+    public string NewAdminRaceStartCategory
+    {
+        get => _newAdminRaceStartCategory;
+        set => Set(ref _newAdminRaceStartCategory, value ?? string.Empty);
+    }
+
+    public string NewAdminRaceStartTime
+    {
+        get => _newAdminRaceStartTime;
+        set => Set(ref _newAdminRaceStartTime, value ?? string.Empty);
+    }
+
+    public bool IsEditingAdminRaceStart => _adminRaceStartEditOriginal is not null;
+
+    public string AdminRaceStartCommitLabel => IsEditingAdminRaceStart ? "Save Edit" : "Add Start";
+
+    public string LaptopClockText
+    {
+        get => _laptopClockText;
+        private set => Set(ref _laptopClockText, value);
+    }
+
+    public string LaptopClockSyncLabel
+    {
+        get => _laptopClockSyncLabel;
+        private set => Set(ref _laptopClockSyncLabel, value);
+    }
+
+    public LaptopClockSyncKind LaptopClockSyncKind
+    {
+        get => _laptopClockSyncKind;
+        private set
+        {
+            if (!Set(ref _laptopClockSyncKind, value))
+                return;
+            OnPropertyChanged(nameof(LaptopClockSyncBrush));
+            OnPropertyChanged(nameof(ShowLaptopClockWarning));
+        }
+    }
+
+    /// <summary>True only when staff should verify the laptop clock (no green Synced badge).</summary>
+    public bool ShowLaptopClockWarning => LaptopClockSyncKind == LaptopClockSyncKind.CheckClock;
+
+    public System.Windows.Media.Brush LaptopClockSyncBrush =>
+        new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xE6, 0xC3, 0x5C));
+
+    public void RefreshLaptopClockSyncStatus()
+    {
+        _settings = _settingsStore.Load();
+        var kind = LaptopClockSyncStatus.Evaluate(_settings, DateTimeOffset.UtcNow, DateTimeOffset.Now);
+        LaptopClockSyncKind = kind;
+        LaptopClockSyncLabel = LaptopClockSyncStatus.WarningLabel(kind);
+    }
+
+    private void TickLaptopClock()
+    {
+        var now = DateTime.Now;
+        var second = RaceStartClock.TruncateToSecond(now);
+        if (second == _lastPaintedClockSecond)
+            return;
+        _lastPaintedClockSecond = second;
+
+        LaptopClockText = second.ToString("HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture);
+        foreach (var row in RaceStarts)
+            row.Tick(second);
+    }
+
+    private void ReloadRaceStartsFromActive()
+    {
+        _raceStartBoardRebuildSuspended = true;
+        try
+        {
+            RaceStarts.Clear();
+            if (Active is null || Active.Role == CheckoutRole.Announcer)
+            {
+                RebuildRaceStartBoard();
+                return;
+            }
+
+            foreach (var entry in Active.RaceStarts)
+                RaceStarts.Add(CreateClockRow(entry));
+
+            // Default seed: one blank clock + trailing + (same as first Add).
+            if (RaceStarts.Count == 0)
+                RaceStarts.Add(RaceStartRowViewModel.CreateDraft(CommitRaceStartClock, RemoveRaceStart));
+        }
+        finally
+        {
+            _raceStartBoardRebuildSuspended = false;
+            RebuildRaceStartBoard();
+        }
+    }
+
+    private void RebuildRaceStartBoard()
+    {
+        if (_raceStartBoardRebuildSuspended)
+            return;
+        RaceStartBoard.Clear();
+        foreach (var row in RaceStarts)
+            RaceStartBoard.Add(row);
+        if (Active is { Role: not CheckoutRole.Announcer })
+            RaceStartBoard.Add(RaceStartRowViewModel.CreateAddTile());
+    }
+
+    private RaceStartRowViewModel CreateClockRow(RaceStartEntry entry) =>
+        new(entry, onCommit: CommitRaceStartClock, onRemove: RemoveRaceStart);
+
+    /// <summary>Trailing <c>+</c> tile — appends a new clock to the right (draft until labeled + timed).</summary>
+    public void AddRaceStartClock()
+    {
+        if (Active is null || Active.Role == CheckoutRole.Announcer)
+            return;
+
+        // One incomplete draft at a time — otherwise Persist would drop blanks or stack empties.
+        if (RaceStarts.Any(IsIncompleteDraft))
+        {
+            Status = "Finish or remove the blank clock before adding another.";
+            return;
+        }
+
+        // Keep on the board only — Normalize drops empty categories, so don't persist yet.
+        RaceStarts.Add(RaceStartRowViewModel.CreateDraft(CommitRaceStartClock, RemoveRaceStart));
+    }
+
+    /// <summary>Not yet saveable (no category, or category without start/gun).</summary>
+    private static bool IsIncompleteDraft(RaceStartRowViewModel row) =>
+        !row.IsAddTile
+        && (string.IsNullOrWhiteSpace(row.CategoryText)
+            || (!row.HasStartTime && !row.HasGunStart));
+
+    public void CommitRaceStartClock(RaceStartRowViewModel? row)
+    {
+        if (row is null || row.IsAddTile || Active is null || Active.Role == CheckoutRole.Announcer)
+            return;
+        if (!row.TryBuildEntry(out var updated, out var error))
+        {
+            if (!string.IsNullOrWhiteSpace(error))
+                Status = error;
+            return;
+        }
+
+        var next = RaceStarts.Select(r => ReferenceEquals(r, row) ? updated : r.Entry).ToList();
+        PersistRaceStarts(RaceStartsStore.Normalize(next));
+    }
+
+    /// <summary>
+    /// Stamp this card’s gun from the laptop clock (<c>HH:MM:SS.ff</c>). Live race clock
+    /// counts from gun; scheduled Start Time stays as planned.
+    /// </summary>
+    public void CaptureGunStart(RaceStartRowViewModel? row)
+    {
+        if (row is null || row.IsAddTile || Active is null || Active.Role == CheckoutRole.Announcer)
+            return;
+        if (string.IsNullOrWhiteSpace(row.CategoryText))
+        {
+            Status = "Enter a category name before Capture Gun Start.";
+            return;
+        }
+
+        // Gun does not require a typed Start Time — scheduled HH:MM is filled from gun if empty.
+        var gun = RaceStartClock.CaptureGunTimeOfDay(DateTime.Now);
+        row.ApplyGunStart(gun);
+        if (!row.TryBuildEntry(out var updated, out var buildError))
+        {
+            if (!string.IsNullOrWhiteSpace(buildError))
+                Status = buildError;
+            return;
+        }
+
+        var next = RaceStarts.Select(r => ReferenceEquals(r, row) ? updated : r.Entry).ToList();
+        PersistRaceStarts(RaceStartsStore.Normalize(next));
+        var gunText = RaceStartClock.FormatGunHhMmSs(gun);
+        TryCopyGunTimeToClipboard(gunText);
+        Status = row.Category + " gun " + gunText + " (copied)";
+    }
+
+    /// <summary>Copy this card’s gun stamp (<c>HH:MM:SS.ff</c>) to the clipboard.</summary>
+    public void CopyGunStart(RaceStartRowViewModel? row)
+    {
+        if (row is null || row.IsAddTile || !row.HasGunStart || row.Entry.GunStartTimeOfDay is not { } gun)
+            return;
+        var gunText = RaceStartClock.FormatGunHhMmSs(gun);
+        if (!TryCopyGunTimeToClipboard(gunText))
+        {
+            Status = "Couldn't copy gun time.";
+            return;
+        }
+
+        Status = "Copied " + gunText;
+    }
+
+    private static bool TryCopyGunTimeToClipboard(string gunText)
+    {
+        try
+        {
+            System.Windows.Clipboard.SetText(gunText);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Remove gun stamp; live clock uses scheduled Start Time again.</summary>
+    public void ClearGunStart(RaceStartRowViewModel? row)
+    {
+        if (row is null || row.IsAddTile || Active is null || Active.Role == CheckoutRole.Announcer)
+            return;
+        if (!row.HasGunStart)
+            return;
+
+        row.ClearGunStart();
+        if (!row.TryBuildEntry(out var updated, out var error))
+        {
+            if (!string.IsNullOrWhiteSpace(error))
+                Status = error;
+            return;
+        }
+
+        var next = RaceStarts.Select(r => ReferenceEquals(r, row) ? updated : r.Entry).ToList();
+        PersistRaceStarts(RaceStartsStore.Normalize(next));
+        Status = row.Category + " gun cleared — using scheduled start.";
+    }
+
+    public void RemoveRaceStart(RaceStartRowViewModel? row)
+    {
+        if (row is null || row.IsAddTile || Active is null)
+            return;
+        var next = RaceStarts
+            .Where(r => !ReferenceEquals(r, row))
+            .Select(r => r.Entry)
+            .ToList();
+        PersistRaceStarts(RaceStartsStore.Normalize(next));
+    }
+
+    private void PersistRaceStarts(IReadOnlyList<RaceStartEntry> starts)
+    {
+        if (Active is null)
+            return;
+
+        // Active reload only restores persisted rows — keep in-progress drafts on the board.
+        var drafts = RaceStarts.Where(IsIncompleteDraft).ToList();
+
+        var normalized = RaceStartsStore.Normalize(starts);
+        Active = Active.WithRaceStarts(normalized);
+        _activeStore.Save(Active);
+        // Mirror into the pack locally; Finish uploads to OneDrive for next checkout / next year.
+        try { RaceStartsStore.Save(Active.LibrarySessionPath, normalized); }
+        catch { /* Finish will retry write-back */ }
+
+        if (drafts.Count == 0)
+            return;
+
+        _raceStartBoardRebuildSuspended = true;
+        try
+        {
+            // Drop auto-seed blanks from Reload — restore the in-progress draft VMs instead.
+            foreach (var auto in RaceStarts.Where(IsIncompleteDraft).Where(r => !drafts.Contains(r)).ToList())
+                RaceStarts.Remove(auto);
+            foreach (var draft in drafts)
+            {
+                if (!RaceStarts.Contains(draft))
+                    RaceStarts.Add(draft);
+            }
+        }
+        finally
+        {
+            _raceStartBoardRebuildSuspended = false;
+            RebuildRaceStartBoard();
         }
     }
 
@@ -2202,7 +2510,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
             ScopedPaths = Active.ScopedPaths.Contains(name, StringComparer.OrdinalIgnoreCase)
                 ? Active.ScopedPaths
                 : Active.ScopedPaths.Append(name).ToList(),
-            CheckedOutAt = Active.CheckedOutAt
+            CheckedOutAt = Active.CheckedOutAt,
+            PendingFinishUploadRelativePaths = Active.PendingFinishUploadRelativePaths,
+            RaceStarts = Active.RaceStarts
         };
         _activeStore.Save(Active);
     }
@@ -3835,6 +4145,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
         SelectedTimingFile = roles?.PrimaryEventFile
                              ?? (sorted.Count == 1 ? sorted[0] : null);
+        ReloadAdminRaceStarts();
         NotifyAdminTsSetup();
     }
 
@@ -3844,7 +4155,201 @@ public sealed class MainViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(SelectedAdminSession));
         AdminEventFiles.Clear();
         SelectedTimingFile = null;
+        AdminRaceStarts.Clear();
+        _adminRaceStartEditOriginal = null;
+        NewAdminRaceStartCategory = string.Empty;
+        NewAdminRaceStartTime = string.Empty;
+        OnPropertyChanged(nameof(IsEditingAdminRaceStart));
+        OnPropertyChanged(nameof(AdminRaceStartCommitLabel));
         NotifyAdminTsSetup();
+    }
+
+    private void ReloadAdminRaceStarts()
+    {
+        AdminRaceStarts.Clear();
+        _adminRaceStartEditOriginal = null;
+        NewAdminRaceStartCategory = string.Empty;
+        NewAdminRaceStartTime = string.Empty;
+        OnPropertyChanged(nameof(IsEditingAdminRaceStart));
+        OnPropertyChanged(nameof(AdminRaceStartCommitLabel));
+        if (_adminSession is null)
+            return;
+        foreach (var entry in RaceStartsStore.Load(_adminSession.Path))
+            AdminRaceStarts.Add(new RaceStartRowViewModel(entry));
+    }
+
+    public void BeginEditAdminRaceStart(RaceStartRowViewModel? row)
+    {
+        if (row is null)
+            return;
+        _adminRaceStartEditOriginal = row.Entry;
+        NewAdminRaceStartCategory = row.Category;
+        NewAdminRaceStartTime = row.StartDisplay;
+        OnPropertyChanged(nameof(IsEditingAdminRaceStart));
+        OnPropertyChanged(nameof(AdminRaceStartCommitLabel));
+    }
+
+    public void AddAdminRaceStart()
+    {
+        if (_adminSession is null)
+            return;
+
+        var category = NewAdminRaceStartCategory.Trim();
+        if (string.IsNullOrWhiteSpace(category))
+        {
+            Status = "Enter a category name (e.g. 5K).";
+            return;
+        }
+
+        if (!RaceStartClock.TryParse24h(NewAdminRaceStartTime, out var tod))
+        {
+            Status = "Enter start time in 24-hour format (e.g. 08:00 or 830).";
+            return;
+        }
+
+        var next = AdminRaceStarts.Select(r => r.Entry).ToList();
+        TimeSpan? keepGun = null;
+        if (_adminRaceStartEditOriginal is { } orig)
+        {
+            keepGun = orig.GunStartTimeOfDay;
+            var idx = next.FindIndex(e =>
+                string.Equals(e.Category, orig.Category, StringComparison.Ordinal)
+                && e.StartTimeOfDay == orig.StartTimeOfDay);
+            if (idx >= 0)
+                next.RemoveAt(idx);
+            _adminRaceStartEditOriginal = null;
+        }
+
+        next.Add(new RaceStartEntry
+        {
+            Category = category,
+            StartTimeOfDay = tod,
+            GunStartTimeOfDay = keepGun
+        });
+        ApplyAdminRaceStartsLocal(next);
+        NewAdminRaceStartCategory = string.Empty;
+        NewAdminRaceStartTime = string.Empty;
+        OnPropertyChanged(nameof(IsEditingAdminRaceStart));
+        OnPropertyChanged(nameof(AdminRaceStartCommitLabel));
+        Status = $"Race start listed for {_adminSession.DisplayName}. Tap Save Race Starts to sync OneDrive.";
+    }
+
+    public void RemoveAdminRaceStart(RaceStartRowViewModel? row)
+    {
+        if (row is null || _adminSession is null)
+            return;
+        var next = AdminRaceStarts.Select(r => r.Entry).ToList();
+        var idx = next.FindIndex(e =>
+            string.Equals(e.Category, row.Entry.Category, StringComparison.Ordinal)
+            && e.StartTimeOfDay == row.Entry.StartTimeOfDay);
+        if (idx < 0)
+            return;
+        next.RemoveAt(idx);
+        if (_adminRaceStartEditOriginal is { } orig
+            && string.Equals(orig.Category, row.Entry.Category, StringComparison.Ordinal)
+            && orig.StartTimeOfDay == row.Entry.StartTimeOfDay)
+        {
+            _adminRaceStartEditOriginal = null;
+            NewAdminRaceStartCategory = string.Empty;
+            NewAdminRaceStartTime = string.Empty;
+            OnPropertyChanged(nameof(IsEditingAdminRaceStart));
+            OnPropertyChanged(nameof(AdminRaceStartCommitLabel));
+        }
+
+        ApplyAdminRaceStartsLocal(next);
+    }
+
+    private void ApplyAdminRaceStartsLocal(IReadOnlyList<RaceStartEntry> starts)
+    {
+        if (_adminSession is null)
+            return;
+        var normalized = RaceStartsStore.Normalize(starts);
+        try
+        {
+            RaceStartsStore.Save(_adminSession.Path, normalized);
+        }
+        catch (Exception ex)
+        {
+            Status = "Could not save race starts locally: " + ex.Message;
+            return;
+        }
+
+        AdminRaceStarts.Clear();
+        foreach (var entry in normalized)
+            AdminRaceStarts.Add(new RaceStartRowViewModel(entry));
+
+        // If this race is Active on this laptop, keep Active in sync with Admin edits.
+        if (Active is { Role: not CheckoutRole.Announcer }
+            && string.Equals(Active.LibrarySessionPath, _adminSession.Path, StringComparison.OrdinalIgnoreCase))
+        {
+            Active = Active.WithRaceStarts(normalized);
+            _activeStore.Save(Active);
+        }
+    }
+
+    public async Task SaveAdminRaceStartsAsync()
+    {
+        if (_adminSession is null)
+        {
+            Alert("Choose an event", "Pick an office and an event, then set race starts.");
+            return;
+        }
+
+        var starts = AdminRaceStarts.Select(r => r.Entry).ToList();
+        try
+        {
+            RaceStartsStore.Save(_adminSession.Path, starts);
+        }
+        catch (Exception ex)
+        {
+            Alert("Race Starts", ex.Message);
+            return;
+        }
+
+        if (Active is { Role: not CheckoutRole.Announcer }
+            && string.Equals(Active.LibrarySessionPath, _adminSession.Path, StringComparison.OrdinalIgnoreCase))
+        {
+            Active = Active.WithRaceStarts(RaceStartsStore.Normalize(starts));
+            _activeStore.Save(Active);
+        }
+
+        const string nextHint = " Tap Choose Another Event for a different race, or Back to leave Admin.";
+
+        if (!_cloud.IsAvailable)
+        {
+            Status = "Race starts saved on this laptop. Sign in to OneDrive to sync them." + nextHint;
+            return;
+        }
+
+        SetBusy("Saving Race Starts", "Uploading race starts…");
+        try
+        {
+            var upload = await _cloud.UploadRaceStartsAsync(
+                _adminSession.Path,
+                _settings.LibraryRoot,
+                _settings.GraphDriveRoot).ConfigureAwait(true);
+            if (!upload.Success)
+            {
+                await ShowBusyResultAsync(
+                    "Saved on this laptop",
+                    upload.Message + "\n\nUse Choose Another Event for a different race.").ConfigureAwait(true);
+                return;
+            }
+
+            Status = $"Saved race starts for {_adminSession.DisplayName}. {upload.Message}" + nextHint;
+        }
+        catch (Exception ex)
+        {
+            await ShowBusyResultAsync(
+                "Saved on this laptop",
+                "Race starts are on this laptop, but OneDrive upload failed.\n\n" + ex.Message
+                + "\n\nUse Choose Another Event for a different race.").ConfigureAwait(true);
+        }
+        finally
+        {
+            if (Busy && !BusyNeedsAcknowledge)
+                ClearBusy();
+        }
     }
 
     /// <summary>
@@ -4943,11 +5448,14 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
 
         var afterLock = _locks.TryRead(sessionPath);
+        var hasLocalTimingActive = active.Role != CheckoutRole.Announcer
+            && !string.IsNullOrWhiteSpace(active.LibrarySessionPath);
         var decision = LockOwnershipPolicy.Decide(
             downloadConfirmed,
             afterLock,
             _machine.MachineId,
-            heldBefore && snapshot is not null);
+            heldBefore && snapshot is not null,
+            hasLocalTimingActive: hasLocalTimingActive);
 
         if (decision.RestoreLocalActive)
         {
@@ -4959,6 +5467,56 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
             LogOwnCheck(caller, LockCloudVerdict.Held, "restored-local", sessionPath, before, "cloud copy was not another laptop");
             return LockCloudVerdict.Held;
+        }
+
+        if (decision.ReclaimFromActiveCheckout)
+        {
+            try
+            {
+                _locks.Acquire(
+                    active.LibrarySessionPath,
+                    active.Office,
+                    active.ParentEvent,
+                    active.SessionName,
+                    string.IsNullOrWhiteSpace(DisplayName) ? _machine.MachineName : DisplayName.Trim(),
+                    active.ScopedPaths,
+                    string.IsNullOrWhiteSpace(active.PrimaryEventFile) ? null : active.PrimaryEventFile,
+                    reclaimReason: "orphan-active-after-released-lock",
+                    emergency: false);
+
+                // Publish Active again — cloud still has Released after a kill mid-Finish.
+                if (_cloud.IsAvailable)
+                {
+                    try
+                    {
+                        using var uploadCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                        uploadCts.CancelAfter(GraphSyncPolicy.HttpTimeout);
+                        await _cloud.UploadCheckoutLockAsync(
+                            sessionPath,
+                            _settings.LibraryRoot,
+                            _settings.GraphDriveRoot,
+                            uploadCts.Token).ConfigureAwait(false);
+                    }
+                    catch
+                    {
+                        // Local reclaim is enough for Finish on this laptop; heartbeat can retry publish.
+                    }
+                }
+
+                LogOwnCheck(caller, LockCloudVerdict.Held, "reclaimed-orphan-active", sessionPath, before, "active.json present; lock was Released");
+                return LockCloudVerdict.Held;
+            }
+            catch (Exception ex)
+            {
+                LogOwnCheck(
+                    caller,
+                    LockCloudVerdict.Unconfirmed,
+                    "reclaim-failed",
+                    sessionPath,
+                    before,
+                    ex.GetType().Name + ": " + ex.Message);
+                return LockCloudVerdict.Unconfirmed;
+            }
         }
 
         var reason = decision.Verdict switch

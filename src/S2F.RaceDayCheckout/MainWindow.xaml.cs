@@ -19,6 +19,8 @@ public partial class MainWindow : Window
     private bool _sessionEnding;
     private bool _adminFocusQueued;
     private string? _lastAdminFocusKey;
+    /// <summary>When true, hour GotFocus keeps caret at end (Backspace from empty MM) instead of SelectAll.</summary>
+    private bool _raceStartHourCaretAtEnd;
 
     public MainWindow()
     {
@@ -314,7 +316,297 @@ public partial class MainWindow : Window
 
         // First launch after Setup: offer taskbar pin (Windows still shows its own confirm).
         await TaskbarPinPrompt.TryOfferAsync(this);
+
+        // After first-install UAC (Defender), sync Windows clock when HTTPS skew is material.
+        // Soft budget — never blocks checkout if UAC/network stalls.
+        try
+        {
+            await SystemTimeSyncPrompt.TryRunAsync(this, msg => _vm.Status = msg)
+                .WaitAsync(TimeSpan.FromSeconds(100));
+        }
+        catch (TimeoutException)
+        {
+            RaceDayTrace.Write("time-sync launch budget exceeded");
+        }
+        catch
+        {
+            // Non-fatal
+        }
+        finally
+        {
+            _vm.RefreshLaptopClockSyncStatus();
+        }
     }
+
+    private void AddRaceStartClock_Click(object sender, RoutedEventArgs e)
+    {
+        var before = _vm.RaceStarts.Count;
+        _vm.AddRaceStartClock();
+        if (_vm.RaceStarts.Count <= before)
+            return;
+        var row = _vm.RaceStarts[^1];
+        Dispatcher.BeginInvoke(DispatcherPriority.ContextIdle, () => FocusRaceStartCategory(row));
+    }
+
+    private void FocusRaceStartCategory(RaceStartRowViewModel row)
+    {
+        var box = FindCategoryBoxForRow(RaceStartBoardList, row);
+        if (box is null)
+        {
+            // Container may not be generated yet — one more pass after layout.
+            Dispatcher.BeginInvoke(DispatcherPriority.Loaded, () =>
+            {
+                var retry = FindCategoryBoxForRow(RaceStartBoardList, row);
+                if (retry is null)
+                    return;
+                retry.Focus();
+                Keyboard.Focus(retry);
+            });
+            return;
+        }
+
+        box.Focus();
+        Keyboard.Focus(box);
+    }
+
+    private static TextBox? FindCategoryBoxForRow(DependencyObject root, RaceStartRowViewModel row)
+    {
+        if (root is TextBox { Tag: "Category" } box
+            && ReferenceEquals(box.DataContext, row))
+            return box;
+        var count = System.Windows.Media.VisualTreeHelper.GetChildrenCount(root);
+        for (var i = 0; i < count; i++)
+        {
+            var found = FindCategoryBoxForRow(System.Windows.Media.VisualTreeHelper.GetChild(root, i), row);
+            if (found is not null)
+                return found;
+        }
+
+        return null;
+    }
+
+    private void RemoveRaceStart_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { DataContext: RaceStartRowViewModel row })
+            _vm.RemoveRaceStart(row);
+    }
+
+    private void CaptureGunStart_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { DataContext: RaceStartRowViewModel row })
+            _vm.CaptureGunStart(row);
+    }
+
+    private void ClearGunStart_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { DataContext: RaceStartRowViewModel row })
+            _vm.ClearGunStart(row);
+    }
+
+    private void CopyGunStart_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { DataContext: RaceStartRowViewModel row })
+            _vm.CopyGunStart(row);
+    }
+
+    private void RaceStartClockField_LostFocus(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: RaceStartRowViewModel row })
+            return;
+        // Defer so HH → MM focus hop does not commit mid-edit.
+        Dispatcher.BeginInvoke(DispatcherPriority.Input, () =>
+        {
+            if (Keyboard.FocusedElement is FrameworkElement fe
+                && ReferenceEquals(fe.DataContext, row)
+                && fe.Tag is "StartHour" or "StartMinute")
+                return;
+            _vm.CommitRaceStartClock(row);
+        });
+    }
+
+    private void RaceStartClockField_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Enter)
+            return;
+        e.Handled = true;
+        if (sender is FrameworkElement { DataContext: RaceStartRowViewModel row })
+            _vm.CommitRaceStartClock(row);
+        if (sender is UIElement el)
+            el.MoveFocus(new TraversalRequest(FocusNavigationDirection.Next));
+    }
+
+    private void RaceStartTimeDigit_PreviewTextInput(object sender, TextCompositionEventArgs e)
+    {
+        foreach (var ch in e.Text)
+        {
+            if (!char.IsDigit(ch))
+            {
+                e.Handled = true;
+                return;
+            }
+        }
+    }
+
+    private void RaceStartTimeArea_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        // Unset time: any click in the time chrome starts at HH so typing replaces helper 00:00.
+        if (sender is not FrameworkElement { DataContext: RaceStartRowViewModel row } root)
+            return;
+        if (!row.ShowStartHourPlaceholder || !row.ShowStartMinutePlaceholder)
+            return;
+        if (FindTaggedTextBoxNear(root, "StartHour") is not { } hour)
+            return;
+        hour.Focus();
+        Dispatcher.BeginInvoke(DispatcherPriority.Input, () =>
+        {
+            hour.CaretIndex = 0;
+            hour.SelectionLength = 0;
+        });
+        e.Handled = true;
+    }
+
+    private void RaceStartHour_GotFocus(object sender, RoutedEventArgs e)
+    {
+        if (sender is not TextBox hour)
+            return;
+        var caretAtEnd = _raceStartHourCaretAtEnd;
+        _raceStartHourCaretAtEnd = false;
+        Dispatcher.BeginInvoke(DispatcherPriority.Input, () =>
+        {
+            if (caretAtEnd)
+            {
+                // Backspace from empty MM — keep deleting HH digits.
+                hour.CaretIndex = hour.Text.Length;
+                hour.SelectionLength = 0;
+                return;
+            }
+
+            if (hour.Text.Length == 0)
+            {
+                hour.CaretIndex = 0;
+                hour.SelectionLength = 0;
+                return;
+            }
+
+            // Forward typing replaces the current HH.
+            hour.SelectAll();
+        });
+    }
+
+    private void RaceStartMinute_GotFocus(object sender, RoutedEventArgs e)
+    {
+        if (sender is not TextBox minute)
+            return;
+        // Still unset — bounce to HH so entry always starts at hours.
+        if (minute.DataContext is RaceStartRowViewModel { ShowStartHourPlaceholder: true }
+            && FindTaggedTextBoxNear(minute, "StartHour") is { } hour)
+        {
+            hour.Focus();
+            return;
+        }
+
+        Dispatcher.BeginInvoke(DispatcherPriority.Input, () =>
+        {
+            if (minute.Text.Length == 0)
+            {
+                minute.CaretIndex = 0;
+                minute.SelectionLength = 0;
+                return;
+            }
+
+            // Forward typing replaces the current MM.
+            minute.SelectAll();
+        });
+    }
+
+    private void RaceStartHour_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (sender is not TextBox { IsKeyboardFocusWithin: true } hour || hour.Text.Length < 2)
+            return;
+        hour.MoveFocus(new TraversalRequest(FocusNavigationDirection.Next));
+    }
+
+    private void RaceStartHour_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        // Colon / period advances to minutes without typing into HH.
+        if (e.Key is Key.OemPeriod or Key.OemSemicolon or Key.Decimal)
+        {
+            e.Handled = true;
+            if (sender is UIElement el)
+                el.MoveFocus(new TraversalRequest(FocusNavigationDirection.Next));
+        }
+    }
+
+    private void RaceStartMinute_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Back || sender is not TextBox { CaretIndex: 0, SelectionLength: 0 } minute)
+            return;
+        if (minute.Text.Length > 0)
+            return;
+        e.Handled = true;
+        var hour = FindTaggedTextBoxNear(minute, "StartHour");
+        if (hour is null)
+        {
+            minute.MoveFocus(new TraversalRequest(FocusNavigationDirection.Previous));
+            return;
+        }
+
+        _raceStartHourCaretAtEnd = true;
+        hour.Focus();
+    }
+
+    private static TextBox? FindTaggedTextBoxNear(DependencyObject start, string tag)
+    {
+        for (var node = start; node is not null; node = System.Windows.Media.VisualTreeHelper.GetParent(node))
+        {
+            var hit = FindTaggedTextBoxDown(node, tag);
+            if (hit is not null)
+                return hit;
+        }
+
+        return null;
+    }
+
+    private static TextBox? FindTaggedTextBoxDown(DependencyObject start, string tag)
+    {
+        if (start is TextBox { Tag: string t } self && t == tag)
+            return self;
+        var count = System.Windows.Media.VisualTreeHelper.GetChildrenCount(start);
+        for (var i = 0; i < count; i++)
+        {
+            var found = FindTaggedTextBoxDown(System.Windows.Media.VisualTreeHelper.GetChild(start, i), tag);
+            if (found is not null)
+                return found;
+        }
+
+        return null;
+    }
+
+    private void AddAdminRaceStart_Click(object sender, RoutedEventArgs e) =>
+        _vm.AddAdminRaceStart();
+
+    private void EditAdminRaceStart_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { DataContext: RaceStartRowViewModel row })
+            _vm.BeginEditAdminRaceStart(row);
+    }
+
+    private void RemoveAdminRaceStart_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { DataContext: RaceStartRowViewModel row })
+            _vm.RemoveAdminRaceStart(row);
+    }
+
+    private void NewAdminRaceStartField_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Enter)
+            return;
+        e.Handled = true;
+        _vm.AddAdminRaceStart();
+    }
+
+    private async void SaveAdminRaceStarts_Click(object sender, RoutedEventArgs e) =>
+        await _vm.SaveAdminRaceStartsAsync();
 
     private async void CheckUpdates_Click(object sender, RoutedEventArgs e) =>
         await UpdateService.CheckForUpdatesInteractiveAsync(_vm.HasActive, this);

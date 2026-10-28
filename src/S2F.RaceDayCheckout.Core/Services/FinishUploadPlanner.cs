@@ -87,7 +87,7 @@ public static class FinishUploadPlanner
         return kept;
     }
 
-    internal static string NormalizeRelative(string relative) =>
+    public static string NormalizeRelative(string relative) =>
         relative.Replace('/', Path.DirectorySeparatorChar).Replace('\\', Path.DirectorySeparatorChar);
 
     private static void CollectTreeDiffs(

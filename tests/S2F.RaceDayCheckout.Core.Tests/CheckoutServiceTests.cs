@@ -684,6 +684,10 @@ public class CheckoutServiceTests
             string librarySessionPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
             Task.FromResult(new CloudSyncResult { Success = true });
 
+        public Task<CloudSyncResult> UploadRaceStartsAsync(
+            string librarySessionPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new CloudSyncResult { Success = true });
+
         public abstract Task<CloudSyncResult> UploadSessionAsync(
             string librarySessionPath, string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default, IReadOnlyList<string>? onlyRelativePaths = null);
 
@@ -1480,6 +1484,10 @@ public class CheckoutServiceTests
             Task.FromResult<IReadOnlyList<string>>(Array.Empty<string>());
 
         public Task<CloudSyncResult> UploadSessionRolesAsync(
+            string librarySessionPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new CloudSyncResult { Success = true, FilesTransferred = 1 });
+
+        public Task<CloudSyncResult> UploadRaceStartsAsync(
             string librarySessionPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
             Task.FromResult(new CloudSyncResult { Success = true, FilesTransferred = 1 });
 

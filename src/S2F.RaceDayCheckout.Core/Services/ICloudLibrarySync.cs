@@ -97,6 +97,13 @@ public interface ICloudLibrarySync
         string graphDriveRoot,
         CancellationToken cancellationToken = default);
 
+    /// <summary>Upload <c>._checkin/race-starts.json</c> only (Admin save / Finish write-back).</summary>
+    Task<CloudSyncResult> UploadRaceStartsAsync(
+        string librarySessionPath,
+        string libraryRoot,
+        string graphDriveRoot,
+        CancellationToken cancellationToken = default);
+
     /// <summary>
     /// Upload scoped race files from the local library session to OneDrive.
     /// When <paramref name="onlyRelativePaths"/> is set (Finish), only those session-relative
@@ -207,6 +214,10 @@ public sealed class NullCloudLibrarySync : ICloudLibrarySync
         Task.FromResult<IReadOnlyList<string>>(Array.Empty<string>());
 
     public Task<CloudSyncResult> UploadSessionRolesAsync(
+        string librarySessionPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
+        Task.FromResult(new CloudSyncResult { Success = true, Message = "Graph not signed in — saved on this laptop." });
+
+    public Task<CloudSyncResult> UploadRaceStartsAsync(
         string librarySessionPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
         Task.FromResult(new CloudSyncResult { Success = true, Message = "Graph not signed in — saved on this laptop." });
 
