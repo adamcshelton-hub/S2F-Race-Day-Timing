@@ -310,12 +310,13 @@ public partial class MainWindow : Window
             // Non-fatal
         }
 
+        // First launch after Setup: taskbar pin before Defender UAC so we keep foreground
+        // (RequestPinCurrentAppAsync silently fails when the app is not foreground).
+        await TaskbarPinPrompt.TryOfferAsync(this);
+
         // First install only (Velopack OnFirstRun): create RaceDay Active/Backup + Defender opt-in.
         // Not on checkout; not again on routine updates once DefenderExclusionsConfigured is set.
         DefenderExclusionPrompt.TryOffer(this);
-
-        // First launch after Setup: offer taskbar pin (Windows still shows its own confirm).
-        await TaskbarPinPrompt.TryOfferAsync(this);
 
         // After first-install UAC (Defender), sync Windows clock when HTTPS skew is material.
         // Soft budget — never blocks checkout if UAC/network stalls.
