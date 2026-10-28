@@ -157,6 +157,15 @@ public interface ICloudLibrarySync
         string graphDriveRoot,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Soft-delete one Library file on Graph (Manual Backup Prior archive). Missing remote is OK.
+    /// </summary>
+    Task<CloudSyncResult> DeleteLibraryFileAsync(
+        string localFilePath,
+        string libraryRoot,
+        string graphDriveRoot,
+        CancellationToken cancellationToken = default);
+
     /// <summary>Delete all files under a remote folder (used to clear cloud _autosave after Finish).</summary>
     Task<CloudSyncResult> ClearRemoteFolderAsync(
         string localFolderPath,
@@ -240,6 +249,10 @@ public sealed class NullCloudLibrarySync : ICloudLibrarySync
 
     public Task<CloudSyncResult> DownloadCheckoutLockAsync(
         string librarySessionPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
+        Task.FromResult(new CloudSyncResult { Success = true, Message = "Graph not signed in." });
+
+    public Task<CloudSyncResult> DeleteLibraryFileAsync(
+        string localFilePath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
         Task.FromResult(new CloudSyncResult { Success = true, Message = "Graph not signed in." });
 
     public Task<CloudSyncResult> ClearRemoteFolderAsync(

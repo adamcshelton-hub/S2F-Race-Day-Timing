@@ -127,15 +127,7 @@ public sealed class LibraryScanner
             return Array.Empty<string>();
 
         return Directory.GetDirectories(folderPath)
-            .Where(d =>
-            {
-                var name = Path.GetFileName(d);
-                return !string.Equals(name, PathService.RunScoreFolderName, StringComparison.OrdinalIgnoreCase)
-                       && !string.Equals(name, "DB's", StringComparison.OrdinalIgnoreCase)
-                       && !string.Equals(name, "Pre-Race", StringComparison.OrdinalIgnoreCase)
-                       && !name.StartsWith("._", StringComparison.Ordinal)
-                       && !string.Equals(name, PathService.AutosaveFolderName, StringComparison.OrdinalIgnoreCase);
-            })
+            .Where(d => !IsSkippedSessionWalkName(Path.GetFileName(d)))
             .OrderBy(d => Path.GetFileName(d), StringComparer.OrdinalIgnoreCase)
             .ToList();
     }
@@ -148,17 +140,28 @@ public sealed class LibraryScanner
 
         foreach (var child in Directory.GetDirectories(folderPath))
         {
-            var name = Path.GetFileName(child);
-            if (string.Equals(name, PathService.RunScoreFolderName, StringComparison.OrdinalIgnoreCase)
-                || string.Equals(name, "DB's", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(name, "Pre-Race", StringComparison.OrdinalIgnoreCase)
-                || name.StartsWith("._", StringComparison.Ordinal))
+            if (IsSkippedSessionWalkName(Path.GetFileName(child)))
                 continue;
 
             if (_paths.IsSessionLeaf(child))
                 yield return child;
         }
     }
+
+    /// <summary>
+    /// Folders that are never race packs — including mid-race <c>_autosave</c>.
+    /// A misplaced <c>…/race/_autosave/RUNSCORE</c> must not appear as "race / _autosave".
+    /// </summary>
+    private static bool IsSkippedSessionWalkName(string name) =>
+        string.Equals(name, PathService.RunScoreFolderName, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(name, "DB's", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(name, "Pre-Race", StringComparison.OrdinalIgnoreCase)
+        || name.StartsWith("._", StringComparison.Ordinal)
+        || string.Equals(name, PathService.AutosaveFolderName, StringComparison.OrdinalIgnoreCase)
+        || name.StartsWith(
+            PathService.AutosaveFolderName + PathService.AutosaveTombstoneSuffix,
+            StringComparison.OrdinalIgnoreCase)
+        || name.EndsWith(PathService.ActivePendingDeleteSuffix, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Backward-compatible alias.</summary>
     public IReadOnlyList<EventPackInfo> ListEvents(string libraryRoot, string? officeFilter = null, string? search = null) =>
@@ -171,16 +174,12 @@ public sealed class LibraryScanner
 
         foreach (var dir in Directory.EnumerateDirectories(officePath, "*", SearchOption.AllDirectories))
         {
-            var name = Path.GetFileName(dir);
-            if (string.Equals(name, PathService.RunScoreFolderName, StringComparison.OrdinalIgnoreCase)
-                || string.Equals(name, "DB's", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(name, "Pre-Race", StringComparison.OrdinalIgnoreCase)
-                || name.StartsWith("._", StringComparison.Ordinal))
+            if (IsSkippedSessionWalkName(Path.GetFileName(dir)))
                 continue;
 
             // App meta lives at …/._checkin/… (locks + finish backups with RUNSCORE).
-            // Timestamp folders are not named "._*", so skip any path under a "._" segment.
-            if (HasHiddenAppSegment(officePath, dir))
+            // Also skip anything under mid-race _autosave (never a race pack).
+            if (HasHiddenOrAutosaveSegment(officePath, dir))
                 continue;
 
             if (_paths.IsSessionLeaf(dir))
@@ -188,12 +187,12 @@ public sealed class LibraryScanner
         }
     }
 
-    private static bool HasHiddenAppSegment(string officePath, string directoryPath)
+    private static bool HasHiddenOrAutosaveSegment(string officePath, string directoryPath)
     {
         var relative = Path.GetRelativePath(officePath, directoryPath);
         var parts = relative.Split(new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar },
             StringSplitOptions.RemoveEmptyEntries);
-        return parts.Any(p => p.StartsWith("._", StringComparison.Ordinal));
+        return parts.Any(IsSkippedSessionWalkName);
     }
 
     private static EventPackInfo BuildPack(string office, string officePath, string sessionPath)

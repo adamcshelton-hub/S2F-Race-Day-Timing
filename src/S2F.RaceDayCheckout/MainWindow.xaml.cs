@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
@@ -310,12 +311,13 @@ public partial class MainWindow : Window
             // Non-fatal
         }
 
+        // First launch after Setup: taskbar pin before Defender UAC so we keep foreground
+        // (RequestPinCurrentAppAsync silently fails when the app is not foreground).
+        await TaskbarPinPrompt.TryOfferAsync(this);
+
         // First install only (Velopack OnFirstRun): create RaceDay Active/Backup + Defender opt-in.
         // Not on checkout; not again on routine updates once DefenderExclusionsConfigured is set.
         DefenderExclusionPrompt.TryOffer(this);
-
-        // First launch after Setup: offer taskbar pin (Windows still shows its own confirm).
-        await TaskbarPinPrompt.TryOfferAsync(this);
 
         // After first-install UAC (Defender), sync Windows clock when HTTPS skew is material.
         // Soft budget — never blocks checkout if UAC/network stalls.
@@ -350,13 +352,13 @@ public partial class MainWindow : Window
 
     private void FocusRaceStartCategory(RaceStartRowViewModel row)
     {
-        var box = FindCategoryBoxForRow(RaceStartBoardList, row);
+        var box = FindVisibleRaceStartCategoryBox(row);
         if (box is null)
         {
             // Container may not be generated yet — one more pass after layout.
             Dispatcher.BeginInvoke(DispatcherPriority.Loaded, () =>
             {
-                var retry = FindCategoryBoxForRow(RaceStartBoardList, row);
+                var retry = FindVisibleRaceStartCategoryBox(row);
                 if (retry is null)
                     return;
                 retry.Focus();
@@ -367,6 +369,20 @@ public partial class MainWindow : Window
 
         box.Focus();
         Keyboard.Focus(box);
+    }
+
+    private TextBox? FindVisibleRaceStartCategoryBox(RaceStartRowViewModel row)
+    {
+        foreach (var host in new[] { RaceStartBoardRail, RaceStartBoardList })
+        {
+            if (host is null || host.Visibility != Visibility.Visible)
+                continue;
+            var box = FindCategoryBoxForRow(host, row);
+            if (box is not null)
+                return box;
+        }
+
+        return null;
     }
 
     private static TextBox? FindCategoryBoxForRow(DependencyObject root, RaceStartRowViewModel row)
@@ -387,8 +403,17 @@ public partial class MainWindow : Window
 
     private void RemoveRaceStart_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is FrameworkElement { DataContext: RaceStartRowViewModel row })
-            _vm.RemoveRaceStart(row);
+        if (sender is FrameworkElement fe)
+        {
+            if (fe.Tag is RaceStartRowViewModel tagged)
+            {
+                _vm.RemoveRaceStart(tagged);
+                return;
+            }
+
+            if (fe.DataContext is RaceStartRowViewModel row)
+                _vm.RemoveRaceStart(row);
+        }
     }
 
     private void CaptureGunStart_Click(object sender, RoutedEventArgs e)
@@ -707,67 +732,61 @@ public partial class MainWindow : Window
 
     private async void ManualBackupPlayAll_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is FrameworkElement { Tag: string loc })
-            await _vm.PlayManualBackupAllAsync(loc);
+        var loc = (sender as FrameworkElement)?.Tag as string
+                  ?? ((sender as FrameworkElement)?.DataContext as ManualBackupLocationRow)?.Location;
+        if (string.IsNullOrWhiteSpace(loc))
+            return;
+        await _vm.PlayManualBackupAllAsync(loc);
     }
 
     private void ManualBackupCreateAll_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is FrameworkElement { Tag: string loc })
-            _vm.CreateManualBackupFilesAll(loc);
+        var loc = (sender as FrameworkElement)?.Tag as string
+                  ?? ((sender as FrameworkElement)?.DataContext as ManualBackupLocationRow)?.Location;
+        if (string.IsNullOrWhiteSpace(loc))
+            return;
+        _vm.CreateManualBackupFilesAll(loc);
+    }
+
+    private void ManualBackupDeleteArchive_Click(object sender, RoutedEventArgs e)
+    {
+        var card = (sender as FrameworkElement)?.Tag as ManualBackupFileCard
+                   ?? (sender as FrameworkElement)?.DataContext as ManualBackupFileCard;
+        // ContextMenu MenuItem Tag may be the card; DataContext is often the card too.
+        if (card is null && sender is MenuItem { DataContext: ManualBackupFileCard fromMenu })
+            card = fromMenu;
+        if (card is null || card.IsCurrent)
+            return;
+        _vm.DeleteManualBackupArchive(card.Location, card.DeviceId, card.FileName);
     }
 
     private async void ManualBackupPlayFile_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is FrameworkElement { Tag: ManualBackupFileCard card })
-            await _vm.PlayManualBackupSegmentAsync(card.Location, card.DeviceId, card.FileName, replay: false);
+        var card = (sender as FrameworkElement)?.Tag as ManualBackupFileCard
+                   ?? (sender as FrameworkElement)?.DataContext as ManualBackupFileCard;
+        if (card is null)
+            return;
+        await _vm.PlayManualBackupSegmentAsync(card.Location, card.DeviceId, card.FileName, replay: false);
     }
 
     private async void ManualBackupReplayFile_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is FrameworkElement { Tag: ManualBackupFileCard card })
-            await _vm.PlayManualBackupSegmentAsync(card.Location, card.DeviceId, card.FileName, replay: true);
+        var card = (sender as FrameworkElement)?.Tag as ManualBackupFileCard
+                   ?? (sender as FrameworkElement)?.DataContext as ManualBackupFileCard;
+        if (card is null)
+            return;
+        await _vm.PlayManualBackupSegmentAsync(card.Location, card.DeviceId, card.FileName, replay: true);
     }
 
     private void ManualBackupPause_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is not System.Windows.Controls.Primitives.ToggleButton { Tag: ManualBackupDeviceRow row, IsChecked: var paused })
-            return;
-        row.Coordinator?.SetPaused(row.Location, row.DeviceId, paused == true);
+        // Pause only appears while Current is mid-Play — cancel that Play.
+        if (sender is FrameworkElement { Tag: ManualBackupFileCard card })
+            card.Coordinator?.PausePlaying(card.Location, card.DeviceId);
     }
 
-    private void DoneManualBackup_Click(object sender, RoutedEventArgs e) =>
-        _vm.DoneManualBackup();
-
-    private void ManualBackupRoleSubmit_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is not FrameworkElement { Tag: string loc } fe)
-            return;
-        // Find sibling TextBox in parent DockPanel
-        if (fe.Parent is System.Windows.Controls.Panel panel)
-        {
-            foreach (var child in panel.Children)
-            {
-                if (child is System.Windows.Controls.TextBox tb)
-                {
-                    _vm.SubmitManualBackupBib(loc, tb.Text ?? "");
-                    tb.Clear();
-                    break;
-                }
-            }
-        }
-    }
-
-    private void ManualBackupRoleBib_KeyDown(object sender, KeyEventArgs e)
-    {
-        if (e.Key != Key.Enter || sender is not System.Windows.Controls.TextBox tb)
-            return;
-        var loc = tb.Tag as string ?? "";
-        _vm.SubmitManualBackupBib(loc, tb.Text ?? "");
-        tb.Clear();
-        e.Handled = true;
-    }
-
+    private async void DoneManualBackup_Click(object sender, RoutedEventArgs e) =>
+        await _vm.DoneManualBackupAsync();
 
     private void Admin_Click(object sender, RoutedEventArgs e) => _vm.TryOpenAdmin();
 

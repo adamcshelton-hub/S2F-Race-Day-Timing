@@ -2,6 +2,7 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:conv="clr-namespace:S2F.RaceDayCheckout.Converters"
+        xmlns:ctrl="clr-namespace:S2F.RaceDayCheckout.Controls"
         Title="S2F Race Day"
         Icon="pack://application:,,,/Assets/logo-mark.png"
         Height="720" Width="920"
@@ -14,6 +15,223 @@
         Closing="Window_Closing">
   <Window.Resources>
     <conv:BoolToVisibilityConverter x:Key="BoolVis"/>
+    <Style x:Key="FooterPrimaryButton" TargetType="Button" BasedOn="{StaticResource PrimaryButton}">
+      <Setter Property="MinHeight" Value="36"/>
+      <Setter Property="Padding" Value="14,6"/>
+      <Setter Property="FontSize" Value="14"/>
+    </Style>
+    <Style x:Key="FooterSecondaryButton" TargetType="Button" BasedOn="{StaticResource SecondaryButton}">
+      <Setter Property="MinHeight" Value="36"/>
+      <Setter Property="Padding" Value="12,6"/>
+      <Setter Property="FontSize" Value="13"/>
+    </Style>
+    <Style x:Key="FooterSaveButton" TargetType="Button" BasedOn="{StaticResource SaveButton}">
+      <Setter Property="MinHeight" Value="36"/>
+      <Setter Property="Padding" Value="14,6"/>
+      <Setter Property="FontSize" Value="14"/>
+    </Style>
+    <DataTemplate x:Key="RaceStartClockTile">
+                          <Grid Margin="3" VerticalAlignment="Stretch" HorizontalAlignment="Stretch">
+                            <Border Background="#FAFBFD" BorderBrush="{StaticResource LineBrush}"
+                                    BorderThickness="1" CornerRadius="12" Padding="6,4"
+                                    VerticalAlignment="Stretch" ClipToBounds="True">
+                              <Viewbox Stretch="Uniform"
+                                       HorizontalAlignment="Center" VerticalAlignment="Center">
+                                <DockPanel Width="200" LastChildFill="True" Margin="0,4,0,0">
+                                    <Button DockPanel.Dock="Bottom" Content="Capture Gun Start"
+                                            Style="{StaticResource PrimaryButton}"
+                                            FontSize="12" Padding="8,4" MinHeight="28"
+                                            HorizontalAlignment="Stretch" Margin="0,4,0,0"
+                                            ToolTip="Sets the actual race start from the laptop clock right now (HH:MM:SS.ff). Category label and typed Start Time are optional. Live clock counts from this gun time."
+                                            Click="CaptureGunStart_Click"/>
+                                    <DockPanel DockPanel.Dock="Bottom" Margin="0,4,0,0" MinHeight="26"
+                                               LastChildFill="True">
+                                      <StackPanel DockPanel.Dock="Right" Orientation="Horizontal"
+                                                  VerticalAlignment="Center" Margin="6,0,0,0"
+                                                  Visibility="{Binding HasGunStart, Converter={StaticResource BoolVis}}">
+                                        <Button Content="&#xE8C8;" Style="{StaticResource IconToolButton}"
+                                                Width="24" Height="24" MinWidth="24" MinHeight="24"
+                                                FontSize="11" Margin="0,0,4,0"
+                                                ToolTip="Copy Gun Time"
+                                                Click="CopyGunStart_Click"/>
+                                        <Button Content="&#xE74D;" ToolTip="Clear Gun Start"
+                                                Click="ClearGunStart_Click">
+                                          <Button.Style>
+                                            <Style TargetType="Button" BasedOn="{StaticResource IconToolButton}">
+                                              <Setter Property="Width" Value="24"/>
+                                              <Setter Property="Height" Value="24"/>
+                                              <Setter Property="MinWidth" Value="24"/>
+                                              <Setter Property="MinHeight" Value="24"/>
+                                              <Setter Property="FontSize" Value="11"/>
+                                              <Setter Property="Foreground" Value="{StaticResource DangerBrush}"/>
+                                            </Style>
+                                          </Button.Style>
+                                        </Button>
+                                      </StackPanel>
+                                      <TextBlock Text="{Binding GunStartDisplay}"
+                                                 FontSize="13" FontWeight="SemiBold"
+                                                 FontFamily="Consolas, Cascadia Mono, Courier New"
+                                                 Foreground="{StaticResource SaveBrush}"
+                                                 VerticalAlignment="Center"
+                                                 TextWrapping="NoWrap"/>
+                                    </DockPanel>
+                                    <StackPanel>
+                                      <TextBlock Text="Category" FontSize="10" FontWeight="SemiBold"
+                                                 Foreground="{StaticResource MutedBrush}"
+                                                 HorizontalAlignment="Center" Margin="0,0,0,2"/>
+                                      <Grid>
+                                        <TextBox Text="{Binding CategoryText, UpdateSourceTrigger=PropertyChanged}"
+                                                 FontSize="13" FontWeight="SemiBold"
+                                                 TextAlignment="Center" Padding="4,2"
+                                                 Background="White" BorderBrush="{StaticResource LineBrush}"
+                                                 BorderThickness="1" CaretBrush="{StaticResource AccentBrush}"
+                                                 ToolTip="Category name (e.g. 5K)"
+                                                 Tag="Category"
+                                                 LostFocus="RaceStartClockField_LostFocus"
+                                                 KeyDown="RaceStartClockField_KeyDown"/>
+                                        <TextBlock Text="e.g. 5K" FontSize="13"
+                                                   Foreground="{StaticResource PlaceholderBrush}"
+                                                   HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                   IsHitTestVisible="False">
+                                          <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                              <Setter Property="Visibility" Value="Collapsed"/>
+                                              <Style.Triggers>
+                                                <DataTrigger Binding="{Binding CategoryText}" Value="">
+                                                  <Setter Property="Visibility" Value="Visible"/>
+                                                </DataTrigger>
+                                              </Style.Triggers>
+                                            </Style>
+                                          </TextBlock.Style>
+                                        </TextBlock>
+                                      </Grid>
+                                      <TextBlock Text="{Binding LiveDisplay}"
+                                                 FontSize="24" FontWeight="Bold" Margin="0,2,0,2"
+                                                 FontFamily="Consolas, Cascadia Mono, Courier New"
+                                                 HorizontalAlignment="Center"
+                                                 IsHitTestVisible="False">
+                                        <TextBlock.Style>
+                                          <Style TargetType="TextBlock">
+                                            <Setter Property="Foreground" Value="{StaticResource AccentBrush}"/>
+                                            <Style.Triggers>
+                                              <DataTrigger Binding="{Binding IsCountUp}" Value="True">
+                                                <Setter Property="Foreground" Value="{StaticResource SaveBrush}"/>
+                                              </DataTrigger>
+                                            </Style.Triggers>
+                                          </Style>
+                                        </TextBlock.Style>
+                                      </TextBlock>
+                                      <TextBlock Text="Start Time (24h)" FontSize="10" FontWeight="SemiBold"
+                                                 Foreground="{StaticResource MutedBrush}"
+                                                 HorizontalAlignment="Center" Margin="0,0,0,2"/>
+                                      <Border Background="White" BorderThickness="1" Padding="2,1"
+                                              HorizontalAlignment="Stretch"
+                                              PreviewMouseLeftButtonDown="RaceStartTimeArea_PreviewMouseLeftButtonDown">
+                                        <Border.Style>
+                                          <Style TargetType="Border">
+                                            <Setter Property="BorderBrush" Value="{StaticResource LineBrush}"/>
+                                            <Style.Triggers>
+                                              <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                                                <Setter Property="BorderBrush" Value="{StaticResource AccentBrush}"/>
+                                              </Trigger>
+                                            </Style.Triggers>
+                                          </Style>
+                                        </Border.Style>
+                                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                          <Grid Width="36">
+                                            <TextBox Text="{Binding StartHourText, UpdateSourceTrigger=PropertyChanged}"
+                                                     MaxLength="2"
+                                                     FontSize="18" FontWeight="SemiBold"
+                                                     FontFamily="Consolas, Cascadia Mono, Courier New"
+                                                     TextAlignment="Center" Padding="2,2"
+                                                     BorderThickness="0" Background="Transparent"
+                                                     CaretBrush="{StaticResource AccentBrush}"
+                                                     ToolTip="Hours (00–23)"
+                                                     Tag="StartHour"
+                                                     GotFocus="RaceStartHour_GotFocus"
+                                                     PreviewTextInput="RaceStartTimeDigit_PreviewTextInput"
+                                                     PreviewKeyDown="RaceStartHour_PreviewKeyDown"
+                                                     TextChanged="RaceStartHour_TextChanged"
+                                                     LostFocus="RaceStartClockField_LostFocus"
+                                                     KeyDown="RaceStartClockField_KeyDown"/>
+                                            <TextBlock Text="00" FontSize="18" FontWeight="SemiBold"
+                                                       FontFamily="Consolas, Cascadia Mono, Courier New"
+                                                       Foreground="{StaticResource PlaceholderBrush}"
+                                                       HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                       IsHitTestVisible="False"
+                                                       Visibility="{Binding ShowStartHourPlaceholder, Converter={StaticResource BoolVis}}"/>
+                                          </Grid>
+                                          <TextBlock FontSize="18" FontWeight="SemiBold"
+                                                     FontFamily="Consolas, Cascadia Mono, Courier New"
+                                                     VerticalAlignment="Center" Margin="2,0"
+                                                     IsHitTestVisible="False">
+                                            <TextBlock.Style>
+                                              <Style TargetType="TextBlock">
+                                                <Setter Property="Text" Value=":"/>
+                                                <Setter Property="Foreground" Value="{StaticResource AccentBrush}"/>
+                                                <Style.Triggers>
+                                                  <MultiDataTrigger>
+                                                    <MultiDataTrigger.Conditions>
+                                                      <Condition Binding="{Binding ShowStartHourPlaceholder}" Value="True"/>
+                                                      <Condition Binding="{Binding ShowStartMinutePlaceholder}" Value="True"/>
+                                                    </MultiDataTrigger.Conditions>
+                                                    <Setter Property="Foreground" Value="{StaticResource PlaceholderBrush}"/>
+                                                  </MultiDataTrigger>
+                                                </Style.Triggers>
+                                              </Style>
+                                            </TextBlock.Style>
+                                          </TextBlock>
+                                          <Grid Width="36">
+                                            <TextBox Text="{Binding StartMinuteText, UpdateSourceTrigger=PropertyChanged}"
+                                                     MaxLength="2"
+                                                     FontSize="18" FontWeight="SemiBold"
+                                                     FontFamily="Consolas, Cascadia Mono, Courier New"
+                                                     TextAlignment="Center" Padding="2,2"
+                                                     BorderThickness="0" Background="Transparent"
+                                                     CaretBrush="{StaticResource AccentBrush}"
+                                                     ToolTip="Minutes (00–59)"
+                                                     Tag="StartMinute"
+                                                     GotFocus="RaceStartMinute_GotFocus"
+                                                     PreviewTextInput="RaceStartTimeDigit_PreviewTextInput"
+                                                     PreviewKeyDown="RaceStartMinute_PreviewKeyDown"
+                                                     LostFocus="RaceStartClockField_LostFocus"
+                                                     KeyDown="RaceStartClockField_KeyDown"/>
+                                            <TextBlock Text="00" FontSize="18" FontWeight="SemiBold"
+                                                       FontFamily="Consolas, Cascadia Mono, Courier New"
+                                                       Foreground="{StaticResource PlaceholderBrush}"
+                                                       HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                       IsHitTestVisible="False"
+                                                       Visibility="{Binding ShowStartMinutePlaceholder, Converter={StaticResource BoolVis}}"/>
+                                          </Grid>
+                                        </StackPanel>
+                                      </Border>
+                                    </StackPanel>
+                                  </DockPanel>
+                                </Viewbox>
+                              </Border>
+                              <Button HorizontalAlignment="Right" VerticalAlignment="Top"
+                                      Panel.ZIndex="2"
+                                      Width="22" Height="22" Margin="0,2,2,0" Padding="0"
+                                      FontSize="13" FontWeight="Bold" Content="×"
+                                      Foreground="#C62828" Background="Transparent"
+                                      BorderThickness="0" Cursor="Hand"
+                                      KeyboardNavigation.IsTabStop="False"
+                                      ToolTip="Delete Start Clock"
+                                      Tag="{Binding}"
+                                      Click="RemoveRaceStart_Click">
+                                <Button.Template>
+                                  <ControlTemplate TargetType="Button">
+                                    <Border Background="{TemplateBinding Background}"
+                                            CornerRadius="11"
+                                            Width="{TemplateBinding Width}"
+                                            Height="{TemplateBinding Height}">
+                                      <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                    </Border>
+                                  </ControlTemplate>
+                                </Button.Template>
+                              </Button>
+                          </Grid>
+    </DataTemplate>
   </Window.Resources>
 
   <Grid>
@@ -63,7 +281,7 @@
       </Border>
 
       <!-- Body -->
-      <Grid Margin="28,24">
+      <Grid Margin="28,20,28,12">
         <Grid.RowDefinitions>
           <RowDefinition Height="Auto"/>
           <RowDefinition Height="*"/>
@@ -72,6 +290,7 @@
 
         <Grid Grid.Row="0" Margin="0,0,0,16">
           <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
           </Grid.RowDefinitions>
@@ -85,48 +304,6 @@
                      TextTrimming="CharacterEllipsis"/>
           <TextBlock Text="{Binding StepSubtitle}" Foreground="{StaticResource MutedBrush}"
                      FontSize="15" Margin="0,6,0,0" TextWrapping="Wrap"/>
-          <StackPanel Orientation="Horizontal" Margin="0,14,0,0" VerticalAlignment="Center"
-                      Visibility="{Binding ShowRolePicker, Converter={StaticResource BoolVis}}">
-              <Button Content="Main Timing Laptop" MinWidth="200" Margin="0,0,10,0" Click="RoleTiming_Click">
-                <Button.Style>
-                  <Style TargetType="Button" BasedOn="{StaticResource SecondaryButton}">
-                    <Style.Triggers>
-                      <DataTrigger Binding="{Binding IsTimingRole}" Value="True">
-                        <Setter Property="Background" Value="{StaticResource AccentBrush}"/>
-                        <Setter Property="Foreground" Value="White"/>
-                        <Setter Property="BorderThickness" Value="0"/>
-                      </DataTrigger>
-                    </Style.Triggers>
-                  </Style>
-                </Button.Style>
-              </Button>
-              <Button Content="Announcer T&amp;S Laptop" MinWidth="200" Margin="0,0,10,0" Click="RoleAnnouncer_Click">
-                <Button.Style>
-                  <Style TargetType="Button" BasedOn="{StaticResource SecondaryButton}">
-                    <Style.Triggers>
-                      <DataTrigger Binding="{Binding IsAnnouncerRole}" Value="True">
-                        <Setter Property="Background" Value="{StaticResource AccentBrush}"/>
-                        <Setter Property="Foreground" Value="White"/>
-                        <Setter Property="BorderThickness" Value="0"/>
-                      </DataTrigger>
-                    </Style.Triggers>
-                  </Style>
-                </Button.Style>
-              </Button>
-              <Button Content="Manual Backup Laptop" MinWidth="200" Click="RoleManualBackup_Click">
-                <Button.Style>
-                  <Style TargetType="Button" BasedOn="{StaticResource SecondaryButton}">
-                    <Style.Triggers>
-                      <DataTrigger Binding="{Binding IsManualBackupRole}" Value="True">
-                        <Setter Property="Background" Value="{StaticResource AccentBrush}"/>
-                        <Setter Property="Foreground" Value="White"/>
-                        <Setter Property="BorderThickness" Value="0"/>
-                      </DataTrigger>
-                    </Style.Triggers>
-                  </Style>
-                </Button.Style>
-              </Button>
-          </StackPanel>
           </StackPanel>
           <!-- Signed-in status on the title row, top-right — does not push the office list down. -->
           <Border Grid.Column="1" CornerRadius="8" Padding="14,8" Margin="20,2,0,0" MaxWidth="340"
@@ -162,27 +339,73 @@
                     Click="Finish_Click"/>
           </UniformGrid>
 
-          <!-- Timing Active sticky strip: Browse + tips (always visible above clock cards) -->
-          <DockPanel Grid.Row="1" Grid.ColumnSpan="2" Margin="0,14,0,0"
+          <!-- Role row: full width so Manual Backup Laptop is not clipped by the title column. -->
+          <StackPanel Grid.Row="1" Grid.ColumnSpan="2" Orientation="Horizontal" Margin="0,14,0,0"
+                      VerticalAlignment="Center"
+                      Visibility="{Binding ShowRolePicker, Converter={StaticResource BoolVis}}">
+            <Button Content="Main Timing Laptop" MinWidth="200" Margin="0,0,10,0" Click="RoleTiming_Click">
+              <Button.Style>
+                <Style TargetType="Button" BasedOn="{StaticResource SecondaryButton}">
+                  <Style.Triggers>
+                    <DataTrigger Binding="{Binding IsTimingRole}" Value="True">
+                      <Setter Property="Background" Value="{StaticResource AccentBrush}"/>
+                      <Setter Property="Foreground" Value="White"/>
+                      <Setter Property="BorderThickness" Value="0"/>
+                    </DataTrigger>
+                  </Style.Triggers>
+                </Style>
+              </Button.Style>
+            </Button>
+            <Button Content="Announcer T&amp;S Laptop" MinWidth="200" Margin="0,0,10,0" Click="RoleAnnouncer_Click">
+              <Button.Style>
+                <Style TargetType="Button" BasedOn="{StaticResource SecondaryButton}">
+                  <Style.Triggers>
+                    <DataTrigger Binding="{Binding IsAnnouncerRole}" Value="True">
+                      <Setter Property="Background" Value="{StaticResource AccentBrush}"/>
+                      <Setter Property="Foreground" Value="White"/>
+                      <Setter Property="BorderThickness" Value="0"/>
+                    </DataTrigger>
+                  </Style.Triggers>
+                </Style>
+              </Button.Style>
+            </Button>
+            <Button Content="Manual Backup Laptop" MinWidth="200" Click="RoleManualBackup_Click">
+              <Button.Style>
+                <Style TargetType="Button" BasedOn="{StaticResource SecondaryButton}">
+                  <Style.Triggers>
+                    <DataTrigger Binding="{Binding IsManualBackupRole}" Value="True">
+                      <Setter Property="Background" Value="{StaticResource AccentBrush}"/>
+                      <Setter Property="Foreground" Value="White"/>
+                      <Setter Property="BorderThickness" Value="0"/>
+                    </DataTrigger>
+                  </Style.Triggers>
+                </Style>
+              </Button.Style>
+            </Button>
+          </StackPanel>
+
+          <!-- Timing Active sticky strip: Browse + Enable MB + tip -->
+          <DockPanel Grid.Row="2" Grid.ColumnSpan="2" Margin="0,10,0,0"
                      Visibility="{Binding IsTimingActive, Converter={StaticResource BoolVis}}">
             <Button DockPanel.Dock="Left" Content="Browse Race Files"
                     Style="{StaticResource SecondaryButton}"
-                    MinHeight="40" Padding="14,8" Margin="0,0,12,0"
-                    VerticalAlignment="Stretch"
+                    MinHeight="36" MinWidth="168" Padding="12,6" Margin="0,0,8,0"
+                    VerticalAlignment="Center"
                     Click="OpenWorkingFolder_Click"
                     ToolTip="Opens the local working copy of this race if you need to find a file."/>
-            <UniformGrid Columns="2">
-              <Border Background="#FFF8E8" BorderBrush="#E6C35C" BorderThickness="1"
-                      CornerRadius="8" Padding="12,10" Margin="0,0,8,0">
-                <TextBlock TextWrapping="Wrap" FontSize="12"
-                           Text="Keep this app open for the whole race. Live OneDrive backup every minute so a second laptop can take over if this one fails."/>
-              </Border>
-              <Border Background="#F3FBF6" BorderBrush="{StaticResource SaveBrush}" BorderThickness="1"
-                      CornerRadius="8" Padding="12,10" Margin="8,0,0,0">
-                <TextBlock TextWrapping="Wrap" FontSize="12"
-                           Text="When done: close RunScore and Timing &amp; Scoring, then tap Finish above. Uploads the race (every .event in Active) and clears live autosave."/>
-              </Border>
-            </UniformGrid>
+            <Button DockPanel.Dock="Left" Content="Enable Manual Backup…"
+                    Style="{StaticResource SecondaryButton}"
+                    MinHeight="36" MinWidth="168" Padding="12,6" Margin="0,0,10,0"
+                    VerticalAlignment="Center"
+                    Click="ConfigureManualBackup_Click"
+                    ToolTip="Choose RunScore Results locations for Manual Backup."
+                    Visibility="{Binding ManualBackup.ShowEnablePrompt, Converter={StaticResource BoolVis}}"/>
+            <Border Background="#FFF4E8" BorderBrush="#E6C35C" BorderThickness="1"
+                    CornerRadius="6" Padding="10,6">
+              <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="{StaticResource InkBrush}"
+                         VerticalAlignment="Center"
+                         Text="Keep this app open all race — live OneDrive backup each minute. When done: close RunScore and Timing &amp; Scoring, then Finish above."/>
+            </Border>
           </DockPanel>
         </Grid>
 
@@ -330,145 +553,33 @@
           </ListBox>
         </DockPanel>
 
-        <!-- ACTIVE Manual Backup role — bib entry only -->
+        <!-- ACTIVE Manual Backup role — Entry is the same Topmost float as Main Timing -->
         <Border Grid.Row="1" Background="{StaticResource CardBrush}" CornerRadius="10"
-                BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Padding="20"
+                BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Padding="28"
                 Visibility="{Binding IsManualBackupActive, Converter={StaticResource BoolVis}}">
-          <DockPanel>
-            <StackPanel DockPanel.Dock="Top" Margin="0,0,0,12">
-              <TextBlock Text="Manual Backup" FontSize="20" FontWeight="SemiBold"/>
-              <TextBlock Text="{Binding ManualBackup.Status}" Foreground="{StaticResource MutedBrush}" Margin="0,4,0,0" TextWrapping="Wrap"/>
-              <Button Content="Done" Style="{StaticResource PrimaryButton}" HorizontalAlignment="Left"
-                      Margin="0,12,0,0" MinWidth="120" Click="DoneManualBackup_Click"/>
-            </StackPanel>
-            <ItemsControl ItemsSource="{Binding ManualBackup.Locations}">
-              <ItemsControl.ItemTemplate>
-                <DataTemplate>
-                  <Border Margin="0,0,0,12" Padding="12" Background="#FAFBFD" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="8">
-                    <StackPanel>
-                      <TextBlock Text="{Binding Location}" FontWeight="SemiBold" FontSize="16" Margin="0,0,0,8"/>
-                      <DockPanel>
-                        <Button DockPanel.Dock="Right" Content="Submit" MinWidth="88" Margin="8,0,0,0"
-                                Click="ManualBackupRoleSubmit_Click" Tag="{Binding Location}"/>
-                        <TextBox x:Name="MbBib" FontSize="20" Padding="8,6"
-                                 Tag="{Binding Location}" KeyDown="ManualBackupRoleBib_KeyDown"/>
-                      </DockPanel>
-                    </StackPanel>
-                  </Border>
-                </DataTemplate>
-              </ItemsControl.ItemTemplate>
-            </ItemsControl>
-          </DockPanel>
+          <StackPanel VerticalAlignment="Center" MaxWidth="520" HorizontalAlignment="Center">
+            <TextBlock Text="Manual Backup" FontSize="24" FontWeight="SemiBold"
+                       HorizontalAlignment="Center" Margin="0,0,0,10"/>
+            <TextBlock TextWrapping="Wrap" FontSize="15" TextAlignment="Center"
+                       Foreground="{StaticResource MutedBrush}" Margin="0,0,0,8"
+                       Text="{Binding ManualBackup.Status}"/>
+            <TextBlock TextWrapping="Wrap" FontSize="14" TextAlignment="Center"
+                       Foreground="{StaticResource MutedBrush}" Margin="0,0,0,22"
+                       Text="Use the Manual Backup Entry window for bibs. Main Timing Plays them into RunScore Open."/>
+            <Button Content="Open Entry Window" Style="{StaticResource PrimaryButton}"
+                    HorizontalAlignment="Stretch" FontSize="18" MinHeight="56" Margin="0,0,0,12"
+                    Click="OpenManualBackupFloat_Click"/>
+            <Button Content="Done" Style="{StaticResource SaveButton}"
+                    HorizontalAlignment="Stretch" FontSize="18" MinHeight="56"
+                    Click="DoneManualBackup_Click"/>
+          </StackPanel>
         </Border>
 
-        <!-- ACTIVE timing — sticky header has actions/tips; center is start-clock cards -->
+        <!-- ACTIVE timing — clocks fill left; Manual Backup is a compact right rail -->
         <Border Grid.Row="1" Background="{StaticResource CardBrush}" CornerRadius="10"
-                BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Padding="20"
+                BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Padding="12"
                 Visibility="{Binding IsTimingActive, Converter={StaticResource BoolVis}}">
           <DockPanel>
-              <!-- Manual Backup strip (T&S-shaped) -->
-              <Border DockPanel.Dock="Top" Margin="0,0,0,16" Padding="12"
-                      Background="#FAFBFD" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="8"
-                      Visibility="{Binding ManualBackup.ShowPanel, Converter={StaticResource BoolVis}}">
-                <DockPanel>
-                  <DockPanel DockPanel.Dock="Top" Margin="0,0,0,10">
-                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
-                      <Button Content="Open Entry Window" Style="{StaticResource SecondaryButton}" Margin="0,0,8,0"
-                              Click="OpenManualBackupFloat_Click"/>
-                      <Button Content="Mobile Backup Settings" Style="{StaticResource SecondaryButton}"
-                              Click="ConfigureManualBackup_Click"/>
-                    </StackPanel>
-                    <TextBlock Text="Manual Backup" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center"/>
-                  </DockPanel>
-                  <Border DockPanel.Dock="Bottom" Margin="0,10,0,0" Padding="10,8" CornerRadius="6">
-                    <Border.Style>
-                      <Style TargetType="Border">
-                        <Setter Property="Background" Value="#FDECEA"/>
-                        <Style.Triggers>
-                          <DataTrigger Binding="{Binding ManualBackup.OpenConnected}" Value="True">
-                            <Setter Property="Background" Value="#E8F5E9"/>
-                          </DataTrigger>
-                        </Style.Triggers>
-                      </Style>
-                    </Border.Style>
-                    <TextBlock Text="{Binding ManualBackup.OpenStatusText}" FontSize="13"/>
-                  </Border>
-                  <ItemsControl ItemsSource="{Binding ManualBackup.Locations}">
-                    <ItemsControl.ItemTemplate>
-                      <DataTemplate>
-                        <Border Margin="0,0,0,10" Padding="8" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,0,1">
-                          <StackPanel>
-                            <DockPanel Margin="0,0,0,6">
-                              <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
-                                <Button Content="Play All" Margin="0,0,6,0" MinWidth="88"
-                                        Click="ManualBackupPlayAll_Click" Tag="{Binding Location}"/>
-                                <Button Content="Create New File All" MinWidth="140"
-                                        Click="ManualBackupCreateAll_Click" Tag="{Binding Location}"/>
-                              </StackPanel>
-                              <TextBlock Text="{Binding Location}" FontWeight="SemiBold" FontSize="15" VerticalAlignment="Center"/>
-                            </DockPanel>
-                            <ItemsControl ItemsSource="{Binding Devices}">
-                              <ItemsControl.ItemTemplate>
-                                <DataTemplate>
-                                  <DockPanel Margin="0,4,0,4">
-                                    <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" Width="160">
-                                      <TextBlock Text="{Binding DisplayName}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Width="110"/>
-                                      <ToggleButton Content="Pause" IsChecked="{Binding Paused}" Margin="6,0,0,0"
-                                                    Click="ManualBackupPause_Click" Tag="{Binding}"/>
-                                    </StackPanel>
-                                    <ItemsControl ItemsSource="{Binding Files}">
-                                      <ItemsControl.ItemsPanel>
-                                        <ItemsPanelTemplate>
-                                          <StackPanel Orientation="Horizontal"/>
-                                        </ItemsPanelTemplate>
-                                      </ItemsControl.ItemsPanel>
-                                      <ItemsControl.ItemTemplate>
-                                        <DataTemplate>
-                                          <Border Margin="4,0,0,0" Padding="8,6" CornerRadius="6" MinWidth="72">
-                                            <Border.Style>
-                                              <Style TargetType="Border">
-                                                <Setter Property="Background" Value="White"/>
-                                                <Setter Property="BorderBrush" Value="#CCC"/>
-                                                <Setter Property="BorderThickness" Value="1"/>
-                                                <Style.Triggers>
-                                                  <DataTrigger Binding="{Binding IsCurrent}" Value="True">
-                                                    <Setter Property="Background" Value="#E8F5E9"/>
-                                                    <Setter Property="BorderBrush" Value="#81C784"/>
-                                                  </DataTrigger>
-                                                </Style.Triggers>
-                                              </Style>
-                                            </Border.Style>
-                                            <StackPanel>
-                                              <TextBlock Text="{Binding Title}" FontSize="11" FontWeight="SemiBold"/>
-                                              <TextBlock Text="{Binding Count}" FontSize="16" HorizontalAlignment="Center"/>
-                                              <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                                                <Button Content="▶" Padding="6,2" Margin="0,0,4,0"
-                                                        Click="ManualBackupPlayFile_Click" Tag="{Binding}"/>
-                                                <Button Content="↻" Padding="6,2"
-                                                        Click="ManualBackupReplayFile_Click" Tag="{Binding}"/>
-                                              </StackPanel>
-                                            </StackPanel>
-                                          </Border>
-                                        </DataTemplate>
-                                      </ItemsControl.ItemTemplate>
-                                    </ItemsControl>
-                                  </DockPanel>
-                                </DataTemplate>
-                              </ItemsControl.ItemTemplate>
-                            </ItemsControl>
-                          </StackPanel>
-                        </Border>
-                      </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                  </ItemsControl>
-                </DockPanel>
-              </Border>
-              <Border DockPanel.Dock="Top" Margin="0,0,0,16" Padding="12"
-                      Visibility="{Binding ManualBackup.ShowEnablePrompt, Converter={StaticResource BoolVis}}">
-                <Button Content="Enable Mobile Backup…" Style="{StaticResource SecondaryButton}"
-                        HorizontalAlignment="Left" Click="ConfigureManualBackup_Click"/>
-              </Border>
-
               <!-- Another laptop took the lock — close vendors here, then Close Local Copy -->
               <Border DockPanel.Dock="Top" Background="#FDECEA" BorderBrush="{StaticResource DangerBrush}" BorderThickness="1"
                       CornerRadius="8" Padding="16" Margin="0,0,0,16"
@@ -492,235 +603,346 @@
               </Border>
 
               <Border DockPanel.Dock="Bottom" Background="#F7F8FA" BorderBrush="{StaticResource LineBrush}"
-                      BorderThickness="1" CornerRadius="8" Padding="14" Margin="0,16,0,0"
+                      BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,10,0,0"
                       Visibility="{Binding ShowActiveSaveAsGuide, Converter={StaticResource BoolVis}}">
                 <StackPanel>
-                  <TextBlock Text="T&amp;S Save As Path" FontSize="15" FontWeight="SemiBold"
-                             Margin="0,0,0,8"/>
+                  <TextBlock Text="T&amp;S Save As Path" FontSize="14" FontWeight="SemiBold"
+                             Margin="0,0,0,6"/>
                   <TextBlock Text="{Binding ActiveSaveAsFolderGuide}"
                              FontFamily="Consolas, Cascadia Mono, Courier New"
-                             FontSize="13" TextWrapping="Wrap"
+                             FontSize="12" TextWrapping="Wrap"
                              Foreground="{StaticResource MutedBrush}"/>
-                  <TextBlock TextWrapping="Wrap" FontSize="13" Margin="0,10,0,0"
+                  <TextBlock TextWrapping="Wrap" FontSize="12" Margin="0,8,0,0"
                              Foreground="{StaticResource MutedBrush}"
                              Text="In Timing &amp; Scoring Save As, use This PC (not Documents) and save into this folder. Announcer / video files go here too — Finish uploads every .event in Active."/>
                 </StackPanel>
               </Border>
 
-              <!-- 4 columns × 2 rows ≈ 8 clocks without vertical scroll; more rows scroll -->
-              <ScrollViewer VerticalScrollBarVisibility="Auto"
-                            HorizontalScrollBarVisibility="Disabled"
-                            CanContentScroll="False">
-              <ItemsControl x:Name="RaceStartBoardList"
-                            ItemsSource="{Binding RaceStartBoard}"
-                            HorizontalAlignment="Stretch" VerticalAlignment="Top"
-                            MaxWidth="1280">
-                <ItemsControl.ItemsPanel>
-                  <ItemsPanelTemplate>
-                    <UniformGrid Columns="4"/>
-                  </ItemsPanelTemplate>
-                </ItemsControl.ItemsPanel>
-                <ItemsControl.ItemTemplate>
-                  <DataTemplate>
-                    <!-- Stretch fills UniformGrid cell so + tile matches clock card outline height -->
-                    <Grid Margin="6" VerticalAlignment="Stretch" HorizontalAlignment="Stretch">
-                      <Button Visibility="{Binding IsAddTile, Converter={StaticResource BoolVis}}"
-                              FontSize="48" FontWeight="Light" Content="+"
-                              HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
-                              Background="#FAFBFD" BorderBrush="{StaticResource LineBrush}"
-                              BorderThickness="1" Cursor="Hand"
-                              ToolTip="Add Start Clock"
-                              Click="AddRaceStartClock_Click">
-                        <Button.Template>
-                          <ControlTemplate TargetType="Button">
-                            <Border Background="{TemplateBinding Background}"
-                                    BorderBrush="{TemplateBinding BorderBrush}"
-                                    BorderThickness="{TemplateBinding BorderThickness}"
-                                    CornerRadius="16">
-                              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                            </Border>
-                          </ControlTemplate>
-                        </Button.Template>
-                      </Button>
-                      <!-- Clock card: stretch border to cell so outline matches + tile; content stays top-stacked -->
-                      <Grid Visibility="{Binding IsClockTile, Converter={StaticResource BoolVis}}"
-                            VerticalAlignment="Stretch">
-                        <Border Background="#FAFBFD" BorderBrush="{StaticResource LineBrush}"
-                                BorderThickness="1" CornerRadius="16" Padding="10,8"
-                                VerticalAlignment="Stretch">
-                          <DockPanel Margin="0,8,0,0" LastChildFill="True">
-                            <Button DockPanel.Dock="Bottom" Content="Capture Gun Start"
-                                    Style="{StaticResource PrimaryButton}"
-                                    FontSize="12" Padding="8,4" MinHeight="30"
-                                    HorizontalAlignment="Stretch" Margin="0,6,0,0"
-                                    ToolTip="Sets the actual race start from the laptop clock right now (HH:MM:SS.ff). Category label and typed Start Time are optional. Live clock counts from this gun time."
-                                    Click="CaptureGunStart_Click"/>
-                            <!-- Always reserve this row so cards match height with/without a gun. -->
-                            <DockPanel DockPanel.Dock="Bottom" Margin="0,6,0,0" MinHeight="30">
-                              <StackPanel DockPanel.Dock="Right" Orientation="Horizontal"
-                                          Visibility="{Binding HasGunStart, Converter={StaticResource BoolVis}}">
-                                <Button Content="Copy"
-                                        Style="{StaticResource SecondaryButton}"
-                                        FontSize="11" Padding="8,2" MinHeight="30"
-                                        Margin="6,0,0,0" VerticalAlignment="Center"
-                                        ToolTip="Copy gun time (HH:MM:SS.ff) to the clipboard"
-                                        Click="CopyGunStart_Click"/>
-                                <Button Content="Clear"
-                                        Style="{StaticResource SecondaryButton}"
-                                        FontSize="11" Padding="8,2" MinHeight="30"
-                                        Margin="6,0,0,0" VerticalAlignment="Center"
-                                        ToolTip="Removes the gun stamp. Live clock goes back to the scheduled Start Time."
-                                        Click="ClearGunStart_Click"/>
-                              </StackPanel>
-                              <TextBlock Text="{Binding GunStartDisplay}"
-                                         FontSize="16" FontWeight="SemiBold"
-                                         FontFamily="Consolas, Cascadia Mono, Courier New"
-                                         Foreground="{StaticResource SaveBrush}"
-                                         VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
-                            </DockPanel>
-                            <StackPanel>
-                              <TextBlock Text="Category" FontSize="10" FontWeight="SemiBold"
-                                         Foreground="{StaticResource MutedBrush}"
-                                         HorizontalAlignment="Center" Margin="0,0,0,2"/>
-                              <Grid>
-                                <TextBox Text="{Binding CategoryText, UpdateSourceTrigger=PropertyChanged}"
-                                         FontSize="14" FontWeight="SemiBold"
-                                         TextAlignment="Center" Padding="4,3"
-                                         Background="White" BorderBrush="{StaticResource LineBrush}"
-                                         BorderThickness="1" CaretBrush="{StaticResource AccentBrush}"
-                                         ToolTip="Category name (e.g. 5K)"
-                                         Tag="Category"
-                                         LostFocus="RaceStartClockField_LostFocus"
-                                         KeyDown="RaceStartClockField_KeyDown"/>
-                                <TextBlock Text="e.g. 5K" FontSize="14"
-                                           Foreground="{StaticResource MutedBrush}"
-                                           HorizontalAlignment="Center" VerticalAlignment="Center"
-                                           IsHitTestVisible="False">
-                                  <TextBlock.Style>
-                                    <Style TargetType="TextBlock">
-                                      <Setter Property="Visibility" Value="Collapsed"/>
-                                      <Style.Triggers>
-                                        <DataTrigger Binding="{Binding CategoryText}" Value="">
-                                          <Setter Property="Visibility" Value="Visible"/>
-                                        </DataTrigger>
-                                      </Style.Triggers>
-                                    </Style>
-                                  </TextBlock.Style>
-                                </TextBlock>
-                              </Grid>
-                              <TextBlock Text="{Binding LiveDisplay}"
-                                         FontSize="28" FontWeight="Bold" Margin="0,2,0,2"
-                                         FontFamily="Consolas, Cascadia Mono, Courier New"
-                                         HorizontalAlignment="Center"
-                                         IsHitTestVisible="False">
-                                <TextBlock.Style>
-                                  <Style TargetType="TextBlock">
-                                    <Setter Property="Foreground" Value="{StaticResource AccentBrush}"/>
-                                    <Style.Triggers>
-                                      <DataTrigger Binding="{Binding IsCountUp}" Value="True">
-                                        <Setter Property="Foreground" Value="{StaticResource SaveBrush}"/>
-                                      </DataTrigger>
-                                    </Style.Triggers>
-                                  </Style>
-                                </TextBlock.Style>
-                              </TextBlock>
-                              <TextBlock Text="Start Time (24h)" FontSize="10" FontWeight="SemiBold"
-                                         Foreground="{StaticResource MutedBrush}"
-                                         HorizontalAlignment="Center" Margin="0,0,0,2"/>
-                              <Border Background="White" BorderThickness="1" Padding="2,1"
-                                      HorizontalAlignment="Stretch"
-                                      PreviewMouseLeftButtonDown="RaceStartTimeArea_PreviewMouseLeftButtonDown">
-                                <Border.Style>
-                                  <Style TargetType="Border">
-                                    <Setter Property="BorderBrush" Value="{StaticResource LineBrush}"/>
-                                    <Style.Triggers>
-                                      <Trigger Property="IsKeyboardFocusWithin" Value="True">
-                                        <Setter Property="BorderBrush" Value="{StaticResource AccentBrush}"/>
-                                      </Trigger>
-                                    </Style.Triggers>
-                                  </Style>
-                                </Border.Style>
-                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                                  <Grid Width="36">
-                                    <TextBox Text="{Binding StartHourText, UpdateSourceTrigger=PropertyChanged}"
-                                             MaxLength="2"
-                                             FontSize="18" FontWeight="SemiBold"
-                                             FontFamily="Consolas, Cascadia Mono, Courier New"
-                                             TextAlignment="Center" Padding="2,2"
-                                             BorderThickness="0" Background="Transparent"
-                                             CaretBrush="{StaticResource AccentBrush}"
-                                             ToolTip="Hours (00–23)"
-                                             Tag="StartHour"
-                                             GotFocus="RaceStartHour_GotFocus"
-                                             PreviewTextInput="RaceStartTimeDigit_PreviewTextInput"
-                                             PreviewKeyDown="RaceStartHour_PreviewKeyDown"
-                                             TextChanged="RaceStartHour_TextChanged"
-                                             LostFocus="RaceStartClockField_LostFocus"
-                                             KeyDown="RaceStartClockField_KeyDown"/>
-                                    <TextBlock Text="00" FontSize="18" FontWeight="SemiBold"
-                                               FontFamily="Consolas, Cascadia Mono, Courier New"
-                                               Foreground="{StaticResource MutedBrush}"
-                                               HorizontalAlignment="Center" VerticalAlignment="Center"
-                                               IsHitTestVisible="False"
-                                               Visibility="{Binding ShowStartHourPlaceholder, Converter={StaticResource BoolVis}}"/>
-                                  </Grid>
-                                  <TextBlock Text=":" FontSize="18" FontWeight="SemiBold"
-                                             FontFamily="Consolas, Cascadia Mono, Courier New"
-                                             VerticalAlignment="Center" Margin="2,0"
-                                             Foreground="{StaticResource AccentBrush}"
-                                             IsHitTestVisible="False"/>
-                                  <Grid Width="36">
-                                    <TextBox Text="{Binding StartMinuteText, UpdateSourceTrigger=PropertyChanged}"
-                                             MaxLength="2"
-                                             FontSize="18" FontWeight="SemiBold"
-                                             FontFamily="Consolas, Cascadia Mono, Courier New"
-                                             TextAlignment="Center" Padding="2,2"
-                                             BorderThickness="0" Background="Transparent"
-                                             CaretBrush="{StaticResource AccentBrush}"
-                                             ToolTip="Minutes (00–59)"
-                                             Tag="StartMinute"
-                                             GotFocus="RaceStartMinute_GotFocus"
-                                             PreviewTextInput="RaceStartTimeDigit_PreviewTextInput"
-                                             PreviewKeyDown="RaceStartMinute_PreviewKeyDown"
-                                             LostFocus="RaceStartClockField_LostFocus"
-                                             KeyDown="RaceStartClockField_KeyDown"/>
-                                    <TextBlock Text="00" FontSize="18" FontWeight="SemiBold"
-                                               FontFamily="Consolas, Cascadia Mono, Courier New"
-                                               Foreground="{StaticResource MutedBrush}"
-                                               HorizontalAlignment="Center" VerticalAlignment="Center"
-                                               IsHitTestVisible="False"
-                                               Visibility="{Binding ShowStartMinutePlaceholder, Converter={StaticResource BoolVis}}"/>
-                                  </Grid>
-                                </StackPanel>
-                              </Border>
-                            </StackPanel>
-                          </DockPanel>
+              <!-- When MB on: Backup fills left; clocks stack on the right. When off: clocks center. -->
+              <Grid>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="*"/>
+                  <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <!-- Manual Backup — full remaining height on the left -->
+                <Border Grid.Column="0" Margin="0,0,8,0" Padding="8,6"
+                        Background="#FAFBFD" BorderBrush="{StaticResource LineBrush}" BorderThickness="1"
+                        CornerRadius="8" VerticalAlignment="Stretch"
+                        Visibility="{Binding ManualBackup.ShowPanel, Converter={StaticResource BoolVis}}">
+                  <DockPanel>
+                    <DockPanel DockPanel.Dock="Top" Margin="0,0,0,4" LastChildFill="True">
+                      <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                        <Button Content="Entry" Style="{StaticResource SecondaryButton}"
+                                MinHeight="26" FontSize="11" Padding="8,2" Margin="0,0,4,0"
+                                ToolTip="Open Entry Window"
+                                Click="OpenManualBackupFloat_Click"/>
+                        <Button Content="Settings" Style="{StaticResource SecondaryButton}"
+                                MinHeight="26" FontSize="11" Padding="8,2"
+                                ToolTip="Manual Backup Settings"
+                                Click="ConfigureManualBackup_Click"/>
+                      </StackPanel>
+                      <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                        <TextBlock Text="Manual Backup" FontSize="13" FontWeight="SemiBold"
+                                   VerticalAlignment="Center" Margin="0,0,10,0"/>
+                        <Border Padding="6,2" CornerRadius="3" BorderThickness="1" VerticalAlignment="Center">
+                          <Border.Style>
+                            <Style TargetType="Border">
+                              <Setter Property="Background" Value="#FDECEA"/>
+                              <Setter Property="BorderBrush" Value="{StaticResource DangerBrush}"/>
+                              <Style.Triggers>
+                                <DataTrigger Binding="{Binding ManualBackup.OpenConnected}" Value="True">
+                                  <Setter Property="Background" Value="#F3FBF6"/>
+                                  <Setter Property="BorderBrush" Value="{StaticResource SaveBrush}"/>
+                                </DataTrigger>
+                              </Style.Triggers>
+                            </Style>
+                          </Border.Style>
+                          <TextBlock Text="{Binding ManualBackup.OpenStatusText}" FontSize="10"
+                                     VerticalAlignment="Center"/>
                         </Border>
-                        <Button HorizontalAlignment="Right" VerticalAlignment="Top"
-                                Width="22" Height="22" Margin="0,2,2,0" Padding="0"
-                                FontSize="13" FontWeight="Bold" Content="×"
-                                Foreground="#C62828" Background="Transparent"
-                                BorderThickness="0" Cursor="Hand"
-                                KeyboardNavigation.IsTabStop="False"
-                                ToolTip="Delete Start Clock"
-                                Click="RemoveRaceStart_Click">
-                          <Button.Template>
-                            <ControlTemplate TargetType="Button">
-                              <Border Background="{TemplateBinding Background}"
-                                      CornerRadius="11"
-                                      Width="{TemplateBinding Width}"
-                                      Height="{TemplateBinding Height}">
-                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        <!-- Short status only (Play connection errors stay on the Alert dialog). -->
+                        <TextBlock Text="{Binding ManualBackup.Status}" FontSize="11"
+                                   Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center"
+                                   Margin="10,0,0,0" TextTrimming="CharacterEllipsis" MaxWidth="220"/>
+                      </StackPanel>
+                    </DockPanel>
+                    <!-- Horizontal only — location header / device stay put; Past scrolls inside each column. -->
+                    <ScrollViewer HorizontalScrollBarVisibility="Auto"
+                                  VerticalScrollBarVisibility="Disabled"
+                                  CanContentScroll="False">
+                      <ItemsControl ItemsSource="{Binding ManualBackup.Locations}">
+                      <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                          <StackPanel Orientation="Horizontal"/>
+                        </ItemsPanelTemplate>
+                      </ItemsControl.ItemsPanel>
+                      <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                          <Border Margin="0,0,6,0" Padding="0" CornerRadius="5" Width="230"
+                                  Background="{StaticResource CardBrush}"
+                                  BorderBrush="{StaticResource LineBrush}" BorderThickness="1"
+                                  ClipToBounds="True" VerticalAlignment="Top">
+                            <DockPanel>
+                              <!-- Sticky location header (does not scroll with Past). -->
+                              <Border DockPanel.Dock="Top" Padding="5,3" Background="#F0F3F7"
+                                      BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,0,1">
+                                <DockPanel LastChildFill="True">
+                                  <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                                    <Button Content="Play All" Style="{StaticResource PrimaryButton}"
+                                            MinHeight="22" FontSize="10" Padding="6,1" Margin="0,0,3,0"
+                                            Click="ManualBackupPlayAll_Click" Tag="{Binding Location}"/>
+                                    <Button Content="New File" Style="{StaticResource SecondaryButton}"
+                                            MinHeight="22" FontSize="10" Padding="6,1"
+                                            ToolTip="Create New File All"
+                                            Click="ManualBackupCreateAll_Click" Tag="{Binding Location}"/>
+                                  </StackPanel>
+                                  <TextBlock Text="{Binding Location}" FontWeight="SemiBold" FontSize="11"
+                                             VerticalAlignment="Center" TextWrapping="NoWrap"
+                                             Margin="0,0,4,0"/>
+                                </DockPanel>
                               </Border>
-                            </ControlTemplate>
-                          </Button.Template>
-                        </Button>
-                      </Grid>
-                    </Grid>
-                  </DataTemplate>
-                </ItemsControl.ItemTemplate>
-              </ItemsControl>
-              </ScrollViewer>
+                              <ItemsControl ItemsSource="{Binding Devices}">
+                                <ItemsControl.ItemTemplate>
+                                  <DataTemplate>
+                                    <Border Padding="4,3" BorderBrush="{StaticResource LineBrush}"
+                                            BorderThickness="0,0,0,1" ClipToBounds="True">
+                                      <DockPanel LastChildFill="True">
+                                        <Border DockPanel.Dock="Left" Width="3" Margin="0,1,4,1" CornerRadius="1"
+                                                Background="{StaticResource AccentBrush}" Opacity="0.55"/>
+                                        <TextBlock DockPanel.Dock="Left" Text="{Binding DisplayName}"
+                                                   Width="40" FontSize="10" FontWeight="SemiBold"
+                                                   VerticalAlignment="Top" Margin="0,2,4,0"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   ToolTip="{Binding DisplayName}"/>
+                                        <!-- Current sticky; Past scrolls underneath -->
+                                        <DockPanel LastChildFill="True">
+                                          <Border DockPanel.Dock="Top" DataContext="{Binding CurrentFile}"
+                                                  Padding="5,3" CornerRadius="4" Margin="0,0,0,4"
+                                                  HorizontalAlignment="Stretch">
+                                            <Border.Style>
+                                              <Style TargetType="Border">
+                                                <Setter Property="Background" Value="#F7F8FA"/>
+                                                <Setter Property="BorderBrush" Value="{StaticResource LineBrush}"/>
+                                                <Setter Property="BorderThickness" Value="1"/>
+                                                <Style.Triggers>
+                                                  <DataTrigger Binding="{Binding IsPlaying}" Value="True">
+                                                    <Setter Property="Background" Value="#E5F6EC"/>
+                                                    <Setter Property="BorderBrush" Value="{StaticResource SaveBrush}"/>
+                                                    <Setter Property="BorderThickness" Value="2"/>
+                                                    <DataTrigger.EnterActions>
+                                                      <BeginStoryboard x:Name="MbCurPlayPulse">
+                                                        <Storyboard RepeatBehavior="Forever" AutoReverse="True">
+                                                          <DoubleAnimation Storyboard.TargetProperty="Opacity"
+                                                                           From="1" To="0.42" Duration="0:0:0.55"/>
+                                                        </Storyboard>
+                                                      </BeginStoryboard>
+                                                    </DataTrigger.EnterActions>
+                                                    <DataTrigger.ExitActions>
+                                                      <StopStoryboard BeginStoryboardName="MbCurPlayPulse"/>
+                                                    </DataTrigger.ExitActions>
+                                                  </DataTrigger>
+                                                </Style.Triggers>
+                                              </Style>
+                                            </Border.Style>
+                                            <StackPanel>
+                                              <DockPanel LastChildFill="True" Margin="0,0,0,2">
+                                                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal"
+                                                            VerticalAlignment="Center" Margin="6,0,0,0">
+                                                  <Grid Width="20" Height="20" Margin="0,0,3,0">
+                                                    <Button Content="&#xE768;" Style="{StaticResource IconToolButton}"
+                                                            Width="20" Height="20" MinWidth="20" MinHeight="20"
+                                                            FontSize="10" ToolTip="Play"
+                                                            Visibility="{Binding ShowPlay, Converter={StaticResource BoolVis}}"
+                                                            Click="ManualBackupPlayFile_Click" Tag="{Binding}"/>
+                                                    <Button Content="&#xE769;" ToolTip="Pause"
+                                                            Width="20" Height="20" MinWidth="20" MinHeight="20"
+                                                            FontSize="10"
+                                                            Visibility="{Binding ShowPause, Converter={StaticResource BoolVis}}"
+                                                            Click="ManualBackupPause_Click" Tag="{Binding}">
+                                                      <Button.Style>
+                                                        <Style TargetType="Button" BasedOn="{StaticResource IconToolButton}">
+                                                          <Setter Property="Background" Value="#FDECEA"/>
+                                                          <Setter Property="BorderBrush" Value="{StaticResource DangerBrush}"/>
+                                                          <Setter Property="Foreground" Value="{StaticResource DangerBrush}"/>
+                                                          <Setter Property="Width" Value="20"/>
+                                                          <Setter Property="Height" Value="20"/>
+                                                          <Setter Property="MinWidth" Value="20"/>
+                                                          <Setter Property="MinHeight" Value="20"/>
+                                                          <Setter Property="FontSize" Value="10"/>
+                                                        </Style>
+                                                      </Button.Style>
+                                                    </Button>
+                                                  </Grid>
+                                                  <Button Content="&#xE72C;" Style="{StaticResource IconToolButton}"
+                                                          Width="20" Height="20" MinWidth="20" MinHeight="20"
+                                                          FontSize="10" ToolTip="Replay"
+                                                          Click="ManualBackupReplayFile_Click" Tag="{Binding}"/>
+                                                </StackPanel>
+                                                <TextBlock Text="{Binding Title, Mode=OneWay}" FontSize="11"
+                                                           FontWeight="SemiBold" VerticalAlignment="Center"
+                                                           TextWrapping="NoWrap"/>
+                                              </DockPanel>
+                                              <TextBlock Text="{Binding CountLabel}" FontSize="10"
+                                                         Foreground="{StaticResource MutedBrush}"/>
+                                              <TextBlock Text="{Binding FirstTapLine}" FontSize="10"
+                                                         FontFamily="Consolas" TextWrapping="NoWrap"
+                                                         Foreground="{StaticResource MutedBrush}"/>
+                                              <TextBlock Text="{Binding LastTapLine}" FontSize="10"
+                                                         FontFamily="Consolas" TextWrapping="NoWrap"
+                                                         Foreground="{StaticResource MutedBrush}"/>
+                                            </StackPanel>
+                                          </Border>
+                                          <Expander Header="{Binding PastHeader}"
+                                                    IsExpanded="{Binding PastExpanded, Mode=TwoWay}"
+                                                    FontSize="11"
+                                                    HorizontalAlignment="Stretch"
+                                                    ExpandDirection="Down"
+                                                    Visibility="{Binding HasArchives, Converter={StaticResource BoolVis}}">
+                                            <ScrollViewer MaxHeight="280"
+                                                          VerticalScrollBarVisibility="Auto"
+                                                          HorizontalScrollBarVisibility="Disabled"
+                                                          CanContentScroll="False">
+                                              <ItemsControl ItemsSource="{Binding Archives}" Margin="0,4,0,0"
+                                                            HorizontalContentAlignment="Stretch">
+                                                <ItemsControl.ItemContainerStyle>
+                                                  <Style TargetType="ContentPresenter">
+                                                    <Setter Property="HorizontalAlignment" Value="Stretch"/>
+                                                  </Style>
+                                                </ItemsControl.ItemContainerStyle>
+                                                <ItemsControl.ItemTemplate>
+                                                  <DataTemplate>
+                                                    <Border Margin="0,0,0,3" Padding="6,4" CornerRadius="3"
+                                                            Background="#F7F8FA"
+                                                            BorderBrush="{StaticResource LineBrush}" BorderThickness="1"
+                                                            HorizontalAlignment="Stretch" Opacity="0.92">
+                                                      <Border.ContextMenu>
+                                                        <ContextMenu>
+                                                          <MenuItem Header="Delete Archive"
+                                                                    Click="ManualBackupDeleteArchive_Click"
+                                                                    Tag="{Binding}"/>
+                                                        </ContextMenu>
+                                                      </Border.ContextMenu>
+                                                      <StackPanel>
+                                                        <DockPanel LastChildFill="True" Margin="0,0,0,2">
+                                                          <StackPanel DockPanel.Dock="Right" Orientation="Horizontal"
+                                                                      VerticalAlignment="Center" Margin="4,0,0,0">
+                                                            <Button Content="&#xE768;" Style="{StaticResource IconToolButton}"
+                                                                    Width="18" Height="18" MinWidth="18" MinHeight="18"
+                                                                    FontSize="9" ToolTip="Play" Margin="0,0,2,0"
+                                                                    Click="ManualBackupPlayFile_Click" Tag="{Binding}"/>
+                                                            <Button Content="&#xE72C;" Style="{StaticResource IconToolButton}"
+                                                                    Width="18" Height="18" MinWidth="18" MinHeight="18"
+                                                                    FontSize="9" ToolTip="Replay" Margin="0,0,2,0"
+                                                                    Click="ManualBackupReplayFile_Click" Tag="{Binding}"/>
+                                                            <Button Content="&#xE74D;" ToolTip="Delete Archive"
+                                                                    Click="ManualBackupDeleteArchive_Click" Tag="{Binding}">
+                                                              <Button.Style>
+                                                                <Style TargetType="Button" BasedOn="{StaticResource IconToolButton}">
+                                                                  <Setter Property="Width" Value="18"/>
+                                                                  <Setter Property="Height" Value="18"/>
+                                                                  <Setter Property="MinWidth" Value="18"/>
+                                                                  <Setter Property="MinHeight" Value="18"/>
+                                                                  <Setter Property="FontSize" Value="9"/>
+                                                                  <Setter Property="Foreground" Value="{StaticResource DangerBrush}"/>
+                                                                </Style>
+                                                              </Button.Style>
+                                                            </Button>
+                                                          </StackPanel>
+                                                          <TextBlock Text="{Binding Title, Mode=OneWay}" FontSize="10"
+                                                                     FontWeight="SemiBold" VerticalAlignment="Center"
+                                                                     TextWrapping="NoWrap"
+                                                                     Foreground="{StaticResource MutedBrush}"/>
+                                                        </DockPanel>
+                                                        <TextBlock Text="{Binding CountLabel}" FontSize="9"
+                                                                   Foreground="{StaticResource MutedBrush}"/>
+                                                        <TextBlock Text="{Binding FirstTapLine}" FontSize="9"
+                                                                   FontFamily="Consolas" TextWrapping="NoWrap"
+                                                                   Foreground="{StaticResource MutedBrush}"/>
+                                                        <TextBlock Text="{Binding LastTapLine}" FontSize="9"
+                                                                   FontFamily="Consolas" TextWrapping="NoWrap"
+                                                                   Foreground="{StaticResource MutedBrush}"/>
+                                                      </StackPanel>
+                                                    </Border>
+                                                  </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                              </ItemsControl>
+                                            </ScrollViewer>
+                                          </Expander>
+                                        </DockPanel>
+                                      </DockPanel>
+                                    </Border>
+                                  </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                              </ItemsControl>
+                            </DockPanel>
+                          </Border>
+                        </DataTemplate>
+                      </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    </ScrollViewer>
+                  </DockPanel>
+                </Border>
+
+                <!-- Clocks rail (Manual Backup on): 2-col squares -->
+                <DockPanel Grid.Column="1" Width="456" LastChildFill="True"
+                           Visibility="{Binding ManualBackup.ShowPanel, Converter={StaticResource BoolVis}}">
+                  <TextBlock DockPanel.Dock="Top" Margin="0,0,0,6" FontSize="13"
+                             HorizontalAlignment="Left">
+                    <Hyperlink Click="AddRaceStartClock_Click"
+                               Foreground="{StaticResource AccentBrush}"
+                               TextDecorations="Underline" Cursor="Hand"
+                               ToolTip="Add Start Clock">Add New Clock</Hyperlink>
+                  </TextBlock>
+                  <ItemsControl x:Name="RaceStartBoardRail"
+                                ItemsSource="{Binding RaceStartBoard}"
+                                VerticalAlignment="Stretch" HorizontalAlignment="Stretch"
+                                ClipToBounds="True"
+                                ItemTemplate="{StaticResource RaceStartClockTile}">
+                    <ItemsControl.ItemsPanel>
+                      <ItemsPanelTemplate>
+                        <ctrl:EqualSquareGridPanel Columns="2"/>
+                      </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemContainerStyle>
+                      <Style TargetType="ContentPresenter">
+                        <Setter Property="HorizontalAlignment" Value="Stretch"/>
+                        <Setter Property="VerticalAlignment" Value="Stretch"/>
+                      </Style>
+                    </ItemsControl.ItemContainerStyle>
+                  </ItemsControl>
+                </DockPanel>
+
+                <!-- Clocks center (Manual Backup off): squares shrink to fit -->
+                <DockPanel Grid.Column="0" Grid.ColumnSpan="2" LastChildFill="True"
+                           Visibility="{Binding ManualBackup.ShowPanel, Converter={StaticResource BoolVis}, ConverterParameter=invert}">
+                  <TextBlock DockPanel.Dock="Top" Margin="0,0,0,6" FontSize="13"
+                             HorizontalAlignment="Left">
+                    <Hyperlink Click="AddRaceStartClock_Click"
+                               Foreground="{StaticResource AccentBrush}"
+                               TextDecorations="Underline" Cursor="Hand"
+                               ToolTip="Add Start Clock">Add New Clock</Hyperlink>
+                  </TextBlock>
+                  <ItemsControl x:Name="RaceStartBoardList"
+                                ItemsSource="{Binding RaceStartBoard}"
+                                HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
+                                MaxWidth="1040"
+                                ClipToBounds="True"
+                                ItemTemplate="{StaticResource RaceStartClockTile}">
+                    <ItemsControl.ItemsPanel>
+                      <ItemsPanelTemplate>
+                        <ctrl:EqualSquareGridPanel Columns="4"/>
+                      </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemContainerStyle>
+                      <Style TargetType="ContentPresenter">
+                        <Setter Property="HorizontalAlignment" Value="Stretch"/>
+                        <Setter Property="VerticalAlignment" Value="Stretch"/>
+                      </Style>
+                    </ItemsControl.ItemContainerStyle>
+                  </ItemsControl>
+                </DockPanel>
+              </Grid>
           </DockPanel>
         </Border>
 
@@ -857,7 +1079,7 @@
                   <TextBox x:Name="NewEventParentNameBox"
                            Text="{Binding NewEventParentName, UpdateSourceTrigger=LostFocus}"
                            Padding="10,8" Margin="0,0,0,14" TabIndex="1"
-                           ToolTip="e.g. LRM Weekend — Tab to Year, Enter to continue"
+                           ToolTip="Name only — e.g. LRM Weekend (do not type the year). Tab to Year, Enter to continue"
                            KeyDown="NewEventParentField_KeyDown"/>
                   <TextBlock Text="Year" Margin="0,0,0,4"
                              Foreground="{StaticResource MutedBrush}" FontSize="12"/>
@@ -867,7 +1089,7 @@
                            HorizontalAlignment="Left" Width="100"
                            ToolTip="Year prefix on the Race Group folder (e.g. 2026). Enter to continue"
                            KeyDown="NewEventParentField_KeyDown"/>
-                  <TextBlock Text="Folder on disk is Year - Name (e.g. 2026 - LRM Weekend)."
+                  <TextBlock Text="App adds the year — type the name only (folder becomes e.g. 2026 - LRM Weekend)."
                              FontSize="12" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,8"/>
                   <TextBlock Text="{Binding NewEventParentFolderPreview}" TextWrapping="Wrap" FontSize="13"
                              Foreground="{StaticResource AccentBrush}"/>
@@ -911,7 +1133,7 @@
                   <TextBox x:Name="NewEventRaceNameBox"
                            Text="{Binding NewEventRaceName, UpdateSourceTrigger=LostFocus}"
                            Padding="10,8" Margin="0,0,0,14" TabIndex="1"
-                           ToolTip="Tab to Race Date. Enter moves to the next field."
+                           ToolTip="Name only — do not type the year (app adds it from Race Date). Tab to Race Date."
                            KeyDown="NewEventDetailsField_KeyDown"/>
 
                   <TextBlock Text="Race Date" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}" FontSize="12"/>
@@ -921,7 +1143,7 @@
                               HorizontalAlignment="Left" Width="220"
                               ToolTip="Used in Entries.ini (MM/DD/YYYY) and the year in the folder name. Tab to Results ID."
                               KeyDown="NewEventDetailsField_KeyDown"/>
-                  <TextBlock Text="Stored in Entries.ini as MM/DD/YYYY. Year is used in the folder name."
+                  <TextBlock Text="Stored in Entries.ini as MM/DD/YYYY. Folder year comes from this date — do not put the year in Race Name."
                              FontSize="12" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,14"/>
 
                   <TextBlock Text="%resultsid% (Race Roster)" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}" FontSize="12"/>
@@ -1249,8 +1471,8 @@
         </DockPanel>
 
         <!-- Bottom actions + status (updates / library hints) -->
-        <DockPanel Grid.Row="2" Margin="0,18,0,0" LastChildFill="True">
-          <Button DockPanel.Dock="Left" Content="Back" Style="{StaticResource SecondaryButton}"
+        <DockPanel Grid.Row="2" Margin="0,8,0,0" LastChildFill="True">
+          <Button DockPanel.Dock="Left" Content="Back" Style="{StaticResource FooterSecondaryButton}"
                   Width="120" Margin="0,0,12,0" Click="Back_Click"
                   Visibility="{Binding ShowBack, Converter={StaticResource BoolVis}}"/>
 
@@ -1262,7 +1484,7 @@
                     Visibility="{Binding IsAdminNewEventLayout, Converter={StaticResource BoolVis}}"
                     ToolTip="Enter — continue with the selected layout">
               <Button.Style>
-                <Style TargetType="Button" BasedOn="{StaticResource PrimaryButton}">
+                <Style TargetType="Button" BasedOn="{StaticResource FooterPrimaryButton}">
                   <Setter Property="IsDefault" Value="False"/>
                   <Style.Triggers>
                     <DataTrigger Binding="{Binding IsAdminNewEventLayout}" Value="True">
@@ -1276,7 +1498,7 @@
                     Visibility="{Binding IsAdminNewEventOffice, Converter={StaticResource BoolVis}}"
                     ToolTip="Enter — continue with the selected office">
               <Button.Style>
-                <Style TargetType="Button" BasedOn="{StaticResource PrimaryButton}">
+                <Style TargetType="Button" BasedOn="{StaticResource FooterPrimaryButton}">
                   <Setter Property="IsDefault" Value="False"/>
                   <Style.Triggers>
                     <DataTrigger Binding="{Binding IsAdminNewEventOffice}" Value="True">
@@ -1291,7 +1513,7 @@
                     Visibility="{Binding IsAdminNewEventParent, Converter={StaticResource BoolVis}}"
                     ToolTip="Enter — confirm Race Group name and year">
               <Button.Style>
-                <Style TargetType="Button" BasedOn="{StaticResource PrimaryButton}">
+                <Style TargetType="Button" BasedOn="{StaticResource FooterPrimaryButton}">
                   <Setter Property="IsDefault" Value="False"/>
                   <Style.Triggers>
                     <DataTrigger Binding="{Binding IsAdminNewEventParent}" Value="True">
@@ -1305,7 +1527,7 @@
                     Visibility="{Binding IsAdminNewEventSourceKind, Converter={StaticResource BoolVis}}"
                     ToolTip="Enter — continue with the selected source">
               <Button.Style>
-                <Style TargetType="Button" BasedOn="{StaticResource PrimaryButton}">
+                <Style TargetType="Button" BasedOn="{StaticResource FooterPrimaryButton}">
                   <Setter Property="IsDefault" Value="False"/>
                   <Style.Triggers>
                     <DataTrigger Binding="{Binding IsAdminNewEventSourceKind}" Value="True">
@@ -1319,7 +1541,7 @@
                     Visibility="{Binding IsAdminNewEventSource, Converter={StaticResource BoolVis}}"
                     ToolTip="Enter — continue with the selected Template or past race">
               <Button.Style>
-                <Style TargetType="Button" BasedOn="{StaticResource PrimaryButton}">
+                <Style TargetType="Button" BasedOn="{StaticResource FooterPrimaryButton}">
                   <Setter Property="IsDefault" Value="False"/>
                   <Style.Triggers>
                     <DataTrigger Binding="{Binding IsAdminNewEventSource}" Value="True">
@@ -1329,7 +1551,7 @@
                 </Style>
               </Button.Style>
             </Button>
-            <Button Content="Add Another Race to This Group" Style="{StaticResource SecondaryButton}"
+            <Button Content="Add Another Race to This Group" Style="{StaticResource FooterSecondaryButton}"
                     MinWidth="220" Margin="0,0,12,0" Click="NewEventAddAnother_Click"
                     Visibility="{Binding IsAdminNewEventGroupCreated, Converter={StaticResource BoolVis}}"
                     ToolTip="Stay in this Race Group and create the next race folder."/>
@@ -1338,7 +1560,7 @@
                     Visibility="{Binding ShowNewEventGroupCheckout, Converter={StaticResource BoolVis}}"
                     ToolTip="Enter — check out the race you just created">
               <Button.Style>
-                <Style TargetType="Button" BasedOn="{StaticResource PrimaryButton}">
+                <Style TargetType="Button" BasedOn="{StaticResource FooterPrimaryButton}">
                   <Setter Property="IsDefault" Value="False"/>
                   <Style.Triggers>
                     <DataTrigger Binding="{Binding ShowNewEventGroupCheckout}" Value="True">
@@ -1352,7 +1574,7 @@
                     Visibility="{Binding IsAdminNewEventDetails, Converter={StaticResource BoolVis}}"
                     ToolTip="Enter — create the event (from Results ID field, or when focus is not in a text box)">
               <Button.Style>
-                <Style TargetType="Button" BasedOn="{StaticResource PrimaryButton}">
+                <Style TargetType="Button" BasedOn="{StaticResource FooterPrimaryButton}">
                   <Setter Property="IsDefault" Value="False"/>
                   <Style.Triggers>
                     <DataTrigger Binding="{Binding IsAdminNewEventDetails}" Value="True">
@@ -1365,7 +1587,7 @@
             <Button Content="Save" Width="140" Click="SaveAdmin_Click"
                     Visibility="{Binding IsAdminSettings, Converter={StaticResource BoolVis}}">
               <Button.Style>
-                <Style TargetType="Button" BasedOn="{StaticResource PrimaryButton}">
+                <Style TargetType="Button" BasedOn="{StaticResource FooterPrimaryButton}">
                   <Setter Property="IsDefault" Value="False"/>
                   <Style.Triggers>
                     <DataTrigger Binding="{Binding IsAdminSettings}" Value="True">
@@ -1379,7 +1601,7 @@
                     Visibility="{Binding IsAdminEventsOffice, Converter={StaticResource BoolVis}}"
                     ToolTip="Enter — continue with the selected office">
               <Button.Style>
-                <Style TargetType="Button" BasedOn="{StaticResource PrimaryButton}">
+                <Style TargetType="Button" BasedOn="{StaticResource FooterPrimaryButton}">
                   <Setter Property="IsDefault" Value="False"/>
                   <Style.Triggers>
                     <DataTrigger Binding="{Binding IsAdminEventsOffice}" Value="True">
@@ -1393,7 +1615,7 @@
                     Visibility="{Binding IsAdminEventsSession, Converter={StaticResource BoolVis}}"
                     ToolTip="Enter — continue with the selected race">
               <Button.Style>
-                <Style TargetType="Button" BasedOn="{StaticResource PrimaryButton}">
+                <Style TargetType="Button" BasedOn="{StaticResource FooterPrimaryButton}">
                   <Setter Property="IsDefault" Value="False"/>
                   <Style.Triggers>
                     <DataTrigger Binding="{Binding IsAdminEventsSession}" Value="True">
@@ -1403,15 +1625,15 @@
                 </Style>
               </Button.Style>
             </Button>
-            <Button Content="Choose Another Event" Style="{StaticResource SecondaryButton}"
+            <Button Content="Choose Another Event" Style="{StaticResource FooterSecondaryButton}"
                     MinWidth="180" Margin="0,0,12,0" Click="AdminEventsStartOver_Click"
                     Visibility="{Binding IsAdminEventsAssign, Converter={StaticResource BoolVis}}"
                     ToolTip="Back to the office list to configure a different race."/>
-            <Button Content="Add Race to This Race Group" Style="{StaticResource SecondaryButton}"
+            <Button Content="Add Race to This Race Group" Style="{StaticResource FooterSecondaryButton}"
                     MinWidth="220" Margin="0,0,12,0" Click="AdminAddRaceToGroup_Click"
                     Visibility="{Binding ShowAddRaceToGroup, Converter={StaticResource BoolVis}}"
                     ToolTip="Create another race folder under this Race Group."/>
-            <Button Content="Move to Past Races" Style="{StaticResource SecondaryButton}"
+            <Button Content="Move to Past Races" Style="{StaticResource FooterSecondaryButton}"
                     MinWidth="180" Margin="0,0,12,0" Click="AdminMoveToPastRaces_Click"
                     Visibility="{Binding ShowMoveToPastRaces, Converter={StaticResource BoolVis}}"
                     ToolTip="Move this race (or whole Race Group) from the live office into Past Races on OneDrive."/>
@@ -1419,7 +1641,7 @@
                     Visibility="{Binding ShowAdminSaveAssignment, Converter={StaticResource BoolVis}}"
                     ToolTip="Enter — save which .event is main timing">
               <Button.Style>
-                <Style TargetType="Button" BasedOn="{StaticResource PrimaryButton}">
+                <Style TargetType="Button" BasedOn="{StaticResource FooterPrimaryButton}">
                   <Setter Property="IsDefault" Value="False"/>
                   <Style.Triggers>
                     <DataTrigger Binding="{Binding ShowAdminSaveAssignment}" Value="True">
@@ -1431,26 +1653,26 @@
             </Button>
           </StackPanel>
 
-          <Button DockPanel.Dock="Right" Content="Continue" Style="{StaticResource PrimaryButton}"
+          <Button DockPanel.Dock="Right" Content="Continue" Style="{StaticResource FooterPrimaryButton}"
                   Width="160" Margin="12,0,0,0" Click="OfficeContinue_Click"
                   Visibility="{Binding IsOfficeStep, Converter={StaticResource BoolVis}}"/>
-          <Button DockPanel.Dock="Right" Content="Continue" Style="{StaticResource PrimaryButton}"
+          <Button DockPanel.Dock="Right" Content="Continue" Style="{StaticResource FooterPrimaryButton}"
                   Width="160" Margin="12,0,0,0" Click="SessionContinue_Click"
                   Visibility="{Binding IsSessionStep, Converter={StaticResource BoolVis}}"/>
-          <Button DockPanel.Dock="Right" Content="Refresh Events" Style="{StaticResource SecondaryButton}"
+          <Button DockPanel.Dock="Right" Content="Refresh Events" Style="{StaticResource FooterSecondaryButton}"
                   Width="150" Margin="12,0,0,0" Click="RefreshSessions_Click"
                   Visibility="{Binding IsSessionStep, Converter={StaticResource BoolVis}}"
                   ToolTip="Re-list this office from OneDrive only — new events in, moved/Past Races events out."/>
-          <Button DockPanel.Dock="Right" Content="Load Event" Style="{StaticResource PrimaryButton}"
+          <Button DockPanel.Dock="Right" Content="Load Event" Style="{StaticResource FooterPrimaryButton}"
                   Width="160" Margin="12,0,0,0" Click="EventFileContinue_Click"
                   Visibility="{Binding IsEventFileStep, Converter={StaticResource BoolVis}}"/>
-          <Button DockPanel.Dock="Right" Content="Check for Updates" Style="{StaticResource SecondaryButton}"
+          <Button DockPanel.Dock="Right" Content="Check for Updates" Style="{StaticResource FooterSecondaryButton}"
                   Width="160" Margin="12,0,0,0" Click="CheckUpdates_Click"
                   Visibility="{Binding ShowCheckForUpdates, Converter={StaticResource BoolVis}}"
                   ToolTip="Download the latest S2F Race Day build when Wi‑Fi is available."/>
 
           <TextBlock Text="{Binding Status}" Foreground="{StaticResource MutedBrush}"
-                     FontSize="13" VerticalAlignment="Center" TextWrapping="Wrap"
+                     FontSize="12" VerticalAlignment="Center" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"
                      Margin="0,0,12,0"/>
         </DockPanel>
       </Grid>

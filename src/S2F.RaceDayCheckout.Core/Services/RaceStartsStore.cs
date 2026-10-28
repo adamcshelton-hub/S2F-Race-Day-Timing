@@ -67,6 +67,8 @@ public static class RaceStartsStore
             return Array.Empty<RaceStartEntry>();
 
         // Category label is optional — unlabeled clocks with start/gun still persist.
+        // Dedupe key includes gun (centiseconds). Category+HH:MM alone collapsed rapid
+        // Capture Gun Start clocks that shared an empty label and the same minute.
         return starts
             .Where(s => s is not null)
             .Select(s => new RaceStartEntry
@@ -75,11 +77,20 @@ public static class RaceStartsStore
                 StartTimeOfDay = StripToMinute(s.StartTimeOfDay),
                 GunStartTimeOfDay = s.GunStartTimeOfDay is { } gun ? StripToCentisecond(gun) : null
             })
-            .GroupBy(s => s.Category + "\0" + RaceStartClock.FormatStartHhMm(s.StartTimeOfDay), StringComparer.OrdinalIgnoreCase)
+            .GroupBy(DedupKey, StringComparer.OrdinalIgnoreCase)
             .Select(g => g.First())
             .OrderBy(s => s.StartTimeOfDay)
+            .ThenBy(s => s.GunStartTimeOfDay ?? TimeSpan.Zero)
             .ThenBy(s => s.Category, StringComparer.OrdinalIgnoreCase)
             .ToList();
+    }
+
+    private static string DedupKey(RaceStartEntry s)
+    {
+        var gun = s.GunStartTimeOfDay is { } g
+            ? RaceStartClock.FormatGunHhMmSs(g)
+            : "";
+        return s.Category + "\0" + RaceStartClock.FormatStartHhMm(s.StartTimeOfDay) + "\0" + gun;
     }
 
     private static TimeSpan StripToMinute(TimeSpan tod)

@@ -31,12 +31,12 @@ public sealed class ManualBackupPlayService
         if (!_open.IsConnected)
         {
             try { await _open.EnsureConnectedAsync(ct).ConfigureAwait(false); }
-            catch (Exception ex)
+            catch (Exception)
             {
                 return new ManualBackupPlayResult
                 {
                     Success = false,
-                    Message = "RunScore Open is not connected (" + ex.Message + "). Start RunScore External Timers (Open), then try again."
+                    Message = "RunScore Open is not connected. Start RunScore External Timers (Open), then try again."
                 };
             }
         }
@@ -118,12 +118,12 @@ public sealed class ManualBackupPlayService
         if (!_open.IsConnected)
         {
             try { await _open.EnsureConnectedAsync(ct).ConfigureAwait(false); }
-            catch (Exception ex)
+            catch (Exception)
             {
                 return new ManualBackupPlayResult
                 {
                     Success = false,
-                    Message = "RunScore Open is not connected (" + ex.Message + ")."
+                    Message = "RunScore Open is not connected. Start RunScore External Timers (Open), then try again."
                 };
             }
         }
@@ -201,5 +201,190 @@ public sealed class ManualBackupPlayService
             LinesSent = taps.Count
         };
     }
+
+    /// <summary>
+    /// Continuous Play of one device's Current until <paramref name="ct"/> is cancelled (Pause).
+    /// Sends whatever is unplayed, then keeps polling for new taps.
+    /// </summary>
+    public async Task<ManualBackupPlayResult> PlayCurrentContinuousAsync(
+        string sessionPath,
+        string location,
+        string deviceId,
+        CancellationToken ct,
+        IProgress<int>? progress = null)
+    {
+        if (!_open.IsConnected)
+        {
+            try { await _open.EnsureConnectedAsync(ct).ConfigureAwait(false); }
+            catch (Exception)
+            {
+                return new ManualBackupPlayResult
+                {
+                    Success = false,
+                    Message = "RunScore Open is not connected. Start RunScore External Timers (Open), then try again."
+                };
+            }
+        }
+
+        _store.SetPaused(sessionPath, location, deviceId, false);
+        var total = 0;
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                var state = _store.LoadOrCreateDevice(sessionPath, location, deviceId, deviceId);
+                var all = _store.ReadCurrentTaps(sessionPath, location, deviceId);
+                var batch = all.Skip(state.PlayCursor).Where(t => !t.Voided).ToList();
+                if (batch.Count > 0)
+                {
+                    var lines = batch.Select(t =>
+                        RunScoreOpenClient.FormatRsbi(
+                            t.Bib,
+                            ManualBackupStore.FormatTodLocal(t.TimestampUtc),
+                            location)).ToList();
+                    try
+                    {
+                        await _open.SendLinesAsync(lines, ct).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        return new ManualBackupPlayResult
+                        {
+                            Success = false,
+                            Message = "Play failed: " + ex.Message,
+                            LinesSent = total
+                        };
+                    }
+
+                    _store.SetPlayCursor(sessionPath, location, deviceId, all.Count);
+                    total += batch.Count;
+                    progress?.Report(total);
+                }
+
+                await Task.Delay(ContinuousPollInterval, ct).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            /* Pause */
+        }
+
+        return new ManualBackupPlayResult
+        {
+            Success = true,
+            Message = total > 0
+                ? "Paused — played " + total.ToString(System.Globalization.CultureInfo.InvariantCulture) + " time(s)."
+                : "Paused.",
+            LinesSent = total
+        };
+    }
+
+    /// <summary>
+    /// Continuous Play All for a location until Pause — polls every device Current for new taps.
+    /// </summary>
+    public async Task<ManualBackupPlayResult> PlayAllContinuousAsync(
+        string sessionPath,
+        string location,
+        CancellationToken ct,
+        IProgress<int>? progress = null)
+    {
+        if (!_open.IsConnected)
+        {
+            try { await _open.EnsureConnectedAsync(ct).ConfigureAwait(false); }
+            catch (Exception)
+            {
+                return new ManualBackupPlayResult
+                {
+                    Success = false,
+                    Message = "RunScore Open is not connected. Start RunScore External Timers (Open), then try again."
+                };
+            }
+        }
+
+        var total = 0;
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                var deviceIds = _store.ListDeviceIds(sessionPath, location);
+                var batch = new List<(ManualBackupTap Tap, string DeviceId, int SnapshotCount)>();
+                foreach (var deviceId in deviceIds)
+                {
+                    var state = _store.LoadOrCreateDevice(sessionPath, location, deviceId, deviceId);
+                    if (state.Paused)
+                        continue;
+                    var taps = _store.ReadCurrentTaps(sessionPath, location, deviceId);
+                    for (var i = state.PlayCursor; i < taps.Count; i++)
+                    {
+                        var t = taps[i];
+                        if (t.Voided)
+                            continue;
+                        batch.Add((t, deviceId, taps.Count));
+                    }
+                }
+
+                if (batch.Count > 0)
+                {
+                    var ordered = batch
+                        .OrderBy(x => x.Tap.TimestampUtc)
+                        .ThenBy(x => x.Tap.Id, StringComparer.Ordinal)
+                        .ToList();
+                    var lines = ordered.Select(x =>
+                        RunScoreOpenClient.FormatRsbi(
+                            x.Tap.Bib,
+                            ManualBackupStore.FormatTodLocal(x.Tap.TimestampUtc),
+                            location)).ToList();
+                    try
+                    {
+                        await _open.SendLinesAsync(lines, ct).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        return new ManualBackupPlayResult
+                        {
+                            Success = false,
+                            Message = "Play failed: " + ex.Message,
+                            LinesSent = total
+                        };
+                    }
+
+                    foreach (var group in batch.GroupBy(x => x.DeviceId, StringComparer.OrdinalIgnoreCase))
+                    {
+                        var snap = group.Max(x => x.SnapshotCount);
+                        _store.SetPlayCursor(sessionPath, location, group.Key, snap);
+                    }
+
+                    total += ordered.Count;
+                    progress?.Report(total);
+                }
+
+                await Task.Delay(ContinuousPollInterval, ct).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            /* Pause */
+        }
+
+        return new ManualBackupPlayResult
+        {
+            Success = true,
+            Message = total > 0
+                ? "Paused — played " + total.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                    + " time(s) for " + location + "."
+                : "Paused for " + location + ".",
+            LinesSent = total
+        };
+    }
+
+    private static readonly TimeSpan ContinuousPollInterval = TimeSpan.FromMilliseconds(500);
 }
 

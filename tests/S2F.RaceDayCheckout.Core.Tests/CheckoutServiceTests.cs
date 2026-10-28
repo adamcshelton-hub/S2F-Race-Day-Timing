@@ -707,6 +707,10 @@ public class CheckoutServiceTests
             string librarySessionPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
             Task.FromResult(new CloudSyncResult { Success = true });
 
+        public virtual Task<CloudSyncResult> DeleteLibraryFileAsync(
+            string localFilePath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new CloudSyncResult { Success = true });
+
         public virtual Task<CloudSyncResult> ClearRemoteFolderAsync(
             string localFolderPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
             Task.FromResult(new CloudSyncResult { Success = true });
@@ -1520,6 +1524,10 @@ public class CheckoutServiceTests
 
         public Task<CloudSyncResult> DownloadCheckoutLockAsync(
             string librarySessionPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new CloudSyncResult { Success = true });
+
+        public Task<CloudSyncResult> DeleteLibraryFileAsync(
+            string localFilePath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
             Task.FromResult(new CloudSyncResult { Success = true });
 
         public Task<CloudSyncResult> ClearRemoteFolderAsync(

@@ -59,6 +59,25 @@ public class EntriesIniServiceTests
             EntriesIniService.BuildSessionFolderName("Le Bonheur Pumpkin Run", "10/17/2026"));
     }
 
+    [Theory]
+    [InlineData("2026 - Le Bonheur Pumpkin Run", "10/17/2026", "2026 - Le Bonheur Pumpkin Run")]
+    [InlineData("2026-Le Bonheur Pumpkin Run", "10/17/2026", "2026 - Le Bonheur Pumpkin Run")]
+    [InlineData("2025 - Old Habit Name", "10/17/2026", "2026 - Old Habit Name")]
+    [InlineData("  2026  -  Spaced  ", "01/01/2026", "2026 - Spaced")]
+    public void BuildSessionFolderName_DoesNotDoubleYearPrefix(string typed, string date, string expected)
+    {
+        Assert.Equal(expected, EntriesIniService.BuildSessionFolderName(typed, date));
+    }
+
+    [Theory]
+    [InlineData("2026 - LRM Weekend", "LRM Weekend")]
+    [InlineData("LRM Weekend", "LRM Weekend")]
+    [InlineData("2026-LRM Weekend", "LRM Weekend")]
+    public void StripLeadingYearPrefix_RemovesHabitPrefix(string input, string expected)
+    {
+        Assert.Equal(expected, EntriesIniService.StripLeadingYearPrefix(input));
+    }
+
     [Fact]
     public void Write_RoundTripsFile()
     {

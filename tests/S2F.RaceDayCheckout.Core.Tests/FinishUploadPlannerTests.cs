@@ -210,6 +210,43 @@ public class FinishUploadPlannerTests
         }
     }
 
+    [Fact]
+    public void ManualBackup_PlanThenMirror_LibraryHasArchiveForGraphPut()
+    {
+        // Finish: Plan while Prior is Active-only, then Mirror so Library can upload that path.
+        var root = Path.Combine(Path.GetTempPath(), "s2f-finish-mb-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var library = Path.Combine(root, "Library", "Race");
+            var active = Path.Combine(root, "Active", "Race");
+            SeedIdenticalPack(library, active);
+
+            var store = new ManualBackupStore();
+            store.SaveManifest(active, new ManualBackupManifest
+            {
+                Enabled = true,
+                Locations = { "Finish" }
+            });
+            store.AppendTap(active, "Finish", "dev-a", "Phone", "101");
+            var archive = store.CreateNewFile(active, "Finish", "dev-a");
+            Assert.False(string.IsNullOrEmpty(archive));
+
+            var planned = FinishUploadPlanner.PlanUploadRelativePaths(MakeCheckout(active, library));
+            Assert.Contains(planned, p => p.Contains(archive!, StringComparison.OrdinalIgnoreCase));
+
+            ManualBackupStore.MirrorTree(active, library);
+            var libArchive = Path.Combine(store.GetDeviceDir(library, "Finish", "dev-a"), archive!);
+            Assert.True(File.Exists(libArchive));
+            Assert.Contains(
+                FinishUploadPlanner.ExistingLibraryRelativePaths(library, planned),
+                p => p.Contains(archive!, StringComparison.OrdinalIgnoreCase));
+        }
+        finally
+        {
+            TryDelete(root);
+        }
+    }
+
     private static ActiveCheckout MakeCheckout(string active, string library) =>
         new()
         {

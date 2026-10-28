@@ -199,8 +199,39 @@ public sealed class ManualBackupStore
             CreatedUtc = DateTimeOffset.UtcNow
         };
         var line = JsonSerializer.Serialize(tap, LineOpts) + "\n";
-        File.AppendAllText(Path.Combine(dir, CurrentFileName), line, Encoding.UTF8);
+        // Shared write + retry: Graph upload / SoftPull may hold current.jsonl during rapid entry.
+        AppendTextShared(Path.Combine(dir, CurrentFileName), line);
         return tap;
+    }
+
+    /// <summary>
+    /// Append with <see cref="FileShare.ReadWrite"/> so mid-race upload/read does not block bib entry.
+    /// Retries brief sharing violations (rapid Submit while publish is in flight).
+    /// </summary>
+    private static void AppendTextShared(string path, string text)
+    {
+        const int maxAttempts = 10;
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            try
+            {
+                using var fs = new FileStream(
+                    path,
+                    FileMode.Append,
+                    FileAccess.Write,
+                    FileShare.ReadWrite,
+                    bufferSize: 4096,
+                    FileOptions.WriteThrough);
+                var bytes = Encoding.UTF8.GetBytes(text);
+                fs.Write(bytes, 0, bytes.Length);
+                fs.Flush(flushToDisk: true);
+                return;
+            }
+            catch (IOException) when (attempt < maxAttempts)
+            {
+                Thread.Sleep(15 * attempt);
+            }
+        }
     }
 
     public bool TryVoidTap(string sessionPath, string location, string deviceId, string tapId)
@@ -236,17 +267,27 @@ public sealed class ManualBackupStore
         var list = new List<ManualBackupTap>();
         if (!File.Exists(path))
             return list;
-        foreach (var line in File.ReadLines(path))
+        try
         {
-            if (string.IsNullOrWhiteSpace(line))
-                continue;
-            try
+            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var sr = new StreamReader(fs, Encoding.UTF8);
+            string? line;
+            while ((line = sr.ReadLine()) is not null)
             {
-                var tap = JsonSerializer.Deserialize<ManualBackupTap>(line, LineOpts);
-                if (tap is not null)
-                    list.Add(tap);
+                if (string.IsNullOrWhiteSpace(line))
+                    continue;
+                try
+                {
+                    var tap = JsonSerializer.Deserialize<ManualBackupTap>(line, LineOpts);
+                    if (tap is not null)
+                        list.Add(tap);
+                }
+                catch { /* skip bad line */ }
             }
-            catch { /* skip bad line */ }
+        }
+        catch (IOException)
+        {
+            // Sharing race — treat as empty for this refresh; next Reload sees taps.
         }
         return list;
     }
@@ -259,11 +300,44 @@ public sealed class ManualBackupStore
             foreach (var t in taps)
                 sw.WriteLine(JsonSerializer.Serialize(t, LineOpts));
         }
-        File.Copy(tmp, path, overwrite: true);
+        // Replace with shared open so a concurrent Append/upload can retry instead of hard-fail.
+        for (var attempt = 1; attempt <= 8; attempt++)
+        {
+            try
+            {
+                using (var src = new FileStream(tmp, FileMode.Open, FileAccess.Read, FileShare.Read))
+                using (var dst = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.ReadWrite))
+                    src.CopyTo(dst);
+                break;
+            }
+            catch (IOException) when (attempt < 8)
+            {
+                Thread.Sleep(15 * attempt);
+            }
+        }
         try { File.Delete(tmp); } catch { /* ignore */ }
     }
 
-    /// <summary>Archive current.jsonl → {utcStamp}.jsonl and start empty current; reset play cursor.</summary>
+    /// <summary>
+    /// True when <c>current.jsonl</c> has bytes to archive (avoids empty Prior files).
+    /// </summary>
+    public bool HasCurrentContent(string sessionPath, string location, string deviceId)
+    {
+        var currentPath = Path.Combine(GetDeviceDir(sessionPath, location, deviceId), CurrentFileName);
+        try
+        {
+            return File.Exists(currentPath) && new FileInfo(currentPath).Length > 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Archive current.jsonl → {utcStamp}.jsonl and start empty current; reset play cursor.
+    /// No-op (returns null) when Current is empty — does not create empty archive files.
+    /// </summary>
     public string? CreateNewFile(string sessionPath, string location, string deviceId)
     {
         var dir = GetDeviceDir(sessionPath, location, deviceId);
@@ -271,23 +345,21 @@ public sealed class ManualBackupStore
         var currentPath = Path.Combine(dir, CurrentFileName);
         EnsureCurrentFile(dir);
 
-        string? archiveName = null;
-        if (File.Exists(currentPath) && new FileInfo(currentPath).Length > 0)
+        if (!File.Exists(currentPath) || new FileInfo(currentPath).Length == 0)
+            return null;
+
+        var archiveName = DateTime.UtcNow.ToString("yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture) + ".jsonl";
+        var dest = Path.Combine(dir, archiveName);
+        var n = 0;
+        while (File.Exists(dest))
         {
-            archiveName = DateTime.UtcNow.ToString("yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture) + ".jsonl";
-            var dest = Path.Combine(dir, archiveName);
-            // Avoid clobber if same second.
-            var n = 0;
-            while (File.Exists(dest))
-            {
-                n++;
-                archiveName = DateTime.UtcNow.ToString("yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture)
-                    + "-" + n.ToString(CultureInfo.InvariantCulture) + ".jsonl";
-                dest = Path.Combine(dir, archiveName);
-            }
-            File.Copy(currentPath, dest, overwrite: false);
+            n++;
+            archiveName = DateTime.UtcNow.ToString("yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture)
+                + "-" + n.ToString(CultureInfo.InvariantCulture) + ".jsonl";
+            dest = Path.Combine(dir, archiveName);
         }
 
+        File.Copy(currentPath, dest, overwrite: false);
         File.WriteAllText(currentPath, "");
         var state = LoadOrCreateDevice(sessionPath, location, deviceId, deviceId);
         state.PlayCursor = 0;
@@ -295,6 +367,10 @@ public sealed class ManualBackupStore
         return archiveName;
     }
 
+    /// <summary>
+    /// Create New File for every device that has Current content. Skips empty Currents.
+    /// Returns how many devices were archived.
+    /// </summary>
     public int CreateNewFileAll(string sessionPath)
     {
         var manifest = LoadManifest(sessionPath);
@@ -304,32 +380,178 @@ public sealed class ManualBackupStore
         var count = 0;
         foreach (var loc in manifest.Locations)
         {
-            var locName = SanitizeLocation(loc);
-            var locDir = Path.Combine(GetRoot(sessionPath), locName);
-            if (!Directory.Exists(locDir))
-                continue;
-
-            foreach (var deviceDir in Directory.EnumerateDirectories(locDir))
+            foreach (var deviceId in ListDeviceIds(sessionPath, loc))
             {
-                var deviceId = Path.GetFileName(deviceDir);
-                CreateNewFile(sessionPath, loc, deviceId);
-                count++;
-            }
-
-            // Also rotate devices known in manifest that have no folder yet (creates empty current).
-            foreach (var d in manifest.Devices)
-            {
-                var dir = GetDeviceDir(sessionPath, loc, d.DeviceId);
-                if (!Directory.Exists(dir))
-                {
-                    LoadOrCreateDevice(sessionPath, loc, d.DeviceId, d.DisplayName);
-                    CreateNewFile(sessionPath, loc, d.DeviceId);
+                if (CreateNewFile(sessionPath, loc, deviceId) is not null)
                     count++;
-                }
             }
         }
 
         return count;
+    }
+
+    /// <summary>
+    /// Archive this device's non-empty Currents only (Manual Backup Laptop Done → Past for Timing Play).
+    /// </summary>
+    public int CreateNewFileForDevice(string sessionPath, string deviceId)
+    {
+        if (string.IsNullOrWhiteSpace(deviceId))
+            return 0;
+        var manifest = LoadManifest(sessionPath);
+        if (!manifest.Enabled || manifest.Locations.Count == 0)
+            return 0;
+
+        var count = 0;
+        foreach (var loc in manifest.Locations)
+        {
+            if (CreateNewFile(sessionPath, loc, deviceId) is not null)
+                count++;
+        }
+
+        return count;
+    }
+
+    /// <summary>
+    /// Delete one Prior archive (<c>*.jsonl</c> other than Current). Returns false for Current / missing.
+    /// </summary>
+    public bool DeleteArchiveFile(string sessionPath, string location, string deviceId, string fileName)
+    {
+        if (string.IsNullOrWhiteSpace(fileName)
+            || string.Equals(fileName, CurrentFileName, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var safe = Path.GetFileName(fileName.Trim());
+        if (string.IsNullOrWhiteSpace(safe)
+            || !safe.EndsWith(".jsonl", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var path = Path.Combine(GetDeviceDir(sessionPath, location, deviceId), safe);
+        if (!File.Exists(path))
+            return false;
+        File.Delete(path);
+        return true;
+    }
+
+    /// <summary>
+    /// Remove Prior archives that are byte-identical to a sibling (dual Active/Library rotate leftovers).
+    /// Keeps the newest stamp name. Returns how many files were deleted.
+    /// </summary>
+    public int DeduplicateIdenticalArchives(string sessionPath)
+    {
+        var manifest = LoadManifest(sessionPath);
+        if (!manifest.Enabled || manifest.Locations.Count == 0)
+            return 0;
+
+        var removed = 0;
+        foreach (var loc in manifest.Locations)
+        {
+            foreach (var deviceId in ListDeviceIds(sessionPath, loc))
+            {
+                var dir = GetDeviceDir(sessionPath, loc, deviceId);
+                if (!Directory.Exists(dir))
+                    continue;
+
+                var archives = Directory.EnumerateFiles(dir, "*.jsonl")
+                    .Where(f => !string.Equals(Path.GetFileName(f), CurrentFileName, StringComparison.OrdinalIgnoreCase))
+                    .OrderByDescending(f => Path.GetFileName(f), StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                if (archives.Count < 2)
+                    continue;
+
+                var seen = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var path in archives)
+                {
+                    string hash;
+                    try
+                    {
+                        var len = new FileInfo(path).Length;
+                        hash = len.ToString(CultureInfo.InvariantCulture) + ":"
+                            + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(path)));
+                    }
+                    catch
+                    {
+                        continue;
+                    }
+
+                    if (seen.Add(hash))
+                        continue;
+                    try
+                    {
+                        File.Delete(path);
+                        removed++;
+                    }
+                    catch { /* soft */ }
+                }
+            }
+        }
+
+        return removed;
+    }
+
+    /// <summary>Copy <c>._checkin/manual_backup</c> Library → Active (checkout seed).</summary>
+    public static void MirrorTree(string sourceSessionPath, string destSessionPath)
+    {
+        if (string.IsNullOrWhiteSpace(sourceSessionPath)
+            || string.IsNullOrWhiteSpace(destSessionPath)
+            || string.Equals(sourceSessionPath, destSessionPath, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        var src = GetRoot(sourceSessionPath);
+        if (!Directory.Exists(src))
+            return;
+
+        var dest = GetRoot(destSessionPath);
+        Directory.CreateDirectory(dest);
+        foreach (var file in Directory.EnumerateFiles(src, "*", SearchOption.AllDirectories))
+        {
+            var rel = Path.GetRelativePath(src, file);
+            var target = Path.Combine(dest, rel);
+            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+            File.Copy(file, target, overwrite: true);
+        }
+    }
+
+    /// <summary>
+    /// Soft-merge MB tree (Library → Active after phone SoftPull). Never shrink jsonl,
+    /// never overwrite existing <c>device.json</c> (Timing PlayCursor must stay local).
+    /// </summary>
+    public static void MergeTreePreferLongerJsonl(string sourceSessionPath, string destSessionPath)
+    {
+        if (string.IsNullOrWhiteSpace(sourceSessionPath)
+            || string.IsNullOrWhiteSpace(destSessionPath)
+            || string.Equals(sourceSessionPath, destSessionPath, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        var src = GetRoot(sourceSessionPath);
+        if (!Directory.Exists(src))
+            return;
+
+        var destRoot = GetRoot(destSessionPath);
+        Directory.CreateDirectory(destRoot);
+        foreach (var file in Directory.EnumerateFiles(src, "*", SearchOption.AllDirectories))
+        {
+            var rel = Path.GetRelativePath(src, file);
+            var target = Path.Combine(destRoot, rel);
+            var name = Path.GetFileName(file);
+            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+
+            if (string.Equals(name, DeviceFileName, StringComparison.OrdinalIgnoreCase)
+                && File.Exists(target))
+                continue;
+
+            if (File.Exists(target)
+                && name.EndsWith(".jsonl", StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    if (new FileInfo(target).Length >= new FileInfo(file).Length)
+                        continue;
+                }
+                catch { /* copy below */ }
+            }
+
+            File.Copy(file, target, overwrite: true);
+        }
     }
 
     public IReadOnlyList<string> ListArchiveFiles(string sessionPath, string location, string deviceId)
@@ -337,9 +559,10 @@ public sealed class ManualBackupStore
         var dir = GetDeviceDir(sessionPath, location, deviceId);
         if (!Directory.Exists(dir))
             return Array.Empty<string>();
+        // Newest first (UTC stamp in filename sorts lexicographically).
         return Directory.EnumerateFiles(dir, "*.jsonl")
             .Where(f => !string.Equals(Path.GetFileName(f), CurrentFileName, StringComparison.OrdinalIgnoreCase))
-            .OrderBy(f => f, StringComparer.OrdinalIgnoreCase)
+            .OrderByDescending(f => Path.GetFileName(f), StringComparer.OrdinalIgnoreCase)
             .Select(Path.GetFileName)
             .Where(n => n is not null)
             .Cast<string>()
@@ -494,6 +717,75 @@ public sealed class ManualBackupStore
             cs);
     }
 
+    /// <summary>
+    /// Friendly chip label for archived <c>yyyyMMddTHHmmssZ.jsonl</c> files (not the raw filename).
+    /// Same calendar day → time only; older → date + time (year when not this year).
+    /// </summary>
+    public static string FormatArchiveDisplayName(string? fileName, DateTimeOffset? nowLocal = null)
+    {
+        if (string.IsNullOrWhiteSpace(fileName))
+            return "—";
+
+        var stem = Path.GetFileNameWithoutExtension(fileName.Trim());
+        // Strip optional -N collision suffix: 20261028T170056Z-1
+        var dash = stem.LastIndexOf('-');
+        if (dash > 0 && dash < stem.Length - 1 && stem[(dash + 1)..].All(char.IsDigit))
+            stem = stem[..dash];
+
+        if (DateTime.TryParseExact(
+                stem,
+                "yyyyMMdd'T'HHmmss'Z'",
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                out var utc))
+        {
+            var local = utc.ToLocalTime();
+            var today = (nowLocal ?? DateTimeOffset.Now).Date;
+            if (local.Date == today)
+                return local.ToString("h:mm tt", CultureInfo.CurrentCulture);
+            if (local.Year == today.Year)
+                return local.ToString("MMM d · h:mm tt", CultureInfo.CurrentCulture);
+            return local.ToString("MMM d, yyyy · h:mm tt", CultureInfo.CurrentCulture);
+        }
+
+        return "—";
+    }
+
+    /// <summary>
+    /// First / last non-voided tap lines for a file chip
+    /// (<c>First  h:mm:ss tt</c> / <c>Last  …</c>). Bib is omitted — too noisy on the chip.
+    /// Empty file → <c>First —</c> / <c>Last —</c>.
+    /// </summary>
+    public static (string FirstLine, string LastLine) FormatFirstLastTapLines(
+        IReadOnlyList<ManualBackupTap> taps)
+    {
+        if (taps is null || taps.Count == 0)
+            return ("First —", "Last —");
+
+        ManualBackupTap? first = null;
+        ManualBackupTap? last = null;
+        foreach (var t in taps)
+        {
+            if (t.Voided || string.IsNullOrWhiteSpace(t.Bib))
+                continue;
+            first ??= t;
+            last = t;
+        }
+
+        if (first is null)
+            return ("First —", "Last —");
+
+        last ??= first;
+        return (FormatTapChipLine("First", first), FormatTapChipLine("Last", last));
+    }
+
+    public static string FormatTapChipLine(string label, ManualBackupTap tap)
+    {
+        var local = tap.TimestampUtc.ToLocalTime();
+        return label + "  "
+            + local.ToString("h:mm:ss tt", CultureInfo.CurrentCulture);
+    }
+
     public static string GetStableWindowsDeviceId()
     {
         var machine = Environment.MachineName;
@@ -505,6 +797,6 @@ public sealed class ManualBackupStore
     }
 
     public static string GetWindowsDeviceDisplayName() =>
-        "Laptop · " + Environment.MachineName;
+        Environment.MachineName;
 }
 

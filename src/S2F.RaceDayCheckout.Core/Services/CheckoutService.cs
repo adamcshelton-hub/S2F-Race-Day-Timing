@@ -335,9 +335,38 @@ public sealed class CheckoutService
         };
         _activeStore.Save(active);
 
-        // Manual Backup: archive pre-race Currents so Play All starts clean (enabled sessions only).
-        TryRotateManualBackup(active.ActivePath);
-        TryRotateManualBackup(active.LibrarySessionPath);
+        // Manual Backup: Create New File once on Library (when Current has taps), then mirror
+        // Library → Active. Rotating both trees made twin Priors (same taps, 1:29 + 1:33 chips).
+        // Skip on reclaim — mid-race taps must stay.
+        if (!reclaim)
+        {
+            TryRotateManualBackup(active.LibrarySessionPath);
+            try
+            {
+                ManualBackupStore.MirrorTree(active.LibrarySessionPath, active.ActivePath);
+                new ManualBackupStore().DeduplicateIdenticalArchives(active.LibrarySessionPath);
+                new ManualBackupStore().DeduplicateIdenticalArchives(active.ActivePath);
+            }
+            catch { /* soft */ }
+
+            if (useGraph)
+            {
+                try
+                {
+                    var mbRoot = ManualBackupStore.GetRoot(active.LibrarySessionPath);
+                    if (Directory.Exists(mbRoot))
+                    {
+                        await _cloud.UploadFolderAsync(
+                            mbRoot,
+                            request.Settings.LibraryRoot,
+                            request.Settings.GraphDriveRoot,
+                            status: null,
+                            cancellationToken).ConfigureAwait(false);
+                    }
+                }
+                catch { /* soft — local rotate still stands */ }
+            }
+        }
 
         // Soft: always re-pull vendor secrets (tiny GET) before SOP pin so rotated OneDrive
         // credentials apply. Admin RaceRoster/RunSignUp overrides still win at pin time.
@@ -866,14 +895,40 @@ public sealed class CheckoutService
         // Copy every Active *.event to Library (primary + announcer/video secondaries).
         var activeEventNames = EventFileSelector.ListEventFiles(active.ActivePath);
 
-        // Manual Backup: rotate Currents so post-Finish mobile taps land in a new file.
+        // Manual Backup: seal non-empty Active Currents into Prior (once). Plan while Active-only,
+        // then mirror Active → Library for Graph PUT. Never rotate Library separately — that
+        // twin-Prior bug (same taps, two chips). Dedupe identical archives left from older builds.
+        try
+        {
+            new ManualBackupStore().DeduplicateIdenticalArchives(active.ActivePath);
+            new ManualBackupStore().DeduplicateIdenticalArchives(active.LibrarySessionPath);
+        }
+        catch { /* soft */ }
         TryRotateManualBackup(active.ActivePath);
-        TryRotateManualBackup(active.LibrarySessionPath);
 
         // Diff Active vs Library BEFORE finish:copy — download/checkout timestamps must not
         // drive Graph upload (that was uploading ~100 unchanged RUNSCORE files).
         // Union with any pending paths from a prior Graph fail (Active≈Library on retry).
         var uploadRelativePaths = FinishUploadPlanner.PlanUploadRelativePaths(active).ToList();
+
+        try
+        {
+            ManualBackupStore.MirrorTree(active.ActivePath, active.LibrarySessionPath);
+            new ManualBackupStore().DeduplicateIdenticalArchives(active.ActivePath);
+            new ManualBackupStore().DeduplicateIdenticalArchives(active.LibrarySessionPath);
+            // Drop MB paths removed by dedupe (would "fail" as missing on Library).
+            var mbPrefix = Path.Combine(PathService.AppMetaFolderName, ManualBackupStore.FolderName);
+            uploadRelativePaths = uploadRelativePaths
+                .Where(rel =>
+                {
+                    var norm = FinishUploadPlanner.NormalizeRelative(rel);
+                    if (!norm.StartsWith(mbPrefix, StringComparison.OrdinalIgnoreCase))
+                        return true;
+                    return File.Exists(Path.Combine(active.LibrarySessionPath, norm));
+                })
+                .ToList();
+        }
+        catch { /* soft — Graph may still fail that path; RetainActive keeps retry */ }
 
         // Write-back on-site race starts into the pack so next checkout / next-year copy keeps them.
         _paths.EnsureAppMetaFolder(active.LibrarySessionPath);
@@ -1451,7 +1506,8 @@ public sealed class CheckoutService
     }
 
     /// <summary>
-    /// When Mobile Backup is enabled, archive every device Current (Create New File All). Soft — never fails checkout/Finish.
+    /// When Mobile Backup is enabled, archive every non-empty Current (Create New File All).
+    /// Soft — never fails checkout/Finish. Skips empty Currents (no empty Prior files).
     /// </summary>
     private static void TryRotateManualBackup(string? sessionPath)
     {

@@ -9,6 +9,7 @@ namespace S2F.RaceDayCheckout.Core.Services;
 public sealed class RunScoreOpenClient : IAsyncDisposable
 {
     private readonly object _gate = new();
+    private readonly SemaphoreSlim _io = new(1, 1);
     private TcpClient? _client;
     private NetworkStream? _stream;
     private CancellationTokenSource? _probeCts;
@@ -22,7 +23,7 @@ public sealed class RunScoreOpenClient : IAsyncDisposable
         get
         {
             lock (_gate)
-                return _client is { Connected: true };
+                return IsSocketAliveUnlocked();
         }
     }
 
@@ -43,7 +44,12 @@ public sealed class RunScoreOpenClient : IAsyncDisposable
                 }
                 catch
                 {
-                    Disconnect();
+                    // Drop stale handle so the next probe / Play reconnects cleanly.
+                    if (await _io.WaitAsync(0).ConfigureAwait(false))
+                    {
+                        try { DisconnectUnlocked(); }
+                        finally { _io.Release(); }
+                    }
                 }
 
                 try
@@ -69,45 +75,71 @@ public sealed class RunScoreOpenClient : IAsyncDisposable
 
     public async Task EnsureConnectedAsync(CancellationToken ct = default)
     {
-        lock (_gate)
+        await _io.WaitAsync(ct).ConfigureAwait(false);
+        try
         {
-            if (_client is { Connected: true } && _stream is not null)
-                return;
+            await EnsureConnectedUnlockedAsync(ct).ConfigureAwait(false);
         }
-
-        Disconnect();
-        var client = new TcpClient();
-        using var reg = ct.Register(() =>
+        finally
         {
-            try { client.Close(); } catch { /* ignore */ }
-        });
-        await client.ConnectAsync(Host, Port, ct).ConfigureAwait(false);
-        var stream = client.GetStream();
-        lock (_gate)
-        {
-            _client = client;
-            _stream = stream;
+            _io.Release();
         }
     }
 
     public async Task SendLinesAsync(IEnumerable<string> lines, CancellationToken ct = default)
     {
-        await EnsureConnectedAsync(ct).ConfigureAwait(false);
-        NetworkStream stream;
-        lock (_gate)
-        {
-            stream = _stream ?? throw new InvalidOperationException("RunScore Open is not connected.");
-        }
+        var list = lines as IList<string> ?? lines.ToList();
+        if (list.Count == 0)
+            return;
 
-        foreach (var raw in lines)
+        await _io.WaitAsync(ct).ConfigureAwait(false);
+        try
         {
-            ct.ThrowIfCancellationRequested();
-            var line = EnsureMinLength(raw.TrimEnd('\r', '\n')) + "\r\n";
-            var bytes = Encoding.ASCII.GetBytes(line);
-            await stream.WriteAsync(bytes, ct).ConfigureAwait(false);
-        }
+            Exception? last = null;
+            for (var attempt = 0; attempt < 2; attempt++)
+            {
+                ct.ThrowIfCancellationRequested();
+                try
+                {
+                    if (attempt > 0)
+                        DisconnectUnlocked();
 
-        await stream.FlushAsync(ct).ConfigureAwait(false);
+                    await EnsureConnectedUnlockedAsync(ct).ConfigureAwait(false);
+                    NetworkStream stream;
+                    lock (_gate)
+                    {
+                        stream = _stream
+                            ?? throw new InvalidOperationException("RunScore Open is not connected.");
+                    }
+
+                    foreach (var raw in list)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        var line = EnsureMinLength(raw.TrimEnd('\r', '\n')) + "\r\n";
+                        var bytes = Encoding.ASCII.GetBytes(line);
+                        await stream.WriteAsync(bytes, ct).ConfigureAwait(false);
+                    }
+
+                    await stream.FlushAsync(ct).ConfigureAwait(false);
+                    return;
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex) when (attempt == 0 && IsTransientTransportFailure(ex))
+                {
+                    last = ex;
+                    DisconnectUnlocked();
+                }
+            }
+
+            throw last ?? new IOException("RunScore Open send failed.");
+        }
+        finally
+        {
+            _io.Release();
+        }
     }
 
     /// <summary>Format one Open bib+TOD+location line (RSBI).</summary>
@@ -127,6 +159,51 @@ public sealed class RunScoreOpenClient : IAsyncDisposable
 
     public void Disconnect()
     {
+        if (!_io.Wait(0))
+        {
+            // Play holds the IO lock — force-close sockets; Play will see the abort and retry.
+            lock (_gate)
+                DisconnectUnlocked();
+            return;
+        }
+
+        try
+        {
+            DisconnectUnlocked();
+        }
+        finally
+        {
+            _io.Release();
+        }
+    }
+
+    private async Task EnsureConnectedUnlockedAsync(CancellationToken ct)
+    {
+        lock (_gate)
+        {
+            if (IsSocketAliveUnlocked())
+                return;
+        }
+
+        DisconnectUnlocked();
+        var client = new TcpClient();
+        using var reg = ct.Register(() =>
+        {
+            try { client.Close(); } catch { /* ignore */ }
+        });
+        await client.ConnectAsync(Host, Port, ct).ConfigureAwait(false);
+        // Detect peer close sooner than the default infinite read timeout.
+        client.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
+        var stream = client.GetStream();
+        lock (_gate)
+        {
+            _client = client;
+            _stream = stream;
+        }
+    }
+
+    private void DisconnectUnlocked()
+    {
         lock (_gate)
         {
             try { _stream?.Dispose(); } catch { /* ignore */ }
@@ -136,10 +213,47 @@ public sealed class RunScoreOpenClient : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// <see cref="TcpClient.Connected"/> stays true after RS aborts; Poll catches a half-open socket.
+    /// </summary>
+    private bool IsSocketAliveUnlocked()
+    {
+        if (_client is null || _stream is null)
+            return false;
+        try
+        {
+            var sock = _client.Client;
+            if (sock is null || !_client.Connected)
+                return false;
+            // Readable + no data ⇒ peer closed / reset.
+            if (sock.Poll(0, SelectMode.SelectRead) && sock.Available == 0)
+                return false;
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool IsTransientTransportFailure(Exception ex)
+    {
+        for (var cur = ex; cur is not null; cur = cur.InnerException!)
+        {
+            if (cur is IOException or SocketException)
+                return true;
+            if (cur.Message.Contains("aborted", StringComparison.OrdinalIgnoreCase)
+                || cur.Message.Contains("forcibly closed", StringComparison.OrdinalIgnoreCase)
+                || cur.Message.Contains("transport connection", StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
+    }
+
     public ValueTask DisposeAsync()
     {
         StopKeepAlive();
+        _io.Dispose();
         return ValueTask.CompletedTask;
     }
 }
-

@@ -107,4 +107,34 @@ public class LibraryScannerTests
         Assert.Equal("2026 - LRM Weekend / Sunday", sessions[0].DisplayName);
         Assert.DoesNotContain(sessions, s => s.SessionName.Contains("20261016", StringComparison.Ordinal));
     }
+
+    [Fact]
+    public void HidesAutosaveFoldersEvenWhenTheyContainRunScore()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "s2f-lib-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var race = Path.Combine(root, "Memphis", "2026 - Test Single");
+            Directory.CreateDirectory(Path.Combine(race, "RUNSCORE"));
+            File.WriteAllText(Path.Combine(race, "Test.event"), "e");
+
+            // Misplaced mid-race overlay (or bad mirror) must not list as "Test Single / _autosave".
+            Directory.CreateDirectory(Path.Combine(race, PathService.AutosaveFolderName, "RUNSCORE"));
+            Directory.CreateDirectory(Path.Combine(
+                race, PathService.AutosaveFolderName + PathService.AutosaveTombstoneSuffix, "RUNSCORE"));
+
+            var paths = new PathService();
+            var scanner = new LibraryScanner(paths, new CheckoutLockService(paths, new MachineIdentity()));
+            var sessions = scanner.ListSessions(root, officeFilter: "Memphis");
+
+            Assert.Single(sessions);
+            Assert.Equal("2026 - Test Single", sessions[0].DisplayName);
+            Assert.DoesNotContain(sessions, s =>
+                s.SessionName.Equals(PathService.AutosaveFolderName, StringComparison.OrdinalIgnoreCase));
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); } catch { /* best effort */ }
+        }
+    }
 }

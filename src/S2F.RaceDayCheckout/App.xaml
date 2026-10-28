@@ -7,6 +7,7 @@
     <Color x:Key="BgColor">#E7ECF3</Color>
     <Color x:Key="InkColor">#000000</Color>
     <Color x:Key="MutedColor">#555555</Color>
+    <Color x:Key="PlaceholderColor">#C5CCD6</Color>
     <Color x:Key="CardColor">#FFFFFF</Color>
     <Color x:Key="LineColor">#DDDDDD</Color>
     <Color x:Key="AccentColor">#FB9223</Color>
@@ -19,6 +20,7 @@
     <SolidColorBrush x:Key="BgBrush" Color="{StaticResource BgColor}"/>
     <SolidColorBrush x:Key="InkBrush" Color="{StaticResource InkColor}"/>
     <SolidColorBrush x:Key="MutedBrush" Color="{StaticResource MutedColor}"/>
+    <SolidColorBrush x:Key="PlaceholderBrush" Color="{StaticResource PlaceholderColor}"/>
     <SolidColorBrush x:Key="CardBrush" Color="{StaticResource CardColor}"/>
     <SolidColorBrush x:Key="LineBrush" Color="{StaticResource LineColor}"/>
     <SolidColorBrush x:Key="AccentBrush" Color="{StaticResource AccentColor}"/>
@@ -95,8 +97,108 @@
       <Setter Property="Background" Value="{StaticResource DangerBrush}"/>
     </Style>
 
-    <Style x:Key="SaveButton" TargetType="Button" BasedOn="{StaticResource PrimaryButton}">
+    <Style x:Key="SaveButton" TargetType="Button">
       <Setter Property="Background" Value="{StaticResource SaveBrush}"/>
+      <Setter Property="Foreground" Value="{StaticResource AccentInkBrush}"/>
+      <Setter Property="BorderThickness" Value="0"/>
+      <Setter Property="Padding" Value="18,12"/>
+      <Setter Property="FontSize" Value="16"/>
+      <Setter Property="FontWeight" Value="SemiBold"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="MinHeight" Value="48"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border Background="{TemplateBinding Background}" CornerRadius="6" Padding="{TemplateBinding Padding}">
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="Background" Value="#156338"/>
+              </Trigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Opacity" Value="0.45"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <!-- Compact Segoe MDL2 icon button for Manual Backup file chips -->
+    <Style x:Key="IconToolButton" TargetType="Button">
+      <Setter Property="Background" Value="{StaticResource CardBrush}"/>
+      <Setter Property="Foreground" Value="{StaticResource InkBrush}"/>
+      <Setter Property="BorderBrush" Value="{StaticResource LineBrush}"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="Padding" Value="0"/>
+      <Setter Property="FontFamily" Value="Segoe MDL2 Assets"/>
+      <Setter Property="FontSize" Value="12"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Width" Value="26"/>
+      <Setter Property="Height" Value="26"/>
+      <Setter Property="MinWidth" Value="26"/>
+      <Setter Property="MinHeight" Value="26"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border Background="{TemplateBinding Background}"
+                    BorderBrush="{TemplateBinding BorderBrush}"
+                    BorderThickness="{TemplateBinding BorderThickness}"
+                    CornerRadius="4"
+                    Padding="{TemplateBinding Padding}">
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="Background" Value="#D3DCE8"/>
+              </Trigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Opacity" Value="0.45"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <Style x:Key="IconToolToggle" TargetType="ToggleButton">
+      <Setter Property="Background" Value="{StaticResource CardBrush}"/>
+      <Setter Property="Foreground" Value="{StaticResource InkBrush}"/>
+      <Setter Property="BorderBrush" Value="{StaticResource LineBrush}"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="Padding" Value="0"/>
+      <Setter Property="FontFamily" Value="Segoe MDL2 Assets"/>
+      <Setter Property="FontSize" Value="12"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Width" Value="26"/>
+      <Setter Property="Height" Value="26"/>
+      <Setter Property="MinWidth" Value="26"/>
+      <Setter Property="MinHeight" Value="26"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ToggleButton">
+            <Border x:Name="Bd"
+                    Background="{TemplateBinding Background}"
+                    BorderBrush="{TemplateBinding BorderBrush}"
+                    BorderThickness="{TemplateBinding BorderThickness}"
+                    CornerRadius="4"
+                    Padding="{TemplateBinding Padding}">
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="Bd" Property="Background" Value="#D3DCE8"/>
+              </Trigger>
+              <Trigger Property="IsChecked" Value="True">
+                <Setter TargetName="Bd" Property="Background" Value="#FDECEA"/>
+                <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource DangerBrush}"/>
+                <Setter Property="Foreground" Value="{StaticResource DangerBrush}"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
     </Style>
 
     <Style x:Key="StepListBoxItem" TargetType="ListBoxItem">

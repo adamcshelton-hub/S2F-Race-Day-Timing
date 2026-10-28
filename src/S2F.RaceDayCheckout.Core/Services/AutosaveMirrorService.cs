@@ -92,6 +92,10 @@ public sealed class AutosaveMirrorService
                 return;
             }
 
+            // Manual Backup writes taps only — no Timing Backup/_autosave mirror or lock ownership.
+            if (active.Role == CheckoutRole.ManualBackup)
+                return;
+
             // Soft/force takeover on another laptop — do not write Library _autosave or Graph.
             if (_stillOwnsLockAsync is not null
                 && !await _stillOwnsLockAsync(cancellationToken).ConfigureAwait(false))

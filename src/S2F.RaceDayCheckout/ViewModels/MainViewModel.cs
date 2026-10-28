@@ -84,6 +84,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private readonly EventBuilderService _eventBuilder = new();
     private readonly Services.ManualBackupCoordinator _manualBackup = new();
     private ManualBackupFloatWindow? _manualBackupFloat;
+    /// <summary>Coalesce rapid bib submits into one Graph upload (avoids file-lock storms).</summary>
+    private CancellationTokenSource? _mbPublishDebounceCts;
+    private CancellationTokenSource? _mbSoftPullCts;
+    private readonly SemaphoreSlim _mbPublishGate = new(1, 1);
+    private volatile bool _mbPublishAgain;
     private readonly DispatcherTimer _heartbeatTimer;
     private readonly DispatcherTimer _mirrorTimer;
     private readonly DispatcherTimer _sessionLockPollTimer;
@@ -281,6 +286,26 @@ public sealed class MainViewModel : INotifyPropertyChanged
             "S2FRaceDayCheckout",
             "admin-unlock.json");
 
+    /// <summary>
+    /// Admin PIN once per <see cref="AdminUnlockDuration"/> (persisted). Returns false if cancelled / wrong.
+    /// </summary>
+    private bool EnsureAdminUnlocked(string title, string message)
+    {
+        if (IsAdminUnlocked)
+            return true;
+
+        var pin = TimerDialog.PromptAdminPin(
+            OwnerWindow,
+            title,
+            message,
+            verifyCompanyPin: true);
+        if (pin is null)
+            return false;
+
+        GrantAdminUnlock();
+        return true;
+    }
+
     private void GrantAdminUnlock()
     {
         _adminUnlockedUntil = DateTimeOffset.UtcNow.Add(AdminUnlockDuration);
@@ -469,16 +494,22 @@ public sealed class MainViewModel : INotifyPropertyChanged
     {
         WizardStep.Office => IsAnnouncerRole
             ? "Announcer T&S Laptop — double-click your office. Races with extra T&S .event files are listed."
-            : "Main Timing Laptop — double-click your office to continue.",
+            : IsManualBackupRole
+                ? "Manual Backup Laptop — double-click your office to continue."
+                : "Main Timing Laptop — double-click your office to continue.",
         WizardStep.Session => IsPastRacesBrowse
             ? $"{PastRacesBreadcrumb} — open a folder, or double-click a race."
             : IsAnnouncerRole
                 ? SelectedOffice is null
                     ? "Races that have a non-primary T&S .event (announcer, video, …)."
                     : $"Office: {SelectedOffice} — races with a non-primary T&S .event."
-                : SelectedOffice is null
-                    ? "Double-click today's race."
-                    : $"Office: {SelectedOffice} — double-click today's race.",
+                : IsManualBackupRole
+                    ? SelectedOffice is null
+                        ? "Double-click today's race for Manual Backup."
+                        : $"Office: {SelectedOffice} — double-click today's race for Manual Backup."
+                    : SelectedOffice is null
+                        ? "Double-click today's race."
+                        : $"Office: {SelectedOffice} — double-click today's race.",
         WizardStep.EventFile => SelectedSession is null
             ? (IsAnnouncerRole ? "Double-click the T&S file for this laptop." : "Double-click the main timing file.")
             : IsAnnouncerRole
@@ -487,8 +518,10 @@ public sealed class MainViewModel : INotifyPropertyChanged
         WizardStep.Active => Active is null
             ? ""
             : Active.Role == CheckoutRole.Announcer
-                ? $"{Active.Office} · Announcer T&S — keep this app open"
-                : $"{Active.Office} · Keep this app open while racing (live backup)",
+                ? $"{Active.Office} · Announcer T&S"
+                : Active.Role == CheckoutRole.ManualBackup
+                    ? $"{Active.Office} · Manual Backup"
+                    : Active.Office,
         WizardStep.Admin => _adminSection switch
         {
             AdminSection.SetupNewEvent => _adminNewEventSubStep switch
@@ -969,8 +1002,6 @@ public sealed class MainViewModel : INotifyPropertyChanged
         RaceStartBoard.Clear();
         foreach (var row in RaceStarts)
             RaceStartBoard.Add(row);
-        if (Active is { Role: not CheckoutRole.Announcer })
-            RaceStartBoard.Add(RaceStartRowViewModel.CreateAddTile());
     }
 
     private RaceStartRowViewModel CreateClockRow(RaceStartEntry entry) =>
@@ -997,6 +1028,34 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private static bool IsIncompleteDraft(RaceStartRowViewModel row) =>
         !row.IsAddTile && !row.HasStartTime && !row.HasGunStart;
 
+    /// <summary>
+    /// Persistable clocks only — incomplete drafts keep Entry at 00:00, which must never
+    /// be written or they resurrect as a top-left ghost after every save/delete.
+    /// </summary>
+    private List<RaceStartEntry> SnapshotPersistableEntries(
+        RaceStartRowViewModel? replaceRow = null,
+        RaceStartEntry? replacement = null)
+    {
+        var list = new List<RaceStartEntry>();
+        foreach (var r in RaceStarts)
+        {
+            if (IsIncompleteDraft(r))
+                continue;
+            if (replaceRow is not null && replacement is not null && ReferenceEquals(r, replaceRow))
+            {
+                list.Add(replacement);
+                continue;
+            }
+
+            if (r.TryBuildEntry(out var entry, out _))
+                list.Add(entry);
+            else
+                list.Add(r.Entry);
+        }
+
+        return list;
+    }
+
     public void CommitRaceStartClock(RaceStartRowViewModel? row)
     {
         if (row is null || row.IsAddTile || Active is null || Active.Role == CheckoutRole.Announcer)
@@ -1008,8 +1067,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
             return;
         }
 
-        var next = RaceStarts.Select(r => ReferenceEquals(r, row) ? updated : r.Entry).ToList();
-        PersistRaceStarts(RaceStartsStore.Normalize(next));
+        PersistRaceStarts(RaceStartsStore.Normalize(SnapshotPersistableEntries(row, updated)));
     }
 
     /// <summary>
@@ -1031,8 +1089,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
             return;
         }
 
-        var next = RaceStarts.Select(r => ReferenceEquals(r, row) ? updated : r.Entry).ToList();
-        PersistRaceStarts(RaceStartsStore.Normalize(next));
+        PersistRaceStarts(RaceStartsStore.Normalize(SnapshotPersistableEntries(row, updated)));
         var gunText = RaceStartClock.FormatGunHhMmSs(gun);
         TryCopyGunTimeToClipboard(gunText);
         var label = string.IsNullOrWhiteSpace(row.CategoryText) ? "Clock" : row.CategoryText.Trim();
@@ -1083,8 +1140,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
             return;
         }
 
-        var next = RaceStarts.Select(r => ReferenceEquals(r, row) ? updated : r.Entry).ToList();
-        PersistRaceStarts(RaceStartsStore.Normalize(next));
+        PersistRaceStarts(RaceStartsStore.Normalize(SnapshotPersistableEntries(row, updated)));
         var label = string.IsNullOrWhiteSpace(row.CategoryText) ? "Clock" : row.CategoryText.Trim();
         Status = label + " gun cleared — using scheduled start.";
     }
@@ -1093,42 +1149,49 @@ public sealed class MainViewModel : INotifyPropertyChanged
     {
         if (row is null || row.IsAddTile || Active is null)
             return;
-        var next = RaceStarts
-            .Where(r => !ReferenceEquals(r, row))
-            .Select(r => r.Entry)
-            .ToList();
-        PersistRaceStarts(RaceStartsStore.Normalize(next));
+
+        // Drop from the live list first. PersistRaceStarts re-attaches incomplete drafts still
+        // in RaceStarts — leaving this row there made × look like a no-op on blank clocks.
+        if (!RaceStarts.Remove(row))
+            return;
+
+        // Explicit delete may leave zero clocks — do not immediately re-seed a blank card.
+        PersistRaceStarts(
+            RaceStartsStore.Normalize(SnapshotPersistableEntries()),
+            seedBlankIfEmpty: false);
+        Status = "Start clock removed.";
     }
 
-    private void PersistRaceStarts(IReadOnlyList<RaceStartEntry> starts)
+    private void PersistRaceStarts(IReadOnlyList<RaceStartEntry> starts, bool seedBlankIfEmpty = true)
     {
         if (Active is null)
             return;
 
-        // Active reload only restores persisted rows — keep in-progress drafts on the board.
+        // Keep in-progress blank clocks; do not go through Active setter (that reloads and
+        // used to race LostFocus / Capture Gun Start mid-click).
         var drafts = RaceStarts.Where(IsIncompleteDraft).ToList();
-
         var normalized = RaceStartsStore.Normalize(starts);
-        Active = Active.WithRaceStarts(normalized);
-        _activeStore.Save(Active);
-        // Mirror into the pack locally; Finish uploads to OneDrive for next checkout / next year.
-        try { RaceStartsStore.Save(Active.LibrarySessionPath, normalized); }
-        catch { /* Finish will retry write-back */ }
 
-        if (drafts.Count == 0)
-            return;
+        _active = Active.WithRaceStarts(normalized);
+        _activeStore.Save(_active);
+        // Mirror into the pack locally; Finish uploads to OneDrive for next checkout / next year.
+        try { RaceStartsStore.Save(_active.LibrarySessionPath, normalized); }
+        catch { /* Finish will retry write-back */ }
 
         _raceStartBoardRebuildSuspended = true;
         try
         {
-            // Drop auto-seed blanks from Reload — restore the in-progress draft VMs instead.
-            foreach (var auto in RaceStarts.Where(IsIncompleteDraft).Where(r => !drafts.Contains(r)).ToList())
-                RaceStarts.Remove(auto);
+            RaceStarts.Clear();
+            foreach (var entry in normalized)
+                RaceStarts.Add(CreateClockRow(entry));
             foreach (var draft in drafts)
             {
                 if (!RaceStarts.Contains(draft))
                     RaceStarts.Add(draft);
             }
+
+            if (seedBlankIfEmpty && RaceStarts.Count == 0)
+                RaceStarts.Add(RaceStartRowViewModel.CreateDraft(CommitRaceStartClock, RemoveRaceStart));
         }
         finally
         {
@@ -2456,9 +2519,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     public void OpenManualBackupFloat()
     {
-        if (!IsTimingActive || !_manualBackup.ShowPanel)
+        if ((!IsTimingActive && !IsManualBackupActive) || !_manualBackup.ShowPanel)
         {
-            Alert("Manual Backup", "Enable Mobile Backup for this race first (Admin PIN on Active).");
+            Alert(
+                "Manual Backup",
+                "Manual Backup locations are set on Main Timing (Admin PIN) or during setup. Enable them there first.");
             return;
         }
 
@@ -2468,31 +2533,45 @@ public sealed class MainViewModel : INotifyPropertyChanged
             return;
         }
 
+        // Unowned Topmost float — never Owner-link Main Timing (that raises it over RSServer).
         _manualBackupFloat = new ManualBackupFloatWindow();
-        _manualBackupFloat.Owner = OwnerWindow;
         _manualBackupFloat.Bind(_manualBackup, SubmitManualBackupBib);
         _manualBackupFloat.Closed += (_, _) => _manualBackupFloat = null;
         _manualBackupFloat.Show();
+        _manualBackupFloat.Activate();
     }
 
+    /// <summary>
+    /// Timing Active only (Admin PIN). Picks which RunScore Results locations are available
+    /// for Manual Backup Laptop / staffing — those roles never enable locations themselves.
+    /// </summary>
     public void ConfigureManualBackupWithPin()
     {
         if (Active is not { Role: CheckoutRole.Timing })
             return;
-        var pin = TimerDialog.PromptAdminPin(
-            OwnerWindow,
-            "Mobile Backup",
-            "Enter the Admin PIN to enable Mobile Backup locations for this race.");
-        if (pin is null)
+        if (!EnsureAdminUnlocked(
+                "Manual Backup",
+                "Enter the Admin PIN to change Manual Backup locations for this race."))
             return;
-        if (!string.Equals(pin, AppSettings.DefaultAdminPin, StringComparison.Ordinal))
-        {
-            Alert("Mobile Backup", "Incorrect Admin PIN.");
-            return;
-        }
 
-        var current = _manualBackup.LocationsText;
-        var dlg = new ManualBackupConfigDialog(current, _manualBackup.IsEnabled) { Owner = OwnerWindow };
+        // Only restore prior picks when Manual Backup is already on — never default-map Finish/etc.
+        var current = _manualBackup.IsEnabled ? _manualBackup.LocationsText : "";
+        // Same names as RunScore Master Menu → Results (Events.xml). Prefer Active; fall back to Library.
+        IReadOnlyList<string> LoadRunScoreResults() =>
+            Active is null
+                ? Array.Empty<string>()
+                : RunScoreEventsReader.ListEventNamesFromSession(
+                    Active.ActivePath,
+                    Active.LibrarySessionPath);
+
+        var dlg = new ManualBackupConfigDialog(
+            current,
+            _manualBackup.IsEnabled,
+            LoadRunScoreResults(),
+            reloadSuggestions: LoadRunScoreResults)
+        {
+            Owner = OwnerWindow
+        };
         if (dlg.ShowDialog() != true)
             return;
         _manualBackup.SaveConfig(dlg.Enabled, dlg.Locations);
@@ -2502,17 +2581,58 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     public async Task PlayManualBackupAllAsync(string location)
     {
-        await RefreshManualBackupFromCloudAsync().ConfigureAwait(true);
-        await _manualBackup.PlayAllAsync(location).ConfigureAwait(true);
-        _ = PublishManualBackupTreeAsync();
+        // Play Active local immediately — do not stall race day on Graph pull/push.
+        Status = "Playing Manual Backup…";
+        var result = await _manualBackup.PlayAllAsync(location).ConfigureAwait(true);
+        ApplyManualBackupPlayResult(result);
+        _ = SyncManualBackupAfterPlayAsync();
     }
 
     public async Task PlayManualBackupSegmentAsync(
         string location, string deviceId, string? segment, bool replay)
     {
-        await RefreshManualBackupFromCloudAsync().ConfigureAwait(true);
-        await _manualBackup.PlaySegmentAsync(location, deviceId, segment, replay).ConfigureAwait(true);
-        _ = PublishManualBackupTreeAsync();
+        Status = replay ? "Replaying Manual Backup…" : "Playing Manual Backup…";
+        var result = await _manualBackup.PlaySegmentAsync(location, deviceId, segment, replay)
+            .ConfigureAwait(true);
+        ApplyManualBackupPlayResult(result);
+        _ = SyncManualBackupAfterPlayAsync();
+    }
+
+    private void ApplyManualBackupPlayResult(ManualBackupPlayResult result)
+    {
+        if (ShouldAlertManualBackupPlay(result))
+        {
+            Alert("Manual Backup", result.Message);
+            // Badge already shows Open connected/not — don't keep the long error in the header.
+            _manualBackup.ClearStatus();
+            Status = string.Empty;
+            return;
+        }
+
+        Status = _manualBackup.Status;
+    }
+
+    private static bool ShouldAlertManualBackupPlay(ManualBackupPlayResult result)
+    {
+        if (result.Success)
+            return false;
+        // Pause / busy are expected UI states — status line is enough.
+        if (result.Message.Contains("paused", StringComparison.OrdinalIgnoreCase))
+            return false;
+        if (result.Message.Contains("Already playing", StringComparison.OrdinalIgnoreCase))
+            return false;
+        return true;
+    }
+
+    /// <summary>After Play: publish local taps, then soft-pull phone taps for the next Play.</summary>
+    private async Task SyncManualBackupAfterPlayAsync()
+    {
+        try
+        {
+            await PublishManualBackupTreeAsync().ConfigureAwait(true);
+            await RefreshManualBackupFromCloudAsync(budget: TimeSpan.FromSeconds(20)).ConfigureAwait(true);
+        }
+        catch { /* soft */ }
     }
 
     public void CreateManualBackupFilesAll(string location)
@@ -2521,12 +2641,68 @@ public sealed class MainViewModel : INotifyPropertyChanged
         _ = PublishManualBackupTreeAsync();
     }
 
+    public void DeleteManualBackupArchive(string location, string deviceId, string fileName)
+    {
+        if (Active is null || string.IsNullOrWhiteSpace(fileName))
+            return;
+
+        // Capture Library path before delete so Graph can remove the orphan.
+        var store = new ManualBackupStore();
+        var libFile = Path.Combine(
+            store.GetDeviceDir(Active.LibrarySessionPath, location, deviceId),
+            Path.GetFileName(fileName));
+
+        if (!_manualBackup.TryDeleteArchive(location, deviceId, fileName))
+            return;
+
+        _ = DeleteManualBackupArchiveOnGraphAsync(libFile);
+    }
+
+    private async Task DeleteManualBackupArchiveOnGraphAsync(string libraryFilePath)
+    {
+        if (!_cloud.IsAvailable || string.IsNullOrWhiteSpace(libraryFilePath))
+            return;
+        try
+        {
+            await _cloud.DeleteLibraryFileAsync(
+                libraryFilePath,
+                _settings.LibraryRoot,
+                _settings.GraphDriveRoot,
+                CancellationToken.None).ConfigureAwait(false);
+        }
+        catch { /* soft — local delete already done */ }
+    }
+
     public ManualBackupTap? SubmitManualBackupBib(string location, string bib)
     {
         var tap = _manualBackup.SubmitBib(location, bib);
         if (tap is not null)
-            _ = PublishManualBackupTreeAsync();
+            SchedulePublishManualBackupTree();
         return tap;
+    }
+
+    /// <summary>
+    /// Debounce Graph publish after bib entry — rapid Submit was overlapping uploads and
+    /// locking <c>current.jsonl</c> against the next append.
+    /// </summary>
+    private void SchedulePublishManualBackupTree()
+    {
+        _mbPublishAgain = true;
+        _mbPublishDebounceCts?.Cancel();
+        _mbPublishDebounceCts?.Dispose();
+        var cts = new CancellationTokenSource();
+        _mbPublishDebounceCts = cts;
+        _ = DebouncedPublishManualBackupTreeAsync(cts.Token);
+    }
+
+    private async Task DebouncedPublishManualBackupTreeAsync(CancellationToken token)
+    {
+        try
+        {
+            await Task.Delay(450, token).ConfigureAwait(false);
+            await PublishManualBackupTreeAsync().ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { /* newer submit rescheduled */ }
     }
 
     private async Task PublishManualBackupCatalogAsync()
@@ -2547,27 +2723,40 @@ public sealed class MainViewModel : INotifyPropertyChanged
         catch { /* soft — catalog retries on next save */ }
     }
 
-    private async Task PublishManualBackupTreeAsync()
+    private async Task PublishManualBackupTreeAsync(CancellationToken cancellationToken = default)
     {
         if (!_cloud.IsAvailable || Active is null)
             return;
+        await _mbPublishGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var libRoot = ManualBackupStore.GetRoot(Active.LibrarySessionPath);
-            if (!Directory.Exists(libRoot))
-                return;
-            await _cloud.UploadFolderAsync(
-                libRoot,
-                _settings.LibraryRoot,
-                _settings.GraphDriveRoot,
-                status: null,
-                CancellationToken.None).ConfigureAwait(false);
-            await PublishManualBackupCatalogAsync().ConfigureAwait(false);
+            // Loop once more if taps landed while this upload ran.
+            do
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                _mbPublishAgain = false;
+                var libRoot = ManualBackupStore.GetRoot(Active.LibrarySessionPath);
+                if (!Directory.Exists(libRoot))
+                    return;
+                // MB-only tree (._checkin/manual_backup) — never RUNSCORE / .event / DB's.
+                await _cloud.UploadFolderAsync(
+                    libRoot,
+                    _settings.LibraryRoot,
+                    _settings.GraphDriveRoot,
+                    status: null,
+                    cancellationToken).ConfigureAwait(false);
+                await PublishManualBackupCatalogAsync().ConfigureAwait(false);
+            } while (_mbPublishAgain);
         }
+        catch (OperationCanceledException) { throw; }
         catch { /* soft */ }
+        finally
+        {
+            _mbPublishGate.Release();
+        }
     }
 
-    private async Task RefreshManualBackupFromCloudAsync()
+    private async Task RefreshManualBackupFromCloudAsync(TimeSpan? budget = null)
     {
         if (!_cloud.IsAvailable || Active is null)
             return;
@@ -2576,33 +2765,23 @@ public sealed class MainViewModel : INotifyPropertyChanged
             // Publish local laptop taps first so Graph merge does not clobber them.
             await PublishManualBackupTreeAsync().ConfigureAwait(true);
 
+            using var cts = new CancellationTokenSource(budget ?? TimeSpan.FromSeconds(45));
             await _cloud.DownloadSessionAsync(
                 Active.LibrarySessionPath,
                 _settings.LibraryRoot,
                 _settings.GraphDriveRoot,
                 status: null,
-                CancellationToken.None,
+                cts.Token,
                 SessionDownloadOptions.ForManualBackupOnly()).ConfigureAwait(true);
 
-            // Copy Library → Active when they differ so Play sees phone taps.
-            var libMb = ManualBackupStore.GetRoot(Active.LibrarySessionPath);
-            var activeMb = ManualBackupStore.GetRoot(Active.ActivePath);
-            if (Directory.Exists(libMb)
-                && !string.Equals(libMb, activeMb, StringComparison.OrdinalIgnoreCase))
-            {
-                Directory.CreateDirectory(activeMb);
-                foreach (var file in Directory.EnumerateFiles(libMb, "*", SearchOption.AllDirectories))
-                {
-                    var rel = Path.GetRelativePath(libMb, file);
-                    var dest = Path.Combine(activeMb, rel);
-                    Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
-                    File.Copy(file, dest, overwrite: true);
-                }
-            }
+            // Soft-merge Library → Active: phone Past / Current in, never shrink jsonl or reset PlayCursor.
+            ManualBackupStore.MergeTreePreferLongerJsonl(
+                Active.LibrarySessionPath,
+                Active.ActivePath);
 
             _manualBackup.ReloadFromDisk();
         }
-        catch { /* Play with whatever is local */ }
+        catch { /* soft — keep local */ }
     }
 
     public async Task StartManualBackupSessionAsync(EventPackInfo session)
@@ -2613,28 +2792,61 @@ public sealed class MainViewModel : INotifyPropertyChanged
             return;
         }
 
-        // Pull Manual Backup meta only (cellular) — not the full race pack.
-        try
-        {
-            await _cloud.DownloadSessionAsync(
-                session.Path,
-                _settings.LibraryRoot,
-                _settings.GraphDriveRoot,
-                cancellationToken: CancellationToken.None,
-                options: SessionDownloadOptions.ForManualBackupOnly()).ConfigureAwait(true);
-        }
-        catch { /* may already be local */ }
-
         var store = new ManualBackupStore();
         var manifest = store.LoadManifest(session.Path);
+
+        // Fast path: locations already on disk — open Active immediately; soft-pull taps in background.
+        if (manifest.Enabled && manifest.Locations.Count > 0)
+        {
+            EnterManualBackupActive(session);
+            _ = SoftPullManualBackupMetaAsync(session.Path);
+            return;
+        }
+
+        // Need Graph for manifest — busy overlay so double-click does not look dead on cellular.
+        if (_cloud.IsAvailable)
+        {
+            SetBusy("Opening Manual Backup", "Checking locations for this race…");
+            await YieldUiAsync().ConfigureAwait(true);
+            try
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(25));
+                await _cloud.DownloadSessionAsync(
+                    session.Path,
+                    _settings.LibraryRoot,
+                    _settings.GraphDriveRoot,
+                    status: new Progress<string>(s =>
+                    {
+                        if (!string.IsNullOrWhiteSpace(s))
+                            ProgressText = s;
+                    }),
+                    cancellationToken: cts.Token,
+                    options: SessionDownloadOptions.ForManualBackupOnly()).ConfigureAwait(true);
+            }
+            catch { /* soft — may still be local after partial */ }
+            finally
+            {
+                ClearBusy();
+            }
+
+            manifest = store.LoadManifest(session.Path);
+        }
+
         if (!manifest.Enabled || manifest.Locations.Count == 0)
         {
             Alert(
                 "Manual Backup",
-                "This race does not have Mobile Backup enabled. Enable it on the Main Timing laptop first.");
+                "No Manual Backup locations are enabled for this race yet.\n\n"
+                + "On Main Timing, use Enable Manual Backup… / Settings (Admin PIN) and check the RunScore Results locations. "
+                + "Staffing Manual Backup will use that same list.");
             return;
         }
 
+        EnterManualBackupActive(session);
+    }
+
+    private void EnterManualBackupActive(EventPackInfo session)
+    {
         var active = new ActiveCheckout
         {
             Office = session.Office,
@@ -2654,17 +2866,136 @@ public sealed class MainViewModel : INotifyPropertyChanged
         _activeStore.Save(active);
         Active = active;
         Step = WizardStep.Active;
-        Status = "Manual Backup ready — pick a location and enter bibs.";
+        Status = "Manual Backup ready — enter bibs in the Entry window.";
+        // Same Topmost Entry popup as Main Timing (not an in-page form).
+        OpenManualBackupFloat();
     }
 
-    public void DoneManualBackup()
+    /// <summary>
+    /// Background MB-only Graph pull after Active is already open (other devices' Past / Current).
+    /// Download gate keeps longer local current.jsonl. Canceled on Done so SoftPull cannot
+    /// re-inflate Current after seal.
+    /// </summary>
+    private async Task SoftPullManualBackupMetaAsync(string librarySessionPath)
     {
-        if (Active is not { Role: CheckoutRole.ManualBackup })
+        if (!_cloud.IsAvailable)
             return;
+
+        _mbSoftPullCts?.Cancel();
+        _mbSoftPullCts?.Dispose();
+        var softCts = new CancellationTokenSource();
+        _mbSoftPullCts = softCts;
+        var token = softCts.Token;
+
+        try
+        {
+            // Brief delay so first bibs land before SoftPull lists Graph.
+            await Task.Delay(1500, token).ConfigureAwait(true);
+            if (Active is not { Role: CheckoutRole.ManualBackup, LibrarySessionPath: var path }
+                || !string.Equals(path, librarySessionPath, StringComparison.OrdinalIgnoreCase))
+                return;
+
+            using var budget = CancellationTokenSource.CreateLinkedTokenSource(token);
+            budget.CancelAfter(TimeSpan.FromSeconds(25));
+            await _cloud.DownloadSessionAsync(
+                librarySessionPath,
+                _settings.LibraryRoot,
+                _settings.GraphDriveRoot,
+                status: null,
+                cancellationToken: budget.Token,
+                options: SessionDownloadOptions.ForManualBackupOnly()).ConfigureAwait(true);
+            if (Active is { Role: CheckoutRole.ManualBackup, LibrarySessionPath: var still }
+                && string.Equals(still, librarySessionPath, StringComparison.OrdinalIgnoreCase))
+                _manualBackup.ReloadFromDisk();
+        }
+        catch (OperationCanceledException) { /* Done / newer SoftPull */ }
+        catch { /* soft */ }
+    }
+
+    public async Task DoneManualBackupAsync()
+    {
+        if (Active is not { Role: CheckoutRole.ManualBackup } mb)
+            return;
+        var sessionPath = mb.LibrarySessionPath;
+
+        // Stop SoftPull before seal — otherwise a late pull can restore Current after we archive it.
+        _mbSoftPullCts?.Cancel();
+        _mbSoftPullCts?.Dispose();
+        _mbSoftPullCts = null;
+        _mbPublishDebounceCts?.Cancel();
+        _mbPublishDebounceCts?.Dispose();
+        _mbPublishDebounceCts = null;
+
+        // Seal this laptop's Current → Past so Timing can Play without needing a Timing checkout rotate.
+        try
+        {
+            var sealedCount = new ManualBackupStore().CreateNewFileForDevice(
+                sessionPath,
+                _manualBackup.DeviceId);
+            if (sealedCount > 0)
+                _manualBackup.ReloadFromDisk();
+        }
+        catch { /* soft */ }
+
+        // Flush Graph publish (MB tree only) — cellular-bounded; local Past already sealed.
+        var uploadTimedOut = false;
+        try
+        {
+            _mbPublishAgain = true;
+            SetBusy("Saving Manual Backup", "Uploading taps to OneDrive…");
+            await YieldUiAsync().ConfigureAwait(true);
+            using var uploadBudget = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+            await PublishManualBackupTreeAsync(uploadBudget.Token).ConfigureAwait(true);
+        }
+        catch (OperationCanceledException)
+        {
+            uploadTimedOut = true;
+        }
+        catch { /* soft — local Past still sealed */ }
+        finally
+        {
+            ClearBusy();
+        }
+
         _activeStore.Save(null);
         Active = null;
         Step = WizardStep.Office;
-        Status = "Manual Backup closed.";
+        Status = uploadTimedOut
+            ? "Manual Backup saved on this laptop — OneDrive upload timed out; Timing can retry pull later."
+            : "Manual Backup closed — taps saved for Timing Play (Past).";
+        // Only undo MB heartbeat reclaim — never release a real Timing checkout left on this PC.
+        _ = ReleaseAccidentalManualBackupLockAsync(sessionPath);
+    }
+
+    /// <summary>
+    /// Manual Backup never owns Timing checkout. Only release locks this machine reclaimed
+    /// via the old MB heartbeat bug — leave a legitimate Timing Active lock alone.
+    /// </summary>
+    private async Task ReleaseAccidentalManualBackupLockAsync(string sessionPath)
+    {
+        if (string.IsNullOrWhiteSpace(sessionPath) || !_locks.ThisMachineHoldsActiveLock(sessionPath))
+            return;
+        var existing = _locks.TryRead(sessionPath);
+        if (existing is null
+            || !string.Equals(
+                existing.ReclaimReason,
+                "orphan-active-after-released-lock",
+                StringComparison.OrdinalIgnoreCase))
+            return;
+        try
+        {
+            var holder = string.IsNullOrWhiteSpace(DisplayName) ? _machine.MachineName : DisplayName.Trim();
+            _locks.Release(sessionPath, holder, reason: "manual-backup-done-not-timing-lock");
+            if (_cloud.IsAvailable)
+            {
+                await _cloud.UploadCheckoutLockAsync(
+                    sessionPath,
+                    _settings.LibraryRoot,
+                    _settings.GraphDriveRoot,
+                    CancellationToken.None).ConfigureAwait(false);
+            }
+        }
+        catch { /* soft */ }
     }
 
 
@@ -2838,18 +3169,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     public void TryOpenAdmin()
     {
-        if (!IsAdminUnlocked)
-        {
-            var pin = TimerDialog.PromptAdminPin(
-                OwnerWindow,
-                "Admin",
-                "Enter the Admin PIN to open settings.",
-                verifyCompanyPin: true);
-            if (pin is null)
-                return;
-
-            GrantAdminUnlock();
-        }
+        if (!EnsureAdminUnlocked("Admin", "Enter the Admin PIN to open settings."))
+            return;
 
         EnterAdminSetup();
     }
@@ -5668,7 +5989,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
 
         var active = _activeStore.Load();
-        if (active is null || active.Role == CheckoutRole.Announcer)
+        // Timing lock is Main Timing only — Announcer / Manual Backup never own or reclaim it.
+        if (active is null || active.Role is CheckoutRole.Announcer or CheckoutRole.ManualBackup)
             return LockCloudVerdict.Held;
 
         var sessionPath = active.LibrarySessionPath;
@@ -5717,7 +6039,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
 
         var afterLock = _locks.TryRead(sessionPath);
-        var hasLocalTimingActive = active.Role != CheckoutRole.Announcer
+        var hasLocalTimingActive = active.Role == CheckoutRole.Timing
             && !string.IsNullOrWhiteSpace(active.LibrarySessionPath);
         var decision = LockOwnershipPolicy.Decide(
             downloadConfirmed,
@@ -5839,7 +6161,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 return;
 
             var active = _activeStore.Load();
-            if (active is null || active.Role == CheckoutRole.Announcer)
+            // Manual Backup must not heartbeat / reclaim Timing locks (that greys the race as Checked Out).
+            if (active is null || active.Role is CheckoutRole.Announcer or CheckoutRole.ManualBackup)
                 return;
 
             var ct = _heartbeatCts.Token;
@@ -5975,7 +6298,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
 
         var active = Active ?? _activeStore.Load();
-        if (active is null || active.Role == CheckoutRole.Announcer)
+        if (active is null || active.Role is CheckoutRole.Announcer or CheckoutRole.ManualBackup)
         {
             RaceDayTrace.Write("lock takeover prompt skipped reason=no-timing-active");
             return;

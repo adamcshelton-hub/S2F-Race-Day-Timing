@@ -49,6 +49,29 @@ public class RaceStartsStoreTests
     }
 
     [Fact]
+    public void Normalize_KeepsUnlabeledClocks_WithDifferentGunsSameMinute()
+    {
+        // Rapid + / Capture Gun Start produced multiple unlabeled clocks in the same HH:MM;
+        // old Category+HH:MM dedupe deleted all but one.
+        var normalized = RaceStartsStore.Normalize(
+        [
+            new RaceStartEntry
+            {
+                Category = "",
+                StartTimeOfDay = new TimeSpan(13, 40, 0),
+                GunStartTimeOfDay = new TimeSpan(0, 13, 40, 1, 100)
+            },
+            new RaceStartEntry
+            {
+                Category = "",
+                StartTimeOfDay = new TimeSpan(13, 40, 0),
+                GunStartTimeOfDay = new TimeSpan(0, 13, 40, 2, 200)
+            }
+        ]);
+        Assert.Equal(2, normalized.Count);
+    }
+
+    [Fact]
     public void Save_Load_PreservesGunStartWithCentiseconds()
     {
         var root = Path.Combine(Path.GetTempPath(), "s2f-race-starts-gun-" + Guid.NewGuid().ToString("N"));

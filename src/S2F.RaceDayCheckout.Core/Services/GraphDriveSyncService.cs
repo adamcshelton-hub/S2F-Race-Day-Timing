@@ -302,6 +302,23 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
         || name.StartsWith("._", StringComparison.Ordinal)
         || string.Equals(name, PathService.AutosaveFolderName, StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// <c>._checkin/manual_backup/**/*.jsonl</c> — append-only taps; never shrink on Graph pull.
+    /// </summary>
+    private static bool IsManualBackupJsonlPath(string localPath)
+    {
+        if (string.IsNullOrWhiteSpace(localPath)
+            || !localPath.EndsWith(".jsonl", StringComparison.OrdinalIgnoreCase))
+            return false;
+        var parts = localPath.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        for (var i = 0; i < parts.Length; i++)
+        {
+            if (string.Equals(parts[i], ManualBackupStore.FolderName, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
+    }
+
     public async Task<CloudSyncResult> DownloadSessionAsync(
         string librarySessionPath,
         string libraryRoot,
@@ -376,13 +393,31 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
             // re-pull — Entries.DTA / results often change content without a size change, and a
             // stale local overlay would otherwise win after force take-over.
             // Announcer DB's mid-race: also re-pull when remote lastModified is newer (same-size CSV edits).
-            // Manual Backup mid-race: always re-pull (phones append jsonl).
+            // Manual Backup jsonl (mbOnly SoftPull AND full Timing pack pull): only when remote
+            // grew. Never replace a longer local — cellular Done timeout / mid-entry must not lose taps.
             var downloadQueue = jobs
                 .Where(j => j.Size is null || j.Size.Value <= maxBytes)
                 .Where(j =>
                 {
-                    if (overlayOnly || mbOnly)
+                    if (overlayOnly)
                         return true;
+                    if (mbOnly || IsManualBackupJsonlPath(j.LocalPath))
+                    {
+                        // Never clobber mid-entry current.jsonl: unknown remote size must not replace
+                        // non-empty local; only pull when remote is strictly larger (phone append).
+                        if (!File.Exists(j.LocalPath))
+                            return true;
+                        try
+                        {
+                            var localLen = new FileInfo(j.LocalPath).Length;
+                            if (j.Size is not long mbRemoteSize)
+                                return localLen == 0;
+                            if (localLen >= mbRemoteSize)
+                                return false;
+                            return true;
+                        }
+                        catch { return true; }
+                    }
                     if (!File.Exists(j.LocalPath) || j.Size is not long remoteSize)
                         return true;
                     try
@@ -884,6 +919,7 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
                 var kind = eventFailures > 0
                     ? "the Timing & Scoring .event file failed"
                     : $"{Math.Max(raceFailures, failedRels.Count)} changed file(s) failed";
+                var which = FormatFailedRelHint(failedRels);
                 return new CloudSyncResult
                 {
                     Success = false,
@@ -891,6 +927,7 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
                     FailedRelativePaths = failedRels,
                     Message =
                         $"Uploaded {Math.Max(0, raceJobsQueued - failedRels.Count)} race file(s), but {kind}. "
+                        + which
                         + "Tap Finish again when signal improves."
                 };
             }
@@ -927,6 +964,21 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
             .Select(p => p.Replace('/', Path.DirectorySeparatorChar).Replace('\\', Path.DirectorySeparatorChar))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
+    }
+
+    /// <summary>Short path list for Finish partial-fail dialogs (e.g. Manual Backup Prior).</summary>
+    private static string FormatFailedRelHint(IReadOnlyList<string> failedRels)
+    {
+        if (failedRels.Count == 0)
+            return "";
+        var shown = failedRels
+            .Take(3)
+            .Select(p => p.Replace('\\', '/'))
+            .ToList();
+        var suffix = failedRels.Count > shown.Count
+            ? $" (+{failedRels.Count - shown.Count} more)"
+            : "";
+        return "Failed: " + string.Join(", ", shown) + suffix + ". ";
     }
 
     private async Task<int> UploadLockMetadataAsync(
@@ -1134,6 +1186,48 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
         catch (Exception ex)
         {
             return new CloudSyncResult { Success = false, Message = "Mid-race upload failed: " + ex.Message };
+        }
+    }
+
+    /// <summary>
+    /// Soft-delete one Library file on Graph by local path (Manual Backup Prior archive).
+    /// Missing remote is success. Does not require the local file to still exist.
+    /// </summary>
+    public async Task<CloudSyncResult> DeleteLibraryFileAsync(
+        string localFilePath,
+        string libraryRoot,
+        string graphDriveRoot,
+        CancellationToken cancellationToken = default)
+    {
+        if (!_tokens.IsSignedIn)
+            return new CloudSyncResult { Success = true, Message = "Graph not signed in." };
+        if (string.IsNullOrWhiteSpace(localFilePath))
+            return new CloudSyncResult { Success = false, Message = "No file path." };
+
+        try
+        {
+            var relative = ToDriveRelative(localFilePath, libraryRoot, graphDriveRoot);
+            if (relative is null)
+                return new CloudSyncResult { Success = false, Message = "Path outside LibraryRoot." };
+
+            var url = ItemPathUrl(relative);
+            if (!url.EndsWith(':'))
+                url += ":";
+            using var req = await CreateRequestAsync(HttpMethod.Delete, url, cancellationToken)
+                .ConfigureAwait(false);
+            using var resp = await _http.SendAsync(req, cancellationToken).ConfigureAwait(false);
+            if (resp.IsSuccessStatusCode || resp.StatusCode == System.Net.HttpStatusCode.NotFound)
+                return new CloudSyncResult { Success = true, Message = "Deleted." };
+
+            return new CloudSyncResult
+            {
+                Success = false,
+                Message = "Graph delete failed: " + (int)resp.StatusCode
+            };
+        }
+        catch (Exception ex)
+        {
+            return new CloudSyncResult { Success = false, Message = "Graph delete failed: " + ex.Message };
         }
     }
 
@@ -2259,7 +2353,8 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
         }
 
         var url = ItemPathUrl(cloudPath, "content");
-        await using var stream = File.OpenRead(localPath);
+        // ReadWrite share: Manual Backup AppendTap must not fail while this PUT is in flight.
+        await using var stream = OpenLocalReadShared(localPath);
         using var req = await CreateRequestAsync(HttpMethod.Put, url, cancellationToken).ConfigureAwait(false);
         req.Content = new StreamContent(stream);
         req.Content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
@@ -2278,6 +2373,10 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
 
         resp.EnsureSuccessStatusCode();
     }
+
+    private static FileStream OpenLocalReadShared(string localPath) =>
+        new(localPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 81920,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
 
     private async Task UploadLargeFileAsync(string localPath, string cloudPath, CancellationToken cancellationToken)
     {
@@ -2299,7 +2398,7 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
 
         var fileInfo = new FileInfo(localPath);
         const int fragmentSize = 320 * 1024 * 10;
-        await using var fileStream = File.OpenRead(localPath);
+        await using var fileStream = OpenLocalReadShared(localPath);
         long offset = 0;
         while (offset < fileInfo.Length)
         {

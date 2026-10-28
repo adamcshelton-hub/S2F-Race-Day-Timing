@@ -1,0 +1,118 @@
+<UserControl x:Class="S2F.RaceDayCheckout.ManualBackupEntryPanel"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:S2F.RaceDayCheckout"
+             x:Name="Root"
+             Background="Transparent"
+             Focusable="False">
+  <!--
+    Shared Entry UX (Timing float = compact; Manual Backup Laptop Active = station).
+  -->
+  <DockPanel>
+    <Border x:Name="OpenStatusBorder" DockPanel.Dock="Top" Margin="0,0,0,10" Padding="10,6"
+            CornerRadius="6" BorderThickness="1">
+      <Border.Style>
+        <Style TargetType="Border">
+          <Setter Property="Background" Value="#FDECEA"/>
+          <Setter Property="BorderBrush" Value="{StaticResource DangerBrush}"/>
+          <Style.Triggers>
+            <DataTrigger Binding="{Binding OpenConnected}" Value="True">
+              <Setter Property="Background" Value="#F3FBF6"/>
+              <Setter Property="BorderBrush" Value="{StaticResource SaveBrush}"/>
+            </DataTrigger>
+          </Style.Triggers>
+        </Style>
+      </Border.Style>
+      <TextBlock Text="{Binding OpenStatusText}" FontSize="12" TextWrapping="Wrap"
+                 Foreground="{StaticResource InkBrush}"/>
+    </Border>
+
+    <TextBlock x:Name="LocationLabel" DockPanel.Dock="Top" Text="Location"
+               FontWeight="SemiBold" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,4"
+               FontSize="{Binding ElementName=Root, Path=LabelFontSize}"/>
+    <ComboBox x:Name="LocationBox" DockPanel.Dock="Top" Margin="0,0,0,14"
+              Padding="8,6"
+              FontSize="{Binding ElementName=Root, Path=FieldFontSize}"
+              MinHeight="{Binding ElementName=Root, Path=FieldMinHeight}"
+              DisplayMemberPath="Location" SelectedValuePath="Location"
+              DropDownClosed="LocationBox_DropDownClosed"/>
+
+    <TextBlock x:Name="BibLabel" DockPanel.Dock="Top" Text="Bib"
+               FontWeight="SemiBold" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,4"
+               FontSize="{Binding ElementName=Root, Path=LabelFontSize}"/>
+    <DockPanel DockPanel.Dock="Top" Margin="0,0,0,16">
+      <Button x:Name="SubmitButton" DockPanel.Dock="Right" Content="Submit"
+              Style="{StaticResource PrimaryButton}"
+              Margin="12,0,0,0" Click="Submit_Click" IsDefault="True"
+              FontSize="{Binding ElementName=Root, Path=SubmitFontSize}"
+              MinWidth="{Binding ElementName=Root, Path=SubmitMinWidth}"
+              MinHeight="{Binding ElementName=Root, Path=BibMinHeight}"
+              Padding="{Binding ElementName=Root, Path=SubmitPadding}"/>
+      <TextBox x:Name="BibBox"
+               VerticalContentAlignment="Center"
+               InputMethod.IsInputMethodEnabled="False"
+               PreviewTextInput="BibBox_PreviewTextInput"
+               DataObject.Pasting="BibBox_Pasting"
+               FontSize="{Binding ElementName=Root, Path=BibFontSize}"
+               MinHeight="{Binding ElementName=Root, Path=BibMinHeight}"
+               Padding="{Binding ElementName=Root, Path=BibPadding}"/>
+    </DockPanel>
+
+    <DockPanel DockPanel.Dock="Top" Margin="0,0,0,8" LastChildFill="True">
+      <TextBlock x:Name="RecentEmptyHint" DockPanel.Dock="Right"
+                 Text="Submitted bibs appear here"
+                 Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center"
+                 Margin="12,0,0,0" Focusable="False"
+                 FontSize="{Binding ElementName=Root, Path=LabelFontSize}"/>
+      <TextBlock Text="Last 5" FontWeight="SemiBold"
+                 Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center"
+                 FontSize="{Binding ElementName=Root, Path=LabelFontSize}"/>
+    </DockPanel>
+
+    <TextBlock x:Name="StatusText" DockPanel.Dock="Bottom"
+               Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="0,12,0,0"
+               Focusable="False"
+               FontSize="{Binding ElementName=Root, Path=LabelFontSize}"/>
+
+    <Border x:Name="RecentBorder" BorderBrush="{StaticResource LineBrush}" BorderThickness="1"
+            CornerRadius="8" Background="#FAFBFD"
+            Height="{Binding ElementName=Root, Path=RecentFixedHeight}"
+            MinHeight="{Binding ElementName=Root, Path=RecentMinHeight}"
+            VerticalAlignment="{Binding ElementName=Root, Path=RecentVerticalAlignment}"
+            Focusable="False">
+      <ScrollViewer VerticalScrollBarVisibility="Auto"
+                    HorizontalScrollBarVisibility="Disabled"
+                    CanContentScroll="False"
+                    Focusable="False"
+                    PreviewMouseDown="Last5_PreviewMouseDown">
+        <ItemsControl x:Name="RecentList" VerticalAlignment="Top" Focusable="False"
+                      IsTabStop="False">
+          <ItemsControl.ItemsPanel>
+            <ItemsPanelTemplate>
+              <StackPanel Orientation="Vertical"/>
+            </ItemsPanelTemplate>
+          </ItemsControl.ItemsPanel>
+          <ItemsControl.ItemTemplate>
+            <DataTemplate>
+              <Border Padding="14,0"
+                      BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,0,1"
+                      Focusable="False"
+                      Height="{Binding RecentRowHeight, RelativeSource={RelativeSource AncestorType=local:ManualBackupEntryPanel}}">
+                <DockPanel LastChildFill="True">
+                  <TextBlock DockPanel.Dock="Right" Text="{Binding TimeDisplay, Mode=OneWay}"
+                             FontFamily="Consolas, Cascadia Mono, Courier New"
+                             Foreground="{StaticResource MutedBrush}"
+                             VerticalAlignment="Center" Margin="16,0,0,0" Focusable="False"
+                             FontSize="{Binding RecentTimeFontSize, RelativeSource={RelativeSource AncestorType=local:ManualBackupEntryPanel}}"/>
+                  <TextBlock Text="{Binding Bib, Mode=OneWay}" FontWeight="SemiBold"
+                             VerticalAlignment="Center" Focusable="False"
+                             FontSize="{Binding RecentBibFontSize, RelativeSource={RelativeSource AncestorType=local:ManualBackupEntryPanel}}"/>
+                </DockPanel>
+              </Border>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+      </ScrollViewer>
+    </Border>
+  </DockPanel>
+</UserControl>
