@@ -100,11 +100,24 @@
                   </Style>
                 </Button.Style>
               </Button>
-              <Button Content="Announcer T&amp;S Laptop" MinWidth="200" Click="RoleAnnouncer_Click">
+              <Button Content="Announcer T&amp;S Laptop" MinWidth="200" Margin="0,0,10,0" Click="RoleAnnouncer_Click">
                 <Button.Style>
                   <Style TargetType="Button" BasedOn="{StaticResource SecondaryButton}">
                     <Style.Triggers>
                       <DataTrigger Binding="{Binding IsAnnouncerRole}" Value="True">
+                        <Setter Property="Background" Value="{StaticResource AccentBrush}"/>
+                        <Setter Property="Foreground" Value="White"/>
+                        <Setter Property="BorderThickness" Value="0"/>
+                      </DataTrigger>
+                    </Style.Triggers>
+                  </Style>
+                </Button.Style>
+              </Button>
+              <Button Content="Manual Backup Laptop" MinWidth="200" Click="RoleManualBackup_Click">
+                <Button.Style>
+                  <Style TargetType="Button" BasedOn="{StaticResource SecondaryButton}">
+                    <Style.Triggers>
+                      <DataTrigger Binding="{Binding IsManualBackupRole}" Value="True">
                         <Setter Property="Background" Value="{StaticResource AccentBrush}"/>
                         <Setter Property="Foreground" Value="White"/>
                         <Setter Property="BorderThickness" Value="0"/>
@@ -317,15 +330,150 @@
           </ListBox>
         </DockPanel>
 
+        <!-- ACTIVE Manual Backup role — bib entry only -->
+        <Border Grid.Row="1" Background="{StaticResource CardBrush}" CornerRadius="10"
+                BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Padding="20"
+                Visibility="{Binding IsManualBackupActive, Converter={StaticResource BoolVis}}">
+          <DockPanel>
+            <StackPanel DockPanel.Dock="Top" Margin="0,0,0,12">
+              <TextBlock Text="Manual Backup" FontSize="20" FontWeight="SemiBold"/>
+              <TextBlock Text="{Binding ManualBackup.Status}" Foreground="{StaticResource MutedBrush}" Margin="0,4,0,0" TextWrapping="Wrap"/>
+              <Button Content="Done" Style="{StaticResource PrimaryButton}" HorizontalAlignment="Left"
+                      Margin="0,12,0,0" MinWidth="120" Click="DoneManualBackup_Click"/>
+            </StackPanel>
+            <ItemsControl ItemsSource="{Binding ManualBackup.Locations}">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                  <Border Margin="0,0,0,12" Padding="12" Background="#FAFBFD" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="8">
+                    <StackPanel>
+                      <TextBlock Text="{Binding Location}" FontWeight="SemiBold" FontSize="16" Margin="0,0,0,8"/>
+                      <DockPanel>
+                        <Button DockPanel.Dock="Right" Content="Submit" MinWidth="88" Margin="8,0,0,0"
+                                Click="ManualBackupRoleSubmit_Click" Tag="{Binding Location}"/>
+                        <TextBox x:Name="MbBib" FontSize="20" Padding="8,6"
+                                 Tag="{Binding Location}" KeyDown="ManualBackupRoleBib_KeyDown"/>
+                      </DockPanel>
+                    </StackPanel>
+                  </Border>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </DockPanel>
+        </Border>
+
         <!-- ACTIVE timing — sticky header has actions/tips; center is start-clock cards -->
         <Border Grid.Row="1" Background="{StaticResource CardBrush}" CornerRadius="10"
                 BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Padding="20"
                 Visibility="{Binding IsTimingActive, Converter={StaticResource BoolVis}}">
           <DockPanel>
+              <!-- Manual Backup strip (T&S-shaped) -->
+              <Border DockPanel.Dock="Top" Margin="0,0,0,16" Padding="12"
+                      Background="#FAFBFD" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="8"
+                      Visibility="{Binding ManualBackup.ShowPanel, Converter={StaticResource BoolVis}}">
+                <DockPanel>
+                  <DockPanel DockPanel.Dock="Top" Margin="0,0,0,10">
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                      <Button Content="Open Entry Window" Style="{StaticResource SecondaryButton}" Margin="0,0,8,0"
+                              Click="OpenManualBackupFloat_Click"/>
+                      <Button Content="Mobile Backup Settings" Style="{StaticResource SecondaryButton}"
+                              Click="ConfigureManualBackup_Click"/>
+                    </StackPanel>
+                    <TextBlock Text="Manual Backup" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                  </DockPanel>
+                  <Border DockPanel.Dock="Bottom" Margin="0,10,0,0" Padding="10,8" CornerRadius="6">
+                    <Border.Style>
+                      <Style TargetType="Border">
+                        <Setter Property="Background" Value="#FDECEA"/>
+                        <Style.Triggers>
+                          <DataTrigger Binding="{Binding ManualBackup.OpenConnected}" Value="True">
+                            <Setter Property="Background" Value="#E8F5E9"/>
+                          </DataTrigger>
+                        </Style.Triggers>
+                      </Style>
+                    </Border.Style>
+                    <TextBlock Text="{Binding ManualBackup.OpenStatusText}" FontSize="13"/>
+                  </Border>
+                  <ItemsControl ItemsSource="{Binding ManualBackup.Locations}">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate>
+                        <Border Margin="0,0,0,10" Padding="8" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,0,1">
+                          <StackPanel>
+                            <DockPanel Margin="0,0,0,6">
+                              <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                                <Button Content="Play All" Margin="0,0,6,0" MinWidth="88"
+                                        Click="ManualBackupPlayAll_Click" Tag="{Binding Location}"/>
+                                <Button Content="Create New File All" MinWidth="140"
+                                        Click="ManualBackupCreateAll_Click" Tag="{Binding Location}"/>
+                              </StackPanel>
+                              <TextBlock Text="{Binding Location}" FontWeight="SemiBold" FontSize="15" VerticalAlignment="Center"/>
+                            </DockPanel>
+                            <ItemsControl ItemsSource="{Binding Devices}">
+                              <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                  <DockPanel Margin="0,4,0,4">
+                                    <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" Width="160">
+                                      <TextBlock Text="{Binding DisplayName}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Width="110"/>
+                                      <ToggleButton Content="Pause" IsChecked="{Binding Paused}" Margin="6,0,0,0"
+                                                    Click="ManualBackupPause_Click" Tag="{Binding}"/>
+                                    </StackPanel>
+                                    <ItemsControl ItemsSource="{Binding Files}">
+                                      <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                          <StackPanel Orientation="Horizontal"/>
+                                        </ItemsPanelTemplate>
+                                      </ItemsControl.ItemsPanel>
+                                      <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                          <Border Margin="4,0,0,0" Padding="8,6" CornerRadius="6" MinWidth="72">
+                                            <Border.Style>
+                                              <Style TargetType="Border">
+                                                <Setter Property="Background" Value="White"/>
+                                                <Setter Property="BorderBrush" Value="#CCC"/>
+                                                <Setter Property="BorderThickness" Value="1"/>
+                                                <Style.Triggers>
+                                                  <DataTrigger Binding="{Binding IsCurrent}" Value="True">
+                                                    <Setter Property="Background" Value="#E8F5E9"/>
+                                                    <Setter Property="BorderBrush" Value="#81C784"/>
+                                                  </DataTrigger>
+                                                </Style.Triggers>
+                                              </Style>
+                                            </Border.Style>
+                                            <StackPanel>
+                                              <TextBlock Text="{Binding Title}" FontSize="11" FontWeight="SemiBold"/>
+                                              <TextBlock Text="{Binding Count}" FontSize="16" HorizontalAlignment="Center"/>
+                                              <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                                <Button Content="▶" Padding="6,2" Margin="0,0,4,0"
+                                                        Click="ManualBackupPlayFile_Click" Tag="{Binding}"/>
+                                                <Button Content="↻" Padding="6,2"
+                                                        Click="ManualBackupReplayFile_Click" Tag="{Binding}"/>
+                                              </StackPanel>
+                                            </StackPanel>
+                                          </Border>
+                                        </DataTemplate>
+                                      </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                  </DockPanel>
+                                </DataTemplate>
+                              </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                          </StackPanel>
+                        </Border>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </DockPanel>
+              </Border>
+              <Border DockPanel.Dock="Top" Margin="0,0,0,16" Padding="12"
+                      Visibility="{Binding ManualBackup.ShowEnablePrompt, Converter={StaticResource BoolVis}}">
+                <Button Content="Enable Mobile Backup…" Style="{StaticResource SecondaryButton}"
+                        HorizontalAlignment="Left" Click="ConfigureManualBackup_Click"/>
+              </Border>
+
               <!-- Another laptop took the lock — close vendors here, then Close Local Copy -->
               <Border DockPanel.Dock="Top" Background="#FDECEA" BorderBrush="{StaticResource DangerBrush}" BorderThickness="1"
                       CornerRadius="8" Padding="16" Margin="0,0,0,16"
                       Visibility="{Binding ShowLockTakenOverBanner, Converter={StaticResource BoolVis}}">
+
                 <StackPanel>
                   <TextBlock Text="Another Laptop Took Over" FontSize="16" FontWeight="SemiBold"
                              Margin="0,0,0,8"/>

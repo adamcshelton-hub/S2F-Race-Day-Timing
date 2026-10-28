@@ -27,9 +27,35 @@ public class RunScoreExternalTimersTests
         Assert.Equal("1", profile.Strings["Lane_3"]);
         Assert.False(profile.Bools["ETS_3"]);
 
+        Assert.Equal(RunScoreExternalTimers.RunScoreOpenDeviceCode, profile.Strings["Timer_4"]);
+        Assert.Equal(RunScoreExternalTimers.RunScoreOpenPort, profile.Ints["COM_4"]);
+        Assert.True(profile.Bools["TCP_4"]);
+        Assert.True(profile.Bools["ETS_4"]);
+        Assert.Equal("*", profile.Strings["Lane_4"]);
+
         Assert.Equal("TIMEMACH", profile.Strings["Timer_8"]);
         Assert.Equal(0, profile.Ints["COM_8"]);
         Assert.False(profile.Bools["TCP_8"]);
+    }
+
+    [Fact]
+    public void EnsureRunScoreOpenSlot_UpgradesEmptyTimeMachineSlot4()
+    {
+        var profile = new RunScoreSopProfile
+        {
+            Strings = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["Timer_1"] = "MYLAPS_BIBTAG",
+                ["Timer_4"] = "TIMEMACH"
+            },
+            Ints = new Dictionary<string, int>(StringComparer.Ordinal) { ["COM_4"] = 0 },
+            Bools = new Dictionary<string, bool>(StringComparer.Ordinal)
+        };
+
+        Assert.True(RunScoreExternalTimers.EnsureRunScoreOpenSlot(profile));
+        Assert.Equal(RunScoreExternalTimers.RunScoreOpenDeviceCode, profile.Strings["Timer_4"]);
+        Assert.Equal(RunScoreExternalTimers.RunScoreOpenPort, profile.Ints["COM_4"]);
+        Assert.True(profile.Bools["TCP_4"]);
     }
 
     [Fact]

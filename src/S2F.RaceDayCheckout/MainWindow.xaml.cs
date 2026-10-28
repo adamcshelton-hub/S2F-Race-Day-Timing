@@ -696,6 +696,79 @@ public partial class MainWindow : Window
     private async void RoleAnnouncer_Click(object sender, RoutedEventArgs e) =>
         await _vm.SetCheckoutRoleAsync(CheckoutRole.Announcer);
 
+    private async void RoleManualBackup_Click(object sender, RoutedEventArgs e) =>
+        await _vm.SetCheckoutRoleAsync(CheckoutRole.ManualBackup);
+
+    private void OpenManualBackupFloat_Click(object sender, RoutedEventArgs e) =>
+        _vm.OpenManualBackupFloat();
+
+    private void ConfigureManualBackup_Click(object sender, RoutedEventArgs e) =>
+        _vm.ConfigureManualBackupWithPin();
+
+    private async void ManualBackupPlayAll_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { Tag: string loc })
+            await _vm.PlayManualBackupAllAsync(loc);
+    }
+
+    private void ManualBackupCreateAll_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { Tag: string loc })
+            _vm.CreateManualBackupFilesAll(loc);
+    }
+
+    private async void ManualBackupPlayFile_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { Tag: ManualBackupFileCard card })
+            await _vm.PlayManualBackupSegmentAsync(card.Location, card.DeviceId, card.FileName, replay: false);
+    }
+
+    private async void ManualBackupReplayFile_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { Tag: ManualBackupFileCard card })
+            await _vm.PlayManualBackupSegmentAsync(card.Location, card.DeviceId, card.FileName, replay: true);
+    }
+
+    private void ManualBackupPause_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not System.Windows.Controls.Primitives.ToggleButton { Tag: ManualBackupDeviceRow row, IsChecked: var paused })
+            return;
+        row.Coordinator?.SetPaused(row.Location, row.DeviceId, paused == true);
+    }
+
+    private void DoneManualBackup_Click(object sender, RoutedEventArgs e) =>
+        _vm.DoneManualBackup();
+
+    private void ManualBackupRoleSubmit_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { Tag: string loc } fe)
+            return;
+        // Find sibling TextBox in parent DockPanel
+        if (fe.Parent is System.Windows.Controls.Panel panel)
+        {
+            foreach (var child in panel.Children)
+            {
+                if (child is System.Windows.Controls.TextBox tb)
+                {
+                    _vm.SubmitManualBackupBib(loc, tb.Text ?? "");
+                    tb.Clear();
+                    break;
+                }
+            }
+        }
+    }
+
+    private void ManualBackupRoleBib_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Enter || sender is not System.Windows.Controls.TextBox tb)
+            return;
+        var loc = tb.Tag as string ?? "";
+        _vm.SubmitManualBackupBib(loc, tb.Text ?? "");
+        tb.Clear();
+        e.Handled = true;
+    }
+
+
     private void Admin_Click(object sender, RoutedEventArgs e) => _vm.TryOpenAdmin();
 
     private void ExitAdmin_Click(object sender, RoutedEventArgs e) => _vm.ExitAdmin();

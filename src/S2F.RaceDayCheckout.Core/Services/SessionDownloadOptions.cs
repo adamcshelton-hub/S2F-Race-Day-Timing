@@ -20,6 +20,11 @@ public sealed class SessionDownloadOptions
     /// </summary>
     public bool DbsOnly { get; init; }
 
+    /// <summary>
+    /// Mid-race Play: pull only <c>._checkin/manual_backup</c> (phone / Backup Laptop taps).
+    /// </summary>
+    public bool ManualBackupOnly { get; init; }
+
     public static SessionDownloadOptions ForAnnouncer(string announcerEventFile) => new()
     {
         Role = CheckoutRole.Announcer,
@@ -36,5 +41,11 @@ public sealed class SessionDownloadOptions
     {
         Role = CheckoutRole.Timing,
         AutosaveOverlayOnly = true
+    };
+
+    public static SessionDownloadOptions ForManualBackupOnly() => new()
+    {
+        Role = CheckoutRole.Timing,
+        ManualBackupOnly = true
     };
 }

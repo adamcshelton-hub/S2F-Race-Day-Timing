@@ -36,13 +36,13 @@
     {
       "adjust_day": false,
       "baud": 0,
-      "device_code": "TIMEMACH",
+      "device_code": "RSBCOI",
       "index": 3,
       "lane": "*",
-      "port": 0,
+      "port": 3100,
       "server_ip": "",
-      "start": false,
-      "tcp": false
+      "start": true,
+      "tcp": true
     },
     {
       "adjust_day": false,

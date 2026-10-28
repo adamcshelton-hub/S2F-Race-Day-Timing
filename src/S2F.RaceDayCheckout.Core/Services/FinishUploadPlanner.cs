@@ -41,6 +41,14 @@ public static class FinishUploadPlanner
                 results.Add(name);
         }
 
+        // Manual Backup segments (._checkin/manual_backup) — Play gate files must Finish with the pack.
+        var mbRel = Path.Combine(PathService.AppMetaFolderName, ManualBackupStore.FolderName);
+        CollectTreeDiffs(
+            Path.Combine(active.ActivePath, mbRel),
+            Path.Combine(active.LibrarySessionPath, mbRel),
+            mbRel,
+            results);
+
         return results;
     }
 

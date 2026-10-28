@@ -329,8 +329,10 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
             // Enumerate once, then download several files at a time.
             var slim = options?.Role == CheckoutRole.Announcer;
             var overlayOnly = options?.AutosaveOverlayOnly == true;
+            var mbOnly = options?.ManualBackupOnly == true;
             status?.Report(
                 dbsOnly ? "Listing announcer DB's…"
+                : mbOnly ? "Listing Manual Backup…"
                 : slim ? "Listing announcer files…"
                 : overlayOnly ? "Listing live autosave…"
                 : "Listing race files…");
@@ -343,6 +345,20 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
                 var dbsLocal = Path.Combine(librarySessionPath, SharedFolderLinkService.DbsFolderName);
                 await CollectDownloadJobsAsync(
                         dbsCloud, dbsLocal, librarySessionPath, jobs, budget.Token, options)
+                    .ConfigureAwait(false);
+            }
+            else if (mbOnly)
+            {
+                // Start at ._checkin/manual_backup — skip session-root listing (cellular).
+                var mbCloud = JoinDrivePath(
+                    relative,
+                    PathService.AppMetaFolderName + "/" + ManualBackupStore.FolderName);
+                var mbLocal = Path.Combine(
+                    librarySessionPath,
+                    PathService.AppMetaFolderName,
+                    ManualBackupStore.FolderName);
+                await CollectDownloadJobsAsync(
+                        mbCloud, mbLocal, librarySessionPath, jobs, budget.Token, options)
                     .ConfigureAwait(false);
             }
             else
@@ -360,11 +376,12 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
             // re-pull — Entries.DTA / results often change content without a size change, and a
             // stale local overlay would otherwise win after force take-over.
             // Announcer DB's mid-race: also re-pull when remote lastModified is newer (same-size CSV edits).
+            // Manual Backup mid-race: always re-pull (phones append jsonl).
             var downloadQueue = jobs
                 .Where(j => j.Size is null || j.Size.Value <= maxBytes)
                 .Where(j =>
                 {
-                    if (overlayOnly)
+                    if (overlayOnly || mbOnly)
                         return true;
                     if (!File.Exists(j.LocalPath) || j.Size is not long remoteSize)
                         return true;
@@ -391,11 +408,15 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
                     Message = jobs.Count > 0
                         ? (overlayOnly
                             ? "No live autosave files on OneDrive."
+                            : mbOnly
+                                ? "Manual Backup already current on this laptop."
                             : dbsOnly
                                 ? "Announcer DB's already current on this laptop."
                                 : "Race files already on this laptop.")
                         : dbsOnly
                             ? "No DB's folder on OneDrive yet."
+                            : mbOnly
+                                ? "No Manual Backup folder on OneDrive yet."
                             : "OneDrive session had no files (using local library if present)."
                 };
             }
@@ -1744,8 +1765,9 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
                 {
                     if (GraphSyncPolicy.ShouldSkipFolder(item.Name))
                         continue;
-                    // ._checkin lock JSON only — Finish backup trees stay in the cloud until needed.
-                    if (underAppMeta)
+                    // ._checkin: Manual Backup segments only (lock JSON is separate GETs; Finish trees stay local).
+                    if (underAppMeta
+                        && !string.Equals(item.Name, ManualBackupStore.FolderName, StringComparison.OrdinalIgnoreCase))
                         continue;
                 }
 
@@ -1985,17 +2007,18 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
         if (!Directory.Exists(localPath))
             return;
 
-        // ._checkin Finish backup trees stay local — only lock JSON at the meta root goes to Graph.
-        var skipChildFolders = string.Equals(
+        // ._checkin: upload Manual Backup only (Finish backup trees stay local; lock JSON via dedicated PUTs).
+        var underAppMeta = string.Equals(
             Path.GetFileName(localPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)),
             PathService.AppMetaFolderName,
             StringComparison.OrdinalIgnoreCase);
 
         foreach (var dir in Directory.EnumerateDirectories(localPath))
         {
-            if (skipChildFolders)
-                continue;
             var name = Path.GetFileName(dir);
+            if (underAppMeta
+                && !string.Equals(name, ManualBackupStore.FolderName, StringComparison.OrdinalIgnoreCase))
+                continue;
             if (GraphSyncPolicy.ShouldSkipFolder(name))
                 continue;
             if (name.EndsWith(PathService.AutosaveTombstoneSuffix, StringComparison.OrdinalIgnoreCase))
@@ -2003,6 +2026,7 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
 
             CollectUploadJobs(dir, JoinDrivePath(cloudPath, name), maxFileBytes, progressLabel, jobs);
         }
+
 
         foreach (var file in Directory.EnumerateFiles(localPath))
         {

@@ -21,15 +21,24 @@ public static class RunScoreExternalTimers
         bool AdjustDay,
         string ServerIp);
 
+    /// <summary>RunScore Open device code (registry / export). Wire prefixes are RSBI/RSBCI/RSCI.</summary>
+    public const string RunScoreOpenDeviceCode = "RSBCOI";
+
+    /// <summary>Company TCP port for Manual Backup → RunScore Open (Event *).</summary>
+    public const int RunScoreOpenPort = 3100;
+
+    /// <summary>Export index for the RunScore Open slot (registry <c>Timer_4</c>).</summary>
+    public const int RunScoreOpenSlotIndex = 3;
+
     /// <summary>
-    /// Start2Finish default rows (MyLaps BibTag, ChronoTrack, iPico Sport; slots 4–8 empty Time Machine).
+    /// Start2Finish default rows (MyLaps BibTag, ChronoTrack, iPico Sport, RunScore Open; slots 5–8 empty Time Machine).
     /// </summary>
     public static IReadOnlyList<Row> CompanyDefaults { get; } = new Row[]
     {
         new(0, "MYLAPS_BIBTAG", 3097, "*", 0, Start: true, Tcp: true, AdjustDay: false, ServerIp: ""),
         new(1, "CHRONOTRACK", 61611, "*", 0, Start: false, Tcp: true, AdjustDay: false, ServerIp: ""),
         new(2, "IPICO_SPORT", 10000, "1", 0, Start: false, Tcp: true, AdjustDay: false, ServerIp: "192.168.8.199"),
-        new(3, "TIMEMACH", 0, "*", 0, Start: false, Tcp: false, AdjustDay: false, ServerIp: ""),
+        new(3, RunScoreOpenDeviceCode, RunScoreOpenPort, "*", 0, Start: true, Tcp: true, AdjustDay: false, ServerIp: ""),
         new(4, "TIMEMACH", 0, "*", 0, Start: false, Tcp: false, AdjustDay: false, ServerIp: ""),
         new(5, "TIMEMACH", 0, "*", 0, Start: false, Tcp: false, AdjustDay: false, ServerIp: ""),
         new(6, "TIMEMACH", 0, "*", 0, Start: false, Tcp: false, AdjustDay: false, ServerIp: ""),
@@ -44,15 +53,41 @@ public static class RunScoreExternalTimers
     }
 
     /// <summary>
-    /// Fill External Timers keys missing from an older SOP file. Does not overwrite keys already present.
+    /// Fill External Timers keys missing from an older SOP file. Does not overwrite keys already present,
+    /// except upgrading an empty Time Machine slot 4 to RunScore Open when that company default is missing.
     /// </summary>
     public static bool MergeMissingCompanyDefaults(RunScoreSopProfile profile)
     {
         ArgumentNullException.ThrowIfNull(profile);
-        if (profile.Strings.ContainsKey("Timer_1"))
+        if (!profile.Strings.ContainsKey("Timer_1"))
+        {
+            ApplyCompanyDefaults(profile);
+            return true;
+        }
+
+        return EnsureRunScoreOpenSlot(profile);
+    }
+
+    /// <summary>
+    /// If slot 4 is still an unused Time Machine (port 0), replace it with company RunScore Open defaults.
+    /// </summary>
+    public static bool EnsureRunScoreOpenSlot(RunScoreSopProfile profile)
+    {
+        ArgumentNullException.ThrowIfNull(profile);
+        const string timerKey = "Timer_4";
+        const string comKey = "COM_4";
+        if (!profile.Strings.TryGetValue(timerKey, out var device))
+        {
+            ApplyRow(profile, CompanyDefaults[RunScoreOpenSlotIndex]);
+            return true;
+        }
+
+        if (!string.Equals(device, "TIMEMACH", StringComparison.OrdinalIgnoreCase))
+            return false;
+        if (profile.Ints.TryGetValue(comKey, out var com) && com is not 0 and not RunScoreOpenPort)
             return false;
 
-        ApplyCompanyDefaults(profile);
+        ApplyRow(profile, CompanyDefaults[RunScoreOpenSlotIndex]);
         return true;
     }
 

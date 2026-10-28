@@ -63,6 +63,7 @@ public interface ICloudLibrarySync
     /// Reclaim (<see cref="SessionDownloadOptions.ForReclaimAutosaveOverlay"/>): only RUNSCORE\_autosave.
     /// Announcer (<see cref="SessionDownloadOptions.ForAnnouncer"/>): assigned .event + DB's only.
     /// Announcer mid-race (<see cref="SessionDownloadOptions.ForAnnouncerDbsRefresh"/>): DB's only.
+    /// Manual Backup mid-race (<see cref="SessionDownloadOptions.ForManualBackupOnly"/>): ._checkin/manual_backup only.
     /// </summary>
     Task<CloudSyncResult> DownloadSessionAsync(
         string librarySessionPath,

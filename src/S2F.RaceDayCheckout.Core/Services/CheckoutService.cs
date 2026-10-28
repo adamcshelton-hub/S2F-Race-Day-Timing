@@ -335,6 +335,10 @@ public sealed class CheckoutService
         };
         _activeStore.Save(active);
 
+        // Manual Backup: archive pre-race Currents so Play All starts clean (enabled sessions only).
+        TryRotateManualBackup(active.ActivePath);
+        TryRotateManualBackup(active.LibrarySessionPath);
+
         // Soft: always re-pull vendor secrets (tiny GET) before SOP pin so rotated OneDrive
         // credentials apply. Admin RaceRoster/RunSignUp overrides still win at pin time.
         // Never blocks checkout on failure — ApplySop uses prior cache / leaves registry alone.
@@ -861,6 +865,10 @@ public sealed class CheckoutService
         // Pick up .event files Save As'd mid-checkout (Templates → bare T&S → Save As into Active).
         // Copy every Active *.event to Library (primary + announcer/video secondaries).
         var activeEventNames = EventFileSelector.ListEventFiles(active.ActivePath);
+
+        // Manual Backup: rotate Currents so post-Finish mobile taps land in a new file.
+        TryRotateManualBackup(active.ActivePath);
+        TryRotateManualBackup(active.LibrarySessionPath);
 
         // Diff Active vs Library BEFORE finish:copy — download/checkout timestamps must not
         // drive Graph upload (that was uploading ~100 unchanged RUNSCORE files).
@@ -1441,4 +1449,26 @@ public sealed class CheckoutService
             }
         }
     }
+
+    /// <summary>
+    /// When Mobile Backup is enabled, archive every device Current (Create New File All). Soft — never fails checkout/Finish.
+    /// </summary>
+    private static void TryRotateManualBackup(string? sessionPath)
+    {
+        if (string.IsNullOrWhiteSpace(sessionPath) || !Directory.Exists(sessionPath))
+            return;
+        try
+        {
+            var store = new ManualBackupStore();
+            var manifest = store.LoadManifest(sessionPath);
+            if (!manifest.Enabled)
+                return;
+            store.CreateNewFileAll(sessionPath);
+        }
+        catch
+        {
+            // Non-fatal
+        }
+    }
 }
+
