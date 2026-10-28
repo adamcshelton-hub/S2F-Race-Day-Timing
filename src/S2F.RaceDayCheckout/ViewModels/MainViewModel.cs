@@ -971,22 +971,20 @@ public sealed class MainViewModel : INotifyPropertyChanged
         if (Active is null || Active.Role == CheckoutRole.Announcer)
             return;
 
-        // One incomplete draft at a time — otherwise Persist would drop blanks or stack empties.
+        // One empty clock at a time (no start time and no gun yet).
         if (RaceStarts.Any(IsIncompleteDraft))
         {
-            Status = "Finish or remove the blank clock before adding another.";
+            Status = "Enter a start time or Capture Gun Start on the blank clock before adding another.";
             return;
         }
 
-        // Keep on the board only — Normalize drops empty categories, so don't persist yet.
+        // Keep on the board only until start/gun makes it persistable.
         RaceStarts.Add(RaceStartRowViewModel.CreateDraft(CommitRaceStartClock, RemoveRaceStart));
     }
 
-    /// <summary>Not yet saveable (no category, or category without start/gun).</summary>
+    /// <summary>Blank clock: no scheduled start and no gun yet (category label optional).</summary>
     private static bool IsIncompleteDraft(RaceStartRowViewModel row) =>
-        !row.IsAddTile
-        && (string.IsNullOrWhiteSpace(row.CategoryText)
-            || (!row.HasStartTime && !row.HasGunStart));
+        !row.IsAddTile && !row.HasStartTime && !row.HasGunStart;
 
     public void CommitRaceStartClock(RaceStartRowViewModel? row)
     {
@@ -1011,13 +1009,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
     {
         if (row is null || row.IsAddTile || Active is null || Active.Role == CheckoutRole.Announcer)
             return;
-        if (string.IsNullOrWhiteSpace(row.CategoryText))
-        {
-            Status = "Enter a category name before Capture Gun Start.";
-            return;
-        }
 
-        // Gun does not require a typed Start Time — scheduled HH:MM is filled from gun if empty.
+        // Category label optional — gun (and derived HH:MM) is enough.
         var gun = RaceStartClock.CaptureGunTimeOfDay(DateTime.Now);
         row.ApplyGunStart(gun);
         if (!row.TryBuildEntry(out var updated, out var buildError))
@@ -1031,7 +1024,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
         PersistRaceStarts(RaceStartsStore.Normalize(next));
         var gunText = RaceStartClock.FormatGunHhMmSs(gun);
         TryCopyGunTimeToClipboard(gunText);
-        Status = row.Category + " gun " + gunText + " (copied)";
+        var label = string.IsNullOrWhiteSpace(row.CategoryText) ? "Clock" : row.CategoryText.Trim();
+        Status = label + " gun " + gunText + " (copied)";
     }
 
     /// <summary>Copy this card’s gun stamp (<c>HH:MM:SS.ff</c>) to the clipboard.</summary>
@@ -1080,7 +1074,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
         var next = RaceStarts.Select(r => ReferenceEquals(r, row) ? updated : r.Entry).ToList();
         PersistRaceStarts(RaceStartsStore.Normalize(next));
-        Status = row.Category + " gun cleared — using scheduled start.";
+        var label = string.IsNullOrWhiteSpace(row.CategoryText) ? "Clock" : row.CategoryText.Trim();
+        Status = label + " gun cleared — using scheduled start.";
     }
 
     public void RemoveRaceStart(RaceStartRowViewModel? row)

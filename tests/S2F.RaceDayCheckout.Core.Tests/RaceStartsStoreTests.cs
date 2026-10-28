@@ -33,7 +33,7 @@ public class RaceStartsStoreTests
     }
 
     [Fact]
-    public void Normalize_DropsBlankAndDedupes()
+    public void Normalize_TrimsDedupes_AndKeepsUnlabeledStarts()
     {
         var normalized = RaceStartsStore.Normalize(
         [
@@ -41,9 +41,11 @@ public class RaceStartsStoreTests
             new RaceStartEntry { Category = "5K", StartTimeOfDay = new TimeSpan(8, 0, 0) },
             new RaceStartEntry { Category = "  ", StartTimeOfDay = new TimeSpan(9, 0, 0) }
         ]);
-        Assert.Single(normalized);
+        Assert.Equal(2, normalized.Count);
         Assert.Equal("5K", normalized[0].Category);
         Assert.Equal(new TimeSpan(8, 0, 0), normalized[0].StartTimeOfDay);
+        Assert.Equal(string.Empty, normalized[1].Category);
+        Assert.Equal(new TimeSpan(9, 0, 0), normalized[1].StartTimeOfDay);
     }
 
     [Fact]

@@ -206,39 +206,21 @@ public sealed class RaceStartRowViewModel : INotifyPropertyChanged
         var hasTime = TryReadTimeOfDay(out var tod);
         var hasGun = _gunStartTimeOfDay is not null;
 
-        if (string.IsNullOrWhiteSpace(category) && !hasTime && !hasGun)
+        // Label is optional — start time and/or gun are enough to keep the clock.
+        if (!hasTime && !hasGun)
         {
-            // Incomplete draft — stay on the board quietly.
-            return false;
-        }
-
-        if (string.IsNullOrWhiteSpace(category))
-        {
-            error = "Enter a category name on the clock.";
+            // Still empty helper fields — stay on the board quietly.
             return false;
         }
 
         if (!hasTime)
         {
-            if (hasGun)
+            // Capture Gun without typed Start Time — seed scheduled HH:MM from gun.
+            var g = _gunStartTimeOfDay!.Value;
+            if (!RaceStartClock.TryNormalizeHourMinute(
+                    (int)g.TotalHours % 24, g.Minutes, out tod))
             {
-                // Capture Gun without typed Start Time — seed scheduled HH:MM from gun.
-                var g = _gunStartTimeOfDay!.Value;
-                if (!RaceStartClock.TryNormalizeHourMinute(
-                        (int)g.TotalHours % 24, g.Minutes, out tod))
-                {
-                    error = "Couldn't derive start time from gun.";
-                    return false;
-                }
-            }
-            else if (string.IsNullOrEmpty(_startHourText) && string.IsNullOrEmpty(_startMinuteText))
-            {
-                // Label typed but time still helper-only — wait without nagging every blur.
-                return false;
-            }
-            else
-            {
-                error = "Enter start time as HH:MM (24-hour).";
+                error = "Couldn't derive start time from gun.";
                 return false;
             }
         }

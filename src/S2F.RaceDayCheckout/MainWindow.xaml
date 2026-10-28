@@ -405,7 +405,7 @@
                                     Style="{StaticResource PrimaryButton}"
                                     FontSize="12" Padding="8,4" MinHeight="30"
                                     HorizontalAlignment="Stretch" Margin="0,6,0,0"
-                                    ToolTip="Sets the actual race start from the laptop clock right now (HH:MM:SS.ff). Does not require a typed Start Time first. Live clock counts from this gun time."
+                                    ToolTip="Sets the actual race start from the laptop clock right now (HH:MM:SS.ff). Category label and typed Start Time are optional. Live clock counts from this gun time."
                                     Click="CaptureGunStart_Click"/>
                             <!-- Always reserve this row so cards match height with/without a gun. -->
                             <DockPanel DockPanel.Dock="Bottom" Margin="0,6,0,0" MinHeight="30">

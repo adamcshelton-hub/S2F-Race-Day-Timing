@@ -66,11 +66,12 @@ public static class RaceStartsStore
         if (starts is null)
             return Array.Empty<RaceStartEntry>();
 
+        // Category label is optional — unlabeled clocks with start/gun still persist.
         return starts
-            .Where(s => s is not null && !string.IsNullOrWhiteSpace(s.Category))
+            .Where(s => s is not null)
             .Select(s => new RaceStartEntry
             {
-                Category = s.Category.Trim(),
+                Category = (s.Category ?? string.Empty).Trim(),
                 StartTimeOfDay = StripToMinute(s.StartTimeOfDay),
                 GunStartTimeOfDay = s.GunStartTimeOfDay is { } gun ? StripToCentisecond(gun) : null
             })
