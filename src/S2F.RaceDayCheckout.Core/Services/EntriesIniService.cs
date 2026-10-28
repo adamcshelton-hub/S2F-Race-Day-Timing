@@ -116,10 +116,28 @@ public static class EntriesIniService
         return s;
     }
 
-    /// <summary>Library session folder name: "yyyy - {race name}".</summary>
+    /// <summary>Leading <c>yyyy -</c> on a typed race/group name (staff habit from pre-app folder naming).</summary>
+    private static readonly Regex LeadingYearPrefix = new(
+        @"^(?<year>\d{4})\s*-\s*",
+        RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+    /// <summary>
+    /// Strip a leading <c>yyyy -</c> so <see cref="BuildSessionFolderName"/> does not become
+    /// <c>2026 - 2026 - Race</c> when staff still type the year in the name field.
+    /// </summary>
+    public static string StripLeadingYearPrefix(string? name)
+    {
+        var s = (name ?? string.Empty).Trim();
+        if (s.Length == 0)
+            return s;
+        var m = LeadingYearPrefix.Match(s);
+        return m.Success ? s[m.Length..].Trim() : s;
+    }
+
+    /// <summary>Library session folder name: "yyyy - {race name}" (year from race date; name must not already include it).</summary>
     public static string BuildSessionFolderName(string raceName, string raceDate)
     {
-        var name = (raceName ?? string.Empty).Trim();
+        var name = StripLeadingYearPrefix(raceName);
         if (name.Length == 0)
             throw new ArgumentException("Race name is required.", nameof(raceName));
 

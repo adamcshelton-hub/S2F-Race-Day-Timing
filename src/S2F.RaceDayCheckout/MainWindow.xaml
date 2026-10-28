@@ -709,7 +709,7 @@
                   <TextBox x:Name="NewEventParentNameBox"
                            Text="{Binding NewEventParentName, UpdateSourceTrigger=LostFocus}"
                            Padding="10,8" Margin="0,0,0,14" TabIndex="1"
-                           ToolTip="e.g. LRM Weekend — Tab to Year, Enter to continue"
+                           ToolTip="Name only — e.g. LRM Weekend (do not type the year). Tab to Year, Enter to continue"
                            KeyDown="NewEventParentField_KeyDown"/>
                   <TextBlock Text="Year" Margin="0,0,0,4"
                              Foreground="{StaticResource MutedBrush}" FontSize="12"/>
@@ -719,7 +719,7 @@
                            HorizontalAlignment="Left" Width="100"
                            ToolTip="Year prefix on the Race Group folder (e.g. 2026). Enter to continue"
                            KeyDown="NewEventParentField_KeyDown"/>
-                  <TextBlock Text="Folder on disk is Year - Name (e.g. 2026 - LRM Weekend)."
+                  <TextBlock Text="App adds the year — type the name only (folder becomes e.g. 2026 - LRM Weekend)."
                              FontSize="12" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,8"/>
                   <TextBlock Text="{Binding NewEventParentFolderPreview}" TextWrapping="Wrap" FontSize="13"
                              Foreground="{StaticResource AccentBrush}"/>
@@ -763,7 +763,7 @@
                   <TextBox x:Name="NewEventRaceNameBox"
                            Text="{Binding NewEventRaceName, UpdateSourceTrigger=LostFocus}"
                            Padding="10,8" Margin="0,0,0,14" TabIndex="1"
-                           ToolTip="Tab to Race Date. Enter moves to the next field."
+                           ToolTip="Name only — do not type the year (app adds it from Race Date). Tab to Race Date."
                            KeyDown="NewEventDetailsField_KeyDown"/>
 
                   <TextBlock Text="Race Date" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}" FontSize="12"/>
@@ -773,7 +773,7 @@
                               HorizontalAlignment="Left" Width="220"
                               ToolTip="Used in Entries.ini (MM/DD/YYYY) and the year in the folder name. Tab to Results ID."
                               KeyDown="NewEventDetailsField_KeyDown"/>
-                  <TextBlock Text="Stored in Entries.ini as MM/DD/YYYY. Year is used in the folder name."
+                  <TextBlock Text="Stored in Entries.ini as MM/DD/YYYY. Folder year comes from this date — do not put the year in Race Name."
                              FontSize="12" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,14"/>
 
                   <TextBlock Text="%resultsid% (Race Roster)" Margin="0,0,0,4" Foreground="{StaticResource MutedBrush}" FontSize="12"/>
