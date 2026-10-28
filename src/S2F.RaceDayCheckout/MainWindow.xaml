@@ -553,6 +553,7 @@
                                 FontSize="13" FontWeight="Bold" Content="×"
                                 Foreground="#C62828" Background="Transparent"
                                 BorderThickness="0" Cursor="Hand"
+                                KeyboardNavigation.IsTabStop="False"
                                 ToolTip="Delete Start Clock"
                                 Click="RemoveRaceStart_Click">
                           <Button.Template>

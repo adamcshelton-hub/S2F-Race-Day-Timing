@@ -534,12 +534,49 @@ public partial class MainWindow : Window
             e.Handled = true;
             if (sender is UIElement el)
                 el.MoveFocus(new TraversalRequest(FocusNavigationDirection.Next));
+            return;
+        }
+
+        // Tab after HH — land in MM (not Capture / ×), especially when MM is still empty.
+        if (e.Key == Key.Tab && (Keyboard.Modifiers & ModifierKeys.Shift) == 0
+            && sender is TextBox hour
+            && FindTaggedTextBoxNear(hour, "StartMinute") is { } minute)
+        {
+            e.Handled = true;
+            minute.Focus();
+            Dispatcher.BeginInvoke(DispatcherPriority.Input, () =>
+            {
+                if (minute.Text.Length == 0)
+                {
+                    minute.CaretIndex = 0;
+                    minute.SelectionLength = 0;
+                }
+                else
+                    minute.SelectAll();
+            });
         }
     }
 
     private void RaceStartMinute_PreviewKeyDown(object sender, KeyEventArgs e)
     {
-        if (e.Key != Key.Back || sender is not TextBox { CaretIndex: 0, SelectionLength: 0 } minute)
+        if (sender is not TextBox minute)
+            return;
+
+        // Habitual Tab after auto-advance from HH: stay in empty MM until digits are entered.
+        if (e.Key == Key.Tab && (Keyboard.Modifiers & ModifierKeys.Shift) == 0
+            && minute.Text.Length == 0)
+        {
+            e.Handled = true;
+            minute.Focus();
+            Dispatcher.BeginInvoke(DispatcherPriority.Input, () =>
+            {
+                minute.CaretIndex = 0;
+                minute.SelectionLength = 0;
+            });
+            return;
+        }
+
+        if (e.Key != Key.Back || minute.CaretIndex != 0 || minute.SelectionLength != 0)
             return;
         if (minute.Text.Length > 0)
             return;
