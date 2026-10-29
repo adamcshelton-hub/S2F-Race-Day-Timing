@@ -602,50 +602,30 @@
                 </StackPanel>
               </Border>
 
-              <Border DockPanel.Dock="Bottom" Background="#F7F8FA" BorderBrush="{StaticResource LineBrush}"
-                      BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,10,0,0"
-                      Visibility="{Binding ShowActiveSaveAsGuide, Converter={StaticResource BoolVis}}">
-                <StackPanel>
-                  <TextBlock Text="T&amp;S Save As Path" FontSize="14" FontWeight="SemiBold"
-                             Margin="0,0,0,6"/>
-                  <TextBlock Text="{Binding ActiveSaveAsFolderGuide}"
-                             FontFamily="Consolas, Cascadia Mono, Courier New"
-                             FontSize="12" TextWrapping="Wrap"
-                             Foreground="{StaticResource MutedBrush}"/>
-                  <TextBlock TextWrapping="Wrap" FontSize="12" Margin="0,8,0,0"
-                             Foreground="{StaticResource MutedBrush}"
-                             Text="In Timing &amp; Scoring Save As, use This PC (not Documents) and save into this folder. Announcer / video files go here too — Finish uploads every .event in Active."/>
-                </StackPanel>
-              </Border>
-
-              <!-- When MB on: Backup fills left; clocks stack on the right. When off: clocks center. -->
+              <!-- When MB on: Backup | drag splitter | clocks. When off: clocks fill width. -->
               <Grid>
-                <Grid.ColumnDefinitions>
-                  <ColumnDefinition Width="*"/>
-                  <ColumnDefinition Width="Auto"/>
-                </Grid.ColumnDefinitions>
+                <!-- Manual Backup on: resizable split (drag the vertical border) -->
+                <Grid Visibility="{Binding ManualBackup.ShowPanel, Converter={StaticResource BoolVis}}">
+                  <Grid.ColumnDefinitions>
+                    <!-- MinWidth synced in code from ManualBackup.LocationsPanelMinWidth -->
+                    <ColumnDefinition x:Name="ManualBackupColumn" Width="*" MinWidth="254"/>
+                    <ColumnDefinition Width="10"/>
+                    <!-- ~2× MaxSide (260) so two clocks fit at the same size as MB-off -->
+                    <ColumnDefinition Width="520" MinWidth="260"/>
+                  </Grid.ColumnDefinitions>
 
-                <!-- Manual Backup — full remaining height on the left -->
-                <Border Grid.Column="0" Margin="0,0,8,0" Padding="8,6"
+                <!-- Manual Backup — location columns share width; splitter cannot crush below full cards -->
+                <Border Grid.Column="0" Padding="8,6"
                         Background="#FAFBFD" BorderBrush="{StaticResource LineBrush}" BorderThickness="1"
-                        CornerRadius="8" VerticalAlignment="Stretch"
-                        Visibility="{Binding ManualBackup.ShowPanel, Converter={StaticResource BoolVis}}">
+                        CornerRadius="8" VerticalAlignment="Stretch">
                   <DockPanel>
-                    <DockPanel DockPanel.Dock="Top" Margin="0,0,0,4" LastChildFill="True">
-                      <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
-                        <Button Content="Entry" Style="{StaticResource SecondaryButton}"
-                                MinHeight="26" FontSize="11" Padding="8,2" Margin="0,0,4,0"
-                                ToolTip="Open Entry Window"
-                                Click="OpenManualBackupFloat_Click"/>
-                        <Button Content="Settings" Style="{StaticResource SecondaryButton}"
-                                MinHeight="26" FontSize="11" Padding="8,2"
-                                ToolTip="Manual Backup Settings"
-                                Click="ConfigureManualBackup_Click"/>
-                      </StackPanel>
-                      <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <!-- Row 1: title + RunScore badge. Row 2: Entry/Settings + short status. -->
+                    <StackPanel DockPanel.Dock="Top" Margin="0,0,0,4">
+                      <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,0,4">
                         <TextBlock Text="Manual Backup" FontSize="13" FontWeight="SemiBold"
                                    VerticalAlignment="Center" Margin="0,0,10,0"/>
-                        <Border Padding="6,2" CornerRadius="3" BorderThickness="1" VerticalAlignment="Center">
+                        <Border Padding="6,2" CornerRadius="3" BorderThickness="1" VerticalAlignment="Center"
+                                ToolTip="{Binding ManualBackup.OpenStatusToolTip}">
                           <Border.Style>
                             <Style TargetType="Border">
                               <Setter Property="Background" Value="#FDECEA"/>
@@ -661,17 +641,25 @@
                           <TextBlock Text="{Binding ManualBackup.OpenStatusText}" FontSize="10"
                                      VerticalAlignment="Center"/>
                         </Border>
+                      </StackPanel>
+                      <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
+                        <Button Content="Entry" Style="{StaticResource SecondaryButton}"
+                                MinHeight="26" FontSize="11" Padding="8,2" Margin="0,0,4,0"
+                                ToolTip="Open Entry Window"
+                                Click="OpenManualBackupFloat_Click"/>
+                        <Button Content="Settings" Style="{StaticResource SecondaryButton}"
+                                MinHeight="26" FontSize="11" Padding="8,2" Margin="0,0,8,0"
+                                ToolTip="Manual Backup Settings"
+                                Click="ConfigureManualBackup_Click"/>
                         <!-- Short status only (Play connection errors stay on the Alert dialog). -->
                         <TextBlock Text="{Binding ManualBackup.Status}" FontSize="11"
                                    Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center"
-                                   Margin="10,0,0,0" TextTrimming="CharacterEllipsis" MaxWidth="220"/>
+                                   TextTrimming="CharacterEllipsis" MaxWidth="220"/>
                       </StackPanel>
-                    </DockPanel>
-                    <!-- Horizontal only — location header / device stay put; Past scrolls inside each column. -->
-                    <ScrollViewer HorizontalScrollBarVisibility="Auto"
-                                  VerticalScrollBarVisibility="Disabled"
-                                  CanContentScroll="False">
-                      <ItemsControl ItemsSource="{Binding ManualBackup.Locations}">
+                    </StackPanel>
+                    <!-- Fixed-width location columns (do not stretch with the pane). -->
+                    <ItemsControl ItemsSource="{Binding ManualBackup.Locations}"
+                                  HorizontalAlignment="Left" VerticalAlignment="Stretch">
                       <ItemsControl.ItemsPanel>
                         <ItemsPanelTemplate>
                           <StackPanel Orientation="Horizontal"/>
@@ -891,13 +879,47 @@
                         </DataTemplate>
                       </ItemsControl.ItemTemplate>
                     </ItemsControl>
-                    </ScrollViewer>
                   </DockPanel>
                 </Border>
 
-                <!-- Clocks rail (Manual Backup on): 2-col squares -->
-                <DockPanel Grid.Column="1" Width="456" LastChildFill="True"
-                           Visibility="{Binding ManualBackup.ShowPanel, Converter={StaticResource BoolVis}}">
+                <!-- Drag handle between Manual Backup and clocks (grip dots = resize affordance) -->
+                <GridSplitter Grid.Column="1"
+                              HorizontalAlignment="Stretch"
+                              VerticalAlignment="Stretch"
+                              ResizeDirection="Columns"
+                              ResizeBehavior="PreviousAndNext"
+                              ShowsPreview="False"
+                              Cursor="SizeWE"
+                              ToolTip="Drag to Resize">
+                  <GridSplitter.Template>
+                    <ControlTemplate TargetType="GridSplitter">
+                      <Border Background="#F0F3F7" Cursor="SizeWE"
+                              BorderBrush="{StaticResource LineBrush}" BorderThickness="1,0">
+                        <!-- Classic vertical grip: two columns of dots -->
+                        <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center"
+                                    Orientation="Horizontal" IsHitTestVisible="False">
+                          <StackPanel Margin="0,0,2,0">
+                            <Ellipse Width="2.5" Height="2.5" Fill="{StaticResource MutedBrush}" Margin="0,1.5" Opacity="0.7"/>
+                            <Ellipse Width="2.5" Height="2.5" Fill="{StaticResource MutedBrush}" Margin="0,1.5" Opacity="0.7"/>
+                            <Ellipse Width="2.5" Height="2.5" Fill="{StaticResource MutedBrush}" Margin="0,1.5" Opacity="0.7"/>
+                            <Ellipse Width="2.5" Height="2.5" Fill="{StaticResource MutedBrush}" Margin="0,1.5" Opacity="0.7"/>
+                            <Ellipse Width="2.5" Height="2.5" Fill="{StaticResource MutedBrush}" Margin="0,1.5" Opacity="0.7"/>
+                          </StackPanel>
+                          <StackPanel>
+                            <Ellipse Width="2.5" Height="2.5" Fill="{StaticResource MutedBrush}" Margin="0,1.5" Opacity="0.7"/>
+                            <Ellipse Width="2.5" Height="2.5" Fill="{StaticResource MutedBrush}" Margin="0,1.5" Opacity="0.7"/>
+                            <Ellipse Width="2.5" Height="2.5" Fill="{StaticResource MutedBrush}" Margin="0,1.5" Opacity="0.7"/>
+                            <Ellipse Width="2.5" Height="2.5" Fill="{StaticResource MutedBrush}" Margin="0,1.5" Opacity="0.7"/>
+                            <Ellipse Width="2.5" Height="2.5" Fill="{StaticResource MutedBrush}" Margin="0,1.5" Opacity="0.7"/>
+                          </StackPanel>
+                        </StackPanel>
+                      </Border>
+                    </ControlTemplate>
+                  </GridSplitter.Template>
+                </GridSplitter>
+
+                <!-- Clocks rail (Manual Backup on): auto columns from width; shrink only at 1 col -->
+                <DockPanel Grid.Column="2" LastChildFill="True" Margin="10,0,0,0">
                   <TextBlock DockPanel.Dock="Top" Margin="0,0,0,6" FontSize="13"
                              HorizontalAlignment="Left">
                     <Hyperlink Click="AddRaceStartClock_Click"
@@ -912,7 +934,7 @@
                                 ItemTemplate="{StaticResource RaceStartClockTile}">
                     <ItemsControl.ItemsPanel>
                       <ItemsPanelTemplate>
-                        <ctrl:EqualSquareGridPanel Columns="2"/>
+                        <ctrl:EqualSquareGridPanel MaxSide="260"/>
                       </ItemsPanelTemplate>
                     </ItemsControl.ItemsPanel>
                     <ItemsControl.ItemContainerStyle>
@@ -923,9 +945,10 @@
                     </ItemsControl.ItemContainerStyle>
                   </ItemsControl>
                 </DockPanel>
+                </Grid>
 
-                <!-- Clocks center (Manual Backup off): squares shrink to fit -->
-                <DockPanel Grid.Column="0" Grid.ColumnSpan="2" LastChildFill="True"
+                <!-- Clocks center (Manual Backup off): same auto-fit column rules -->
+                <DockPanel LastChildFill="True"
                            Visibility="{Binding ManualBackup.ShowPanel, Converter={StaticResource BoolVis}, ConverterParameter=invert}">
                   <TextBlock DockPanel.Dock="Top" Margin="0,0,0,6" FontSize="13"
                              HorizontalAlignment="Left">
@@ -937,12 +960,11 @@
                   <ItemsControl x:Name="RaceStartBoardList"
                                 ItemsSource="{Binding RaceStartBoard}"
                                 HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
-                                MaxWidth="1040"
                                 ClipToBounds="True"
                                 ItemTemplate="{StaticResource RaceStartClockTile}">
                     <ItemsControl.ItemsPanel>
                       <ItemsPanelTemplate>
-                        <ctrl:EqualSquareGridPanel Columns="4"/>
+                        <ctrl:EqualSquareGridPanel MaxSide="260"/>
                       </ItemsPanelTemplate>
                     </ItemsControl.ItemsPanel>
                     <ItemsControl.ItemContainerStyle>
@@ -1682,9 +1704,24 @@
                   Visibility="{Binding ShowCheckForUpdates, Converter={StaticResource BoolVis}}"
                   ToolTip="Download the latest S2F Race Day build when Wi‑Fi is available."/>
 
-          <TextBlock Text="{Binding Status}" Foreground="{StaticResource MutedBrush}"
-                     FontSize="12" VerticalAlignment="Center" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"
-                     Margin="0,0,12,0"/>
+          <StackPanel VerticalAlignment="Center" Margin="0,0,12,0">
+            <!-- Timing Active: Save As path lives in the footer so the race board keeps the height. -->
+            <StackPanel Margin="0,0,0,4"
+                        Visibility="{Binding ShowActiveSaveAsGuide, Converter={StaticResource BoolVis}}">
+              <TextBlock Text="T&amp;S Save As Path" FontSize="12" FontWeight="SemiBold"
+                         Margin="0,0,0,2"/>
+              <TextBlock Text="{Binding ActiveSaveAsFolderGuide}"
+                         FontFamily="Consolas, Cascadia Mono, Courier New"
+                         FontSize="11" TextWrapping="Wrap"
+                         Foreground="{StaticResource MutedBrush}"/>
+              <TextBlock TextWrapping="Wrap" FontSize="11" Margin="0,4,0,0"
+                         Foreground="{StaticResource MutedBrush}"
+                         Text="In Timing &amp; Scoring Save As, use This PC (not Documents) and save into this folder. Announcer / video files go here too — Finish uploads every .event in Active."/>
+            </StackPanel>
+            <TextBlock Text="{Binding Status}" Foreground="{StaticResource MutedBrush}"
+                       FontSize="12" VerticalAlignment="Center"
+                       TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
+          </StackPanel>
         </DockPanel>
       </Grid>
     </DockPanel>

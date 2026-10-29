@@ -1,3 +1,4 @@
+using S2F.RaceDayCheckout.Core.Models;
 using S2F.RaceDayCheckout.Core.Services;
 
 namespace S2F.RaceDayCheckout.Core.Tests;
@@ -415,6 +416,17 @@ public class AutosaveMirrorServiceTests
             string localFilePath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
             Task.FromResult(new CloudSyncResult { Success = true });
 
+        public Task<CloudSyncResult> AppendManualBackupTapsAsync(
+            string librarySessionPath,
+            string libraryRoot,
+            string graphDriveRoot,
+            string location,
+            string deviceId,
+            string displayName,
+            IReadOnlyList<ManualBackupTap> taps,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(new CloudSyncResult { Success = true });
+
         public Task<CloudSyncResult> ClearRemoteFolderAsync(
             string localFolderPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
             Task.FromResult(new CloudSyncResult { Success = true });
@@ -510,6 +522,17 @@ public class AutosaveMirrorServiceTests
 
         public Task<CloudSyncResult> DeleteLibraryFileAsync(
             string localFilePath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new CloudSyncResult { Success = true });
+
+        public Task<CloudSyncResult> AppendManualBackupTapsAsync(
+            string librarySessionPath,
+            string libraryRoot,
+            string graphDriveRoot,
+            string location,
+            string deviceId,
+            string displayName,
+            IReadOnlyList<ManualBackupTap> taps,
+            CancellationToken cancellationToken = default) =>
             Task.FromResult(new CloudSyncResult { Success = true });
 
         public Task<CloudSyncResult> ClearRemoteFolderAsync(

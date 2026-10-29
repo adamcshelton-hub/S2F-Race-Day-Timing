@@ -5,10 +5,23 @@ namespace S2F.RaceDayCheckout.Controls;
 
 /// <summary>
 /// Single horizontal row: children share width equally and stretch to the panel height.
-/// Used by start clocks so adding more shrinks each card instead of wrapping / scrolling.
+/// Optional <see cref="MinChildWidth"/> keeps each column at least that wide (desired size).
 /// </summary>
 public sealed class EqualWidthRowPanel : Panel
 {
+    public static readonly DependencyProperty MinChildWidthProperty = DependencyProperty.Register(
+        nameof(MinChildWidth),
+        typeof(double),
+        typeof(EqualWidthRowPanel),
+        new FrameworkPropertyMetadata(0.0, FrameworkPropertyMetadataOptions.AffectsMeasure | FrameworkPropertyMetadataOptions.AffectsArrange),
+        v => v is double d && d >= 0);
+
+    public double MinChildWidth
+    {
+        get => (double)GetValue(MinChildWidthProperty);
+        set => SetValue(MinChildWidthProperty, value);
+    }
+
     protected override Size MeasureOverride(Size availableSize)
     {
         var count = InternalChildren.Count;
@@ -17,7 +30,10 @@ public sealed class EqualWidthRowPanel : Panel
 
         var finiteWidth = !double.IsInfinity(availableSize.Width) && availableSize.Width > 0;
         var finiteHeight = !double.IsInfinity(availableSize.Height) && availableSize.Height > 0;
-        var childWidth = finiteWidth ? availableSize.Width / count : availableSize.Width;
+        var minTotal = MinChildWidth * count;
+        var childWidth = finiteWidth
+            ? Math.Max(availableSize.Width / count, MinChildWidth)
+            : (MinChildWidth > 0 ? MinChildWidth : 200);
         var childHeight = finiteHeight ? availableSize.Height : availableSize.Height;
 
         double maxDesiredHeight = 0;
@@ -27,7 +43,7 @@ public sealed class EqualWidthRowPanel : Panel
             maxDesiredHeight = Math.Max(maxDesiredHeight, child.DesiredSize.Height);
         }
 
-        var width = finiteWidth ? availableSize.Width : childWidth * count;
+        var width = finiteWidth ? Math.Max(availableSize.Width, minTotal) : childWidth * count;
         var height = finiteHeight ? availableSize.Height : maxDesiredHeight;
         return new Size(width, height);
     }

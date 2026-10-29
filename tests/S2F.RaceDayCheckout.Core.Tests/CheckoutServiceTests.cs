@@ -711,6 +711,17 @@ public class CheckoutServiceTests
             string localFilePath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
             Task.FromResult(new CloudSyncResult { Success = true });
 
+        public virtual Task<CloudSyncResult> AppendManualBackupTapsAsync(
+            string librarySessionPath,
+            string libraryRoot,
+            string graphDriveRoot,
+            string location,
+            string deviceId,
+            string displayName,
+            IReadOnlyList<ManualBackupTap> taps,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(new CloudSyncResult { Success = true, Message = "mb append (stub)" });
+
         public virtual Task<CloudSyncResult> ClearRemoteFolderAsync(
             string localFolderPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
             Task.FromResult(new CloudSyncResult { Success = true });
@@ -1529,6 +1540,17 @@ public class CheckoutServiceTests
         public Task<CloudSyncResult> DeleteLibraryFileAsync(
             string localFilePath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
             Task.FromResult(new CloudSyncResult { Success = true });
+
+        public Task<CloudSyncResult> AppendManualBackupTapsAsync(
+            string librarySessionPath,
+            string libraryRoot,
+            string graphDriveRoot,
+            string location,
+            string deviceId,
+            string displayName,
+            IReadOnlyList<ManualBackupTap> taps,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(new CloudSyncResult { Success = true, Message = "mb append (track)" });
 
         public Task<CloudSyncResult> ClearRemoteFolderAsync(
             string localFolderPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>

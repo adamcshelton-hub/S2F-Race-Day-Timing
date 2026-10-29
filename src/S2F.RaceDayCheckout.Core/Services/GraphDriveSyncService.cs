@@ -14,6 +14,10 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
     private const string GraphRoot = "https://graph.microsoft.com/v1.0";
 
+    /// <summary>Serialize Graph RMW per current.jsonl path (Staffing withPathLock).</summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> MbPathLocks =
+        new(StringComparer.OrdinalIgnoreCase);
+
     private readonly IGraphTokenProvider _tokens;
     private readonly HttpClient _http;
 
@@ -1229,6 +1233,174 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
         {
             return new CloudSyncResult { Success = false, Message = "Graph delete failed: " + ex.Message };
         }
+    }
+
+    /// <inheritdoc />
+    public async Task<CloudSyncResult> AppendManualBackupTapsAsync(
+        string librarySessionPath,
+        string libraryRoot,
+        string graphDriveRoot,
+        string location,
+        string deviceId,
+        string displayName,
+        IReadOnlyList<ManualBackupTap> taps,
+        CancellationToken cancellationToken = default)
+    {
+        if (!_tokens.IsSignedIn)
+            return new CloudSyncResult { Success = true, Message = "Graph not signed in — taps saved on this laptop." };
+        if (taps is null || taps.Count == 0)
+            return new CloudSyncResult { Success = true, Message = "No taps to append.", FilesTransferred = 0 };
+
+        var batch = taps
+            .Where(t => t is not null && !string.IsNullOrWhiteSpace(t.Bib) && !string.IsNullOrWhiteSpace(t.Id))
+            .Take(ManualBackupStore.MaxBatch)
+            .ToList();
+        if (batch.Count == 0)
+            return new CloudSyncResult { Success = true, Message = "No taps to append.", FilesTransferred = 0 };
+
+        try
+        {
+            var store = new ManualBackupStore();
+            // Ensure local device.json exists (do not reset PlayCursor) then publish it once.
+            store.LoadOrCreateDevice(librarySessionPath, location, deviceId, displayName);
+            var deviceLocal = Path.Combine(
+                store.GetDeviceDir(librarySessionPath, location, deviceId),
+                ManualBackupStore.DeviceFileName);
+            if (File.Exists(deviceLocal))
+            {
+                await UploadLocalFilesAsync(
+                        new[] { deviceLocal },
+                        libraryRoot,
+                        graphDriveRoot,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
+            var currentLocal = Path.Combine(
+                store.GetDeviceDir(librarySessionPath, location, deviceId),
+                ManualBackupStore.CurrentFileName);
+            var cloudPath = ToDriveRelative(currentLocal, libraryRoot, graphDriveRoot);
+            if (string.IsNullOrWhiteSpace(cloudPath))
+                return new CloudSyncResult { Success = false, Message = "Manual Backup path outside LibraryRoot." };
+
+            var parent = cloudPath.Contains('/')
+                ? cloudPath[..cloudPath.LastIndexOf('/')]
+                : "";
+            if (!string.IsNullOrEmpty(parent))
+                await EnsureRemoteFolderChainAsync(parent, cancellationToken).ConfigureAwait(false);
+
+            var gate = MbPathLocks.GetOrAdd(cloudPath, _ => new SemaphoreSlim(1, 1));
+            await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                // OneDrive personal can return a stale GET right after PUT — verify every id.
+                for (var attempt = 0; attempt < 8; attempt++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var existingText = await TryGetDriveTextAsync(cloudPath, cancellationToken)
+                        .ConfigureAwait(false);
+                    var existing = ManualBackupJsonl.Parse(existingText);
+                    var merged = ManualBackupJsonl.MergeIncoming(existing, batch, out var added);
+                    if (added.Count == 0)
+                    {
+                        return new CloudSyncResult
+                        {
+                            Success = true,
+                            FilesTransferred = 0,
+                            Message = "Taps already on OneDrive."
+                        };
+                    }
+
+                    var intendedIds = merged.Select(t => t.Id).ToList();
+                    await PutDriveTextAsync(
+                            cloudPath,
+                            ManualBackupJsonl.Serialize(merged),
+                            cancellationToken)
+                        .ConfigureAwait(false);
+
+                    var verified = ManualBackupJsonl.Parse(
+                        await TryGetDriveTextAsync(cloudPath, cancellationToken).ConfigureAwait(false));
+                    if (ManualBackupJsonl.TapsHaveIds(verified, intendedIds))
+                    {
+                        return new CloudSyncResult
+                        {
+                            Success = true,
+                            FilesTransferred = 1,
+                            Message = $"Appended {added.Count} tap(s) to Manual Backup."
+                        };
+                    }
+
+                    await Task.Delay(40 + attempt * 60, cancellationToken).ConfigureAwait(false);
+                }
+
+                return new CloudSyncResult
+                {
+                    Success = false,
+                    Message = "Could not confirm Manual Backup tap sync to OneDrive. Will retry."
+                };
+            }
+            finally
+            {
+                gate.Release();
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            return new CloudSyncResult
+            {
+                Success = false,
+                Message = "Manual Backup Graph append failed: " + ex.Message
+            };
+        }
+    }
+
+    private async Task<string> TryGetDriveTextAsync(string cloudPath, CancellationToken cancellationToken)
+    {
+        var url = ItemPathUrl(cloudPath, "content");
+        using var req = await CreateRequestAsync(HttpMethod.Get, url, cancellationToken).ConfigureAwait(false);
+        using var resp = await _http.SendAsync(req, cancellationToken).ConfigureAwait(false);
+        if (resp.StatusCode == System.Net.HttpStatusCode.NotFound)
+            return "";
+        if ((int)resp.StatusCode is 429 or 503)
+        {
+            var retryAfter = ParseRetryAfter(resp);
+            throw new HttpRequestException(
+                $"Graph throttled ({(int)resp.StatusCode}).",
+                null,
+                resp.StatusCode)
+            {
+                Data = { ["RetryAfter"] = retryAfter }
+            };
+        }
+
+        resp.EnsureSuccessStatusCode();
+        return await resp.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task PutDriveTextAsync(string cloudPath, string text, CancellationToken cancellationToken)
+    {
+        var url = ItemPathUrl(cloudPath, "content");
+        using var req = await CreateRequestAsync(HttpMethod.Put, url, cancellationToken).ConfigureAwait(false);
+        req.Content = new StringContent(text ?? "", Encoding.UTF8);
+        req.Content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+        using var resp = await _http.SendAsync(req, cancellationToken).ConfigureAwait(false);
+        if ((int)resp.StatusCode is 429 or 503)
+        {
+            var retryAfter = ParseRetryAfter(resp);
+            throw new HttpRequestException(
+                $"Graph throttled upload ({(int)resp.StatusCode}).",
+                null,
+                resp.StatusCode)
+            {
+                Data = { ["RetryAfter"] = retryAfter }
+            };
+        }
+
+        resp.EnsureSuccessStatusCode();
     }
 
     public async Task<CloudSyncResult> ClearRemoteFolderAsync(

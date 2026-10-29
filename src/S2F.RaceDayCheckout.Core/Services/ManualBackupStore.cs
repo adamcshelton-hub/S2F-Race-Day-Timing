@@ -17,6 +17,12 @@ public sealed class ManualBackupStore
     public const string OfficeCatalogFileName = "manual_backup_catalog.json";
     public const string OfficeMetaFolderName = "._s2f";
 
+    /// <summary>Taps per Graph sync — same location/device share one current.jsonl RMW (Staffing SYNC_BATCH).</summary>
+    public const int SyncBatch = 25;
+
+    /// <summary>Hard cap one Graph RMW so a huge offline drain cannot stall Timing SoftPull (Staffing MAX_BATCH).</summary>
+    public const int MaxBatch = 40;
+
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
         WriteIndented = true,
@@ -199,14 +205,15 @@ public sealed class ManualBackupStore
         string displayName,
         string bib,
         DateTimeOffset? timestampUtc = null,
-        int? staffingUserId = null)
+        int? staffingUserId = null,
+        string? id = null)
     {
         var state = LoadOrCreateDevice(sessionPath, location, deviceId, displayName);
         var dir = GetDeviceDir(sessionPath, location, deviceId);
         EnsureCurrentFile(dir);
         var tap = new ManualBackupTap
         {
-            Id = Guid.NewGuid().ToString("N"),
+            Id = string.IsNullOrWhiteSpace(id) ? Guid.NewGuid().ToString("N") : id.Trim(),
             Bib = bib.Trim(),
             TimestampUtc = timestampUtc ?? DateTimeOffset.UtcNow,
             Location = location.Trim(),

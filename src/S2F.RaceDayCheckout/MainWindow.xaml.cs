@@ -29,8 +29,29 @@ public partial class MainWindow : Window
         _vm = new MainViewModel();
         DataContext = _vm;
         _vm.PropertyChanged += ViewModel_PropertyChanged;
+        _vm.ManualBackup.PropertyChanged += ManualBackup_PropertyChanged;
+        SyncManualBackupColumnMinWidth();
         if (Application.Current is not null)
             Application.Current.SessionEnding += App_SessionEnding;
+    }
+
+    private void ManualBackup_PropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName is null
+            or nameof(ManualBackupCoordinator.LocationsPanelMinWidth)
+            or nameof(ManualBackupCoordinator.ShowPanel))
+            SyncManualBackupColumnMinWidth();
+    }
+
+    /// <summary>
+    /// ColumnDefinition isn't in the visual tree for bindings — keep splitter MinWidth in sync
+    /// with the width needed for every timing-location column.
+    /// </summary>
+    private void SyncManualBackupColumnMinWidth()
+    {
+        if (ManualBackupColumn is null)
+            return;
+        ManualBackupColumn.MinWidth = _vm.ManualBackup.LocationsPanelMinWidth;
     }
 
     private void ViewModel_PropertyChanged(object? sender, PropertyChangedEventArgs e)

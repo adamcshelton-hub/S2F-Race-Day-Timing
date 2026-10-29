@@ -1,3 +1,5 @@
+using S2F.RaceDayCheckout.Core.Models;
+
 namespace S2F.RaceDayCheckout.Core.Services;
 
 public sealed class CloudSyncResult
@@ -166,6 +168,21 @@ public interface ICloudLibrarySync
         string graphDriveRoot,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Append one or many Manual Backup taps to this device’s <c>current.jsonl</c> in a single
+    /// Graph RMW (GET → id-merge → PUT → verify). Same contract as Staffing <c>appendDeviceTaps</c>.
+    /// Caps at <see cref="ManualBackupStore.MaxBatch"/>. Empty input is a no-op success.
+    /// </summary>
+    Task<CloudSyncResult> AppendManualBackupTapsAsync(
+        string librarySessionPath,
+        string libraryRoot,
+        string graphDriveRoot,
+        string location,
+        string deviceId,
+        string displayName,
+        IReadOnlyList<ManualBackupTap> taps,
+        CancellationToken cancellationToken = default);
+
     /// <summary>Delete all files under a remote folder (used to clear cloud _autosave after Finish).</summary>
     Task<CloudSyncResult> ClearRemoteFolderAsync(
         string localFolderPath,
@@ -254,6 +271,17 @@ public sealed class NullCloudLibrarySync : ICloudLibrarySync
     public Task<CloudSyncResult> DeleteLibraryFileAsync(
         string localFilePath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
         Task.FromResult(new CloudSyncResult { Success = true, Message = "Graph not signed in." });
+
+    public Task<CloudSyncResult> AppendManualBackupTapsAsync(
+        string librarySessionPath,
+        string libraryRoot,
+        string graphDriveRoot,
+        string location,
+        string deviceId,
+        string displayName,
+        IReadOnlyList<ManualBackupTap> taps,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(new CloudSyncResult { Success = true, Message = "Graph not signed in — taps saved on this laptop." });
 
     public Task<CloudSyncResult> ClearRemoteFolderAsync(
         string localFolderPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>

@@ -84,7 +84,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private readonly EventBuilderService _eventBuilder = new();
     private readonly Services.ManualBackupCoordinator _manualBackup = new();
     private ManualBackupFloatWindow? _manualBackupFloat;
-    /// <summary>Coalesce rapid bib submits into one Graph upload (avoids file-lock storms).</summary>
+    /// <summary>Coalesce rapid bib submits into one Graph tap-batch flush (Staffing SYNC_BATCH).</summary>
     private CancellationTokenSource? _mbPublishDebounceCts;
     /// <summary>One-shot SoftPull after Backup Laptop open (canceled on Done).</summary>
     private CancellationTokenSource? _mbSoftPullCts;
@@ -93,6 +93,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private readonly SemaphoreSlim _mbPublishGate = new(1, 1);
     private readonly SemaphoreSlim _mbLiveSoftPullGate = new(1, 1);
     private volatile bool _mbPublishAgain;
+    private readonly object _mbPendingTapGate = new();
+    /// <summary>Local taps waiting for Graph RMW flush (same location/device → one batch).</summary>
+    private readonly List<(string Location, ManualBackupTap Tap)> _mbPendingTaps = new();
     private readonly DispatcherTimer _heartbeatTimer;
     private readonly DispatcherTimer _mirrorTimer;
     private readonly DispatcherTimer _sessionLockPollTimer;
@@ -2795,32 +2798,115 @@ public sealed class MainViewModel : INotifyPropertyChanged
     {
         var tap = _manualBackup.SubmitBib(location, bib);
         if (tap is not null)
-            SchedulePublishManualBackupTree();
+        {
+            lock (_mbPendingTapGate)
+                _mbPendingTaps.Add((location.Trim(), tap));
+            ScheduleFlushManualBackupTaps();
+        }
         return tap;
     }
 
     /// <summary>
-    /// Debounce Graph publish after bib entry — rapid Submit was overlapping uploads and
-    /// locking <c>current.jsonl</c> against the next append.
+    /// Debounce Graph tap flush after bib entry — rapid Submit batches into one RMW
+    /// (Staffing SYNC_BATCH) instead of uploading the whole Manual Backup tree.
     /// </summary>
-    private void SchedulePublishManualBackupTree()
+    private void ScheduleFlushManualBackupTaps()
     {
         _mbPublishAgain = true;
         _mbPublishDebounceCts?.Cancel();
         _mbPublishDebounceCts?.Dispose();
         var cts = new CancellationTokenSource();
         _mbPublishDebounceCts = cts;
-        _ = DebouncedPublishManualBackupTreeAsync(cts.Token);
+        _ = DebouncedFlushManualBackupTapsAsync(cts.Token);
     }
 
-    private async Task DebouncedPublishManualBackupTreeAsync(CancellationToken token)
+    private async Task DebouncedFlushManualBackupTapsAsync(CancellationToken token)
     {
         try
         {
             await Task.Delay(450, token).ConfigureAwait(false);
-            await PublishManualBackupTreeAsync().ConfigureAwait(false);
+            await FlushManualBackupTapsAsync().ConfigureAwait(false);
         }
         catch (OperationCanceledException) { /* newer submit rescheduled */ }
+    }
+
+    /// <summary>
+    /// Drain pending taps in location/device batches (≤ <see cref="ManualBackupStore.SyncBatch"/>),
+    /// one Graph RMW each. Re-reads the queue after each success so mid-flight taps are not wiped.
+    /// </summary>
+    private async Task FlushManualBackupTapsAsync(CancellationToken cancellationToken = default)
+    {
+        if (!_cloud.IsAvailable || Active is null)
+            return;
+
+        await _mbPublishGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            do
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                _mbPublishAgain = false;
+
+                List<(string Location, ManualBackupTap Tap)> batch;
+                lock (_mbPendingTapGate)
+                {
+                    if (_mbPendingTaps.Count == 0)
+                        break;
+
+                    var head = _mbPendingTaps[0];
+                    batch = new List<(string Location, ManualBackupTap Tap)>();
+                    foreach (var item in _mbPendingTaps)
+                    {
+                        if (!string.Equals(item.Location, head.Location, StringComparison.OrdinalIgnoreCase)
+                            || !string.Equals(
+                                item.Tap.DeviceId,
+                                head.Tap.DeviceId,
+                                StringComparison.OrdinalIgnoreCase))
+                            continue;
+                        batch.Add(item);
+                        if (batch.Count >= ManualBackupStore.SyncBatch)
+                            break;
+                    }
+                }
+
+                if (batch.Count == 0)
+                    break;
+
+                var result = await _cloud.AppendManualBackupTapsAsync(
+                        Active.LibrarySessionPath,
+                        _settings.LibraryRoot,
+                        _settings.GraphDriveRoot,
+                        batch[0].Location,
+                        batch[0].Tap.DeviceId,
+                        _manualBackup.DeviceDisplayName,
+                        batch.Select(b => b.Tap).ToList(),
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (!result.Success)
+                    break;
+
+                var flushedIds = new HashSet<string>(
+                    batch.Select(b => b.Tap.Id),
+                    StringComparer.OrdinalIgnoreCase);
+                lock (_mbPendingTapGate)
+                {
+                    _mbPendingTaps.RemoveAll(p => flushedIds.Contains(p.Tap.Id));
+                }
+            } while (_mbPublishAgain || PendingManualBackupTapCount() > 0);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch { /* soft — local taps remain; retry on next submit / Done */ }
+        finally
+        {
+            _mbPublishGate.Release();
+        }
+    }
+
+    private int PendingManualBackupTapCount()
+    {
+        lock (_mbPendingTapGate)
+            return _mbPendingTaps.Count;
     }
 
     private async Task PublishManualBackupCatalogAsync()
@@ -2880,8 +2966,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
             return;
         try
         {
-            // Publish local laptop taps first so Graph merge does not clobber them.
-            await PublishManualBackupTreeAsync().ConfigureAwait(true);
+            // Flush this laptop’s pending tap batches first so SoftPull does not race them.
+            _mbPublishAgain = true;
+            await FlushManualBackupTapsAsync().ConfigureAwait(true);
 
             using var cts = new CancellationTokenSource(budget ?? TimeSpan.FromSeconds(45));
             await _cloud.DownloadSessionAsync(
@@ -3036,7 +3123,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
             return;
         var sessionPath = mb.LibrarySessionPath;
 
-        // Stop SoftPull before seal — otherwise a late pull can restore Current after we archive it.
+        // Stop SoftPull / debounce before flush+seal — otherwise a late pull can restore Current.
         _mbSoftPullCts?.Cancel();
         _mbSoftPullCts?.Dispose();
         _mbSoftPullCts = null;
@@ -3044,18 +3131,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         _mbPublishDebounceCts?.Dispose();
         _mbPublishDebounceCts = null;
 
-        // Seal this laptop's Current → Past so Timing can Play without needing a Timing checkout rotate.
-        try
-        {
-            var sealedCount = new ManualBackupStore().CreateNewFileForDevice(
-                sessionPath,
-                _manualBackup.DeviceId);
-            if (sealedCount > 0)
-                _manualBackup.ReloadFromDisk();
-        }
-        catch { /* soft */ }
-
-        // Flush Graph publish (MB tree only) — cellular-bounded; local Past already sealed.
+        // Drain tap RMW batches while taps are still in Current, then seal → Past, then tree upload.
         var uploadTimedOut = false;
         try
         {
@@ -3063,6 +3139,18 @@ public sealed class MainViewModel : INotifyPropertyChanged
             SetBusy("Saving Manual Backup", "Uploading taps to OneDrive…");
             await YieldUiAsync().ConfigureAwait(true);
             using var uploadBudget = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+            await FlushManualBackupTapsAsync(uploadBudget.Token).ConfigureAwait(true);
+
+            try
+            {
+                var sealedCount = new ManualBackupStore().CreateNewFileForDevice(
+                    sessionPath,
+                    _manualBackup.DeviceId);
+                if (sealedCount > 0)
+                    _manualBackup.ReloadFromDisk();
+            }
+            catch { /* soft */ }
+
             await PublishManualBackupTreeAsync(uploadBudget.Token).ConfigureAwait(true);
         }
         catch (OperationCanceledException)

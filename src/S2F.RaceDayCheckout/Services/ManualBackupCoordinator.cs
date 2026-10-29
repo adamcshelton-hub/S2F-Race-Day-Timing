@@ -31,10 +31,43 @@ public sealed class ManualBackupCoordinator : INotifyPropertyChanged, IAsyncDisp
     /// <summary>Remembers which device Past expanders stay open across ReloadFromDisk.</summary>
     private readonly HashSet<string> _pastExpandedKeys = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>Min width of each timing-location column (matches former fixed card width).</summary>
+    public const double LocationColumnMinWidth = 230;
+
+    /// <summary>Right gap after each location column (card Margin).</summary>
+    public const double LocationColumnGap = 6;
+
+    /// <summary>Panel padding + border chrome outside the location row.</summary>
+    public const double LocationsPanelChromeWidth = 18;
+
+    /// <summary>
+    /// Floor for the header: “Manual Backup” + compact RunScore badge on one row
+    /// (Entry/Settings sit on the row below, so they don’t widen this).
+    /// </summary>
+    public const double HeaderRowMinWidth = 320;
+
     public ManualBackupCoordinator()
     {
         _play = new ManualBackupPlayService(_store, _open);
         Locations = new ObservableCollection<ManualBackupLocationRow>();
+        Locations.CollectionChanged += (_, _) =>
+            OnPropertyChanged(nameof(LocationsPanelMinWidth));
+    }
+
+    /// <summary>
+    /// Splitter must not shrink Manual Backup below this — wide enough for every location
+    /// column <b>and</b> the RunScore Open status header.
+    /// </summary>
+    public double LocationsPanelMinWidth
+    {
+        get
+        {
+            var n = Math.Max(1, Locations.Count);
+            var forLocations = LocationsPanelChromeWidth
+                               + n * LocationColumnMinWidth
+                               + n * LocationColumnGap;
+            return Math.Max(forLocations, HeaderRowMinWidth);
+        }
     }
 
     private static string DevicePlayKey(string location, string deviceId) =>
@@ -82,7 +115,14 @@ public sealed class ManualBackupCoordinator : INotifyPropertyChanged, IAsyncDisp
     public bool OpenConnected
     {
         get => _openConnected;
-        private set { if (_openConnected == value) return; _openConnected = value; OnPropertyChanged(); RefreshOpenStatusText(); }
+        private set
+        {
+            if (_openConnected == value) return;
+            _openConnected = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(OpenStatusToolTip));
+            RefreshOpenStatusText();
+        }
     }
 
     public string Status
@@ -651,8 +691,16 @@ public sealed class ManualBackupCoordinator : INotifyPropertyChanged, IAsyncDisp
         try
         {
             Directory.CreateDirectory(librarySession);
-            // Re-append same logical tap (new id ok) so Graph Finish can pick library up.
-            _store.AppendTap(librarySession, location, DeviceId, DeviceDisplayName, bib, tap.TimestampUtc);
+            // Same tap id as Active — Graph RMW / SoftPull merge by id (Staffing contract).
+            _store.AppendTap(
+                librarySession,
+                location,
+                DeviceId,
+                DeviceDisplayName,
+                bib,
+                tap.TimestampUtc,
+                staffingUserId: tap.StaffingUserId,
+                id: tap.Id);
         }
         catch { /* soft */ }
     }
@@ -661,7 +709,10 @@ public sealed class ManualBackupCoordinator : INotifyPropertyChanged, IAsyncDisp
     {
         Locations.Clear();
         if (!manifest.Enabled || string.IsNullOrWhiteSpace(_sessionPath))
+        {
+            OnPropertyChanged(nameof(LocationsPanelMinWidth));
             return;
+        }
         foreach (var loc in manifest.Locations)
         {
             var row = new ManualBackupLocationRow { Location = loc, Coordinator = this };
@@ -737,6 +788,8 @@ public sealed class ManualBackupCoordinator : INotifyPropertyChanged, IAsyncDisp
             row.IsPlayingAny = anyPlaying;
             Locations.Add(row);
         }
+
+        OnPropertyChanged(nameof(LocationsPanelMinWidth));
     }
 
     private async Task ProbeOpenLoopAsync()
@@ -749,10 +802,19 @@ public sealed class ManualBackupCoordinator : INotifyPropertyChanged, IAsyncDisp
         }
     }
 
-    private void RefreshOpenStatusText() =>
+    private void RefreshOpenStatusText()
+    {
+        // Compact badge for the Timing header; full endpoint stays on the tooltip.
         OpenStatusText = OpenConnected
-            ? "RunScore Open · Connected · localhost:" + RunScoreExternalTimers.RunScoreOpenPort
-            : "RunScore Open · Not connected · localhost:" + RunScoreExternalTimers.RunScoreOpenPort;
+            ? "RunScore Open · Connected"
+            : "RunScore Open · Not connected";
+    }
+
+    /// <summary>Tooltip detail for the RunScore Open badge (includes localhost port).</summary>
+    public string OpenStatusToolTip =>
+        OpenConnected
+            ? "RunScore Open connected — localhost:" + RunScoreExternalTimers.RunScoreOpenPort
+            : "RunScore Open not connected — localhost:" + RunScoreExternalTimers.RunScoreOpenPort;
 
     private void OnPropertyChanged([CallerMemberName] string? name = null) =>
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));

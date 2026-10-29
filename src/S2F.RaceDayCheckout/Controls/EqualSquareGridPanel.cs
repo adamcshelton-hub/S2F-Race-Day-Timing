@@ -4,22 +4,88 @@ using System.Windows.Controls;
 namespace S2F.RaceDayCheckout.Controls;
 
 /// <summary>
-/// Fixed-column grid of equal <b>square</b> cells that fit the available area (no scroll).
-/// Extra space stays empty (top-left packed) so one clock stays square instead of stretching tall.
+/// Equal <b>square</b> clock cells that auto-fit columns to the available width (no scroll).
+/// Column count = how many <see cref="MaxSide"/> tiles fit across (min 1). Cards only shrink
+/// after width drops below one full tile. Extra space stays empty (top-left packed).
 /// </summary>
 public sealed class EqualSquareGridPanel : Panel
 {
-    public static readonly DependencyProperty ColumnsProperty = DependencyProperty.Register(
-        nameof(Columns),
+    public static readonly DependencyProperty MaxColumnsProperty = DependencyProperty.Register(
+        nameof(MaxColumns),
         typeof(int),
         typeof(EqualSquareGridPanel),
-        new FrameworkPropertyMetadata(2, FrameworkPropertyMetadataOptions.AffectsMeasure | FrameworkPropertyMetadataOptions.AffectsArrange),
+        new FrameworkPropertyMetadata(16, FrameworkPropertyMetadataOptions.AffectsMeasure | FrameworkPropertyMetadataOptions.AffectsArrange),
         v => v is int i && i >= 1);
 
-    public int Columns
+    public static readonly DependencyProperty MaxSideProperty = DependencyProperty.Register(
+        nameof(MaxSide),
+        typeof(double),
+        typeof(EqualSquareGridPanel),
+        new FrameworkPropertyMetadata(260.0, FrameworkPropertyMetadataOptions.AffectsMeasure | FrameworkPropertyMetadataOptions.AffectsArrange),
+        v => v is double d && d > 0);
+
+    /// <summary>Upper bound on column count (auto layout never exceeds this).</summary>
+    public int MaxColumns
     {
-        get => (int)GetValue(ColumnsProperty);
-        set => SetValue(ColumnsProperty, value);
+        get => (int)GetValue(MaxColumnsProperty);
+        set => SetValue(MaxColumnsProperty, value);
+    }
+
+    /// <summary>
+    /// Preferred / max cell side. Drives how many columns fit; cells shrink only when a
+    /// single column is narrower than this.
+    /// </summary>
+    public double MaxSide
+    {
+        get => (double)GetValue(MaxSideProperty);
+        set => SetValue(MaxSideProperty, value);
+    }
+
+    private double PreferredSide()
+    {
+        var max = MaxSide;
+        if (double.IsInfinity(max) || double.IsNaN(max) || max <= 0)
+            return 260;
+        return max;
+    }
+
+    private double CapSide(double side)
+    {
+        var max = PreferredSide();
+        if (side > max)
+            side = max;
+        return side < 0 ? 0 : side;
+    }
+
+    /// <summary>
+    /// Columns from width: floor(width / preferred), at least 1, at most child count / MaxColumns.
+    /// When width &lt; preferred → 1 column (caller then shrinks the cell).
+    /// </summary>
+    private int ColumnsFor(double width, int count)
+    {
+        if (count <= 0)
+            return 1;
+
+        var preferred = PreferredSide();
+        var byWidth = 1;
+        if (!double.IsInfinity(width) && width > 0)
+            byWidth = Math.Max(1, (int)Math.Floor(width / preferred));
+
+        return Math.Min(count, Math.Min(MaxColumns, byWidth));
+    }
+
+    private static double SideFor(double width, double height, int cols, int rows)
+    {
+        var finiteW = !double.IsInfinity(width) && width > 0;
+        var finiteH = !double.IsInfinity(height) && height > 0;
+
+        if (finiteW && finiteH)
+            return Math.Min(width / cols, height / rows);
+        if (finiteW)
+            return width / cols;
+        if (finiteH)
+            return height / rows;
+        return 200;
     }
 
     protected override Size MeasureOverride(Size availableSize)
@@ -28,29 +94,14 @@ public sealed class EqualSquareGridPanel : Panel
         if (count == 0)
             return new Size(0, 0);
 
-        var cols = Columns;
+        var cols = ColumnsFor(availableSize.Width, count);
         var rows = (count + cols - 1) / cols;
-        var finiteW = !double.IsInfinity(availableSize.Width) && availableSize.Width > 0;
-        var finiteH = !double.IsInfinity(availableSize.Height) && availableSize.Height > 0;
-
-        double side;
-        if (finiteW && finiteH)
-            side = Math.Min(availableSize.Width / cols, availableSize.Height / rows);
-        else if (finiteW)
-            side = availableSize.Width / cols;
-        else if (finiteH)
-            side = availableSize.Height / rows;
-        else
-            side = 200;
-
-        if (side < 0)
-            side = 0;
+        var side = CapSide(SideFor(availableSize.Width, availableSize.Height, cols, rows));
 
         foreach (UIElement child in InternalChildren)
             child.Measure(new Size(side, side));
 
-        // Report the packed square grid size (not the full available height) so parents
-        // that size-to-content don't reserve a tall empty band — arrange still fits in finalSize.
+        // Packed grid size only — arrange still uses full finalSize; leftover stays empty.
         return new Size(side * cols, side * rows);
     }
 
@@ -60,13 +111,10 @@ public sealed class EqualSquareGridPanel : Panel
         if (count == 0)
             return finalSize;
 
-        var cols = Columns;
+        var cols = ColumnsFor(finalSize.Width, count);
         var rows = (count + cols - 1) / cols;
-        var side = Math.Min(finalSize.Width / cols, finalSize.Height / rows);
-        if (side < 0)
-            side = 0;
+        var side = CapSide(SideFor(finalSize.Width, finalSize.Height, cols, rows));
 
-        // Pack top-left so the first clock sits under Add New Clock (not vertically centered).
         for (var i = 0; i < count; i++)
         {
             var col = i % cols;
