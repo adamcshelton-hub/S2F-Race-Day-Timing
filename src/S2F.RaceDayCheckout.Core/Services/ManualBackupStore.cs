@@ -512,8 +512,9 @@ public sealed class ManualBackupStore
     }
 
     /// <summary>
-    /// Soft-merge MB tree (Library → Active after phone SoftPull). Never shrink jsonl,
-    /// never overwrite existing <c>device.json</c> (Timing PlayCursor must stay local).
+    /// Soft-merge MB tree (Library → Active after phone SoftPull). Never shrink jsonl.
+    /// Existing <c>device.json</c> keeps local PlayCursor/Paused; DisplayName refreshes from source
+    /// so Staffing phone labels (logged-in name) show on Timing without resetting Play.
     /// </summary>
     public static void MergeTreePreferLongerJsonl(string sourceSessionPath, string destSessionPath)
     {
@@ -537,7 +538,10 @@ public sealed class ManualBackupStore
 
             if (string.Equals(name, DeviceFileName, StringComparison.OrdinalIgnoreCase)
                 && File.Exists(target))
+            {
+                TryMergeDeviceDisplayName(file, target);
                 continue;
+            }
 
             if (File.Exists(target)
                 && name.EndsWith(".jsonl", StringComparison.OrdinalIgnoreCase))
@@ -552,6 +556,27 @@ public sealed class ManualBackupStore
 
             File.Copy(file, target, overwrite: true);
         }
+    }
+
+    /// <summary>Copy DisplayName from Library device.json into Active; leave PlayCursor/Paused alone.</summary>
+    static void TryMergeDeviceDisplayName(string sourceDeviceJson, string destDeviceJson)
+    {
+        try
+        {
+            var source = JsonSerializer.Deserialize<ManualBackupDeviceState>(
+                File.ReadAllText(sourceDeviceJson), JsonOpts);
+            var dest = JsonSerializer.Deserialize<ManualBackupDeviceState>(
+                File.ReadAllText(destDeviceJson), JsonOpts);
+            if (source is null || dest is null)
+                return;
+            if (string.IsNullOrWhiteSpace(source.DisplayName)
+                || string.Equals(dest.DisplayName, source.DisplayName, StringComparison.Ordinal))
+                return;
+            dest.DisplayName = source.DisplayName.Trim();
+            dest.UpdatedUtc = DateTimeOffset.UtcNow;
+            File.WriteAllText(destDeviceJson, JsonSerializer.Serialize(dest, JsonOpts));
+        }
+        catch { /* leave Active device.json alone */ }
     }
 
     public IReadOnlyList<string> ListArchiveFiles(string sessionPath, string location, string deviceId)

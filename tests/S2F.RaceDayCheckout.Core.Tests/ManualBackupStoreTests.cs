@@ -267,24 +267,28 @@ public class ManualBackupStoreTests
                 Enabled = true,
                 Locations = { "Finish" }
             });
-            store.AppendTap(library, "Finish", "dev-a", "Phone", "101");
-            store.AppendTap(active, "Finish", "dev-a", "Phone", "101");
-            store.AppendTap(active, "Finish", "dev-a", "Phone", "102");
-            store.AppendTap(active, "Finish", "dev-a", "Phone", "103");
+            store.AppendTap(library, "Finish", "dev-a", "Adam Shelton", "101");
+            store.AppendTap(active, "Finish", "dev-a", "Phone · Adam", "101");
+            store.AppendTap(active, "Finish", "dev-a", "Phone · Adam", "102");
+            store.AppendTap(active, "Finish", "dev-a", "Phone · Adam", "103");
             store.SetPlayCursor(active, "Finish", "dev-a", 2);
 
-            // Shorter Library current must not clobber Active; PlayCursor must stay.
+            // Shorter Library current must not clobber Active; PlayCursor must stay;
+            // DisplayName still refreshes from Library (Staffing logged-in name).
             ManualBackupStore.MergeTreePreferLongerJsonl(library, active);
             Assert.Equal(3, store.ReadCurrentTaps(active, "Finish", "dev-a").Count);
-            Assert.Equal(2, store.LoadOrCreateDevice(active, "Finish", "dev-a", "Phone").PlayCursor);
+            var afterShort = store.LoadOrCreateDevice(active, "Finish", "dev-a", "");
+            Assert.Equal(2, afterShort.PlayCursor);
+            Assert.Equal("Adam Shelton", afterShort.DisplayName);
 
             // Longer Library current does merge in.
-            store.AppendTap(library, "Finish", "dev-a", "Phone", "102");
-            store.AppendTap(library, "Finish", "dev-a", "Phone", "103");
-            store.AppendTap(library, "Finish", "dev-a", "Phone", "104");
+            store.AppendTap(library, "Finish", "dev-a", "Adam Shelton", "102");
+            store.AppendTap(library, "Finish", "dev-a", "Adam Shelton", "103");
+            store.AppendTap(library, "Finish", "dev-a", "Adam Shelton", "104");
             ManualBackupStore.MergeTreePreferLongerJsonl(library, active);
             Assert.Equal(4, store.ReadCurrentTaps(active, "Finish", "dev-a").Count);
-            Assert.Equal(2, store.LoadOrCreateDevice(active, "Finish", "dev-a", "Phone").PlayCursor);
+            Assert.Equal(2, store.LoadOrCreateDevice(active, "Finish", "dev-a", "").PlayCursor);
+            Assert.Equal("Adam Shelton", store.LoadOrCreateDevice(active, "Finish", "dev-a", "").DisplayName);
         }
         finally
         {
