@@ -284,13 +284,16 @@ public sealed class ManualBackupPlayService
     }
 
     /// <summary>
-    /// Continuous Play All for a location until Pause — polls every device Current for new taps.
+    /// Continuous Play for a location until Pause — polls device Currents for new taps.
+    /// When <paramref name="activeDeviceIds"/> is set, only those devices are played (so a 2nd
+    /// phone can Join an in-flight Play without pausing the first). Otherwise every non-paused device.
     /// </summary>
     public async Task<ManualBackupPlayResult> PlayAllContinuousAsync(
         string sessionPath,
         string location,
         CancellationToken ct,
-        IProgress<int>? progress = null)
+        IProgress<int>? progress = null,
+        Func<IReadOnlyCollection<string>>? activeDeviceIds = null)
     {
         if (!_open.IsConnected)
         {
@@ -310,10 +313,21 @@ public sealed class ManualBackupPlayService
         {
             while (!ct.IsCancellationRequested)
             {
-                var deviceIds = _store.ListDeviceIds(sessionPath, location);
+                IEnumerable<string> deviceIds;
+                if (activeDeviceIds is not null)
+                {
+                    deviceIds = activeDeviceIds();
+                }
+                else
+                {
+                    deviceIds = _store.ListDeviceIds(sessionPath, location);
+                }
+
                 var batch = new List<(ManualBackupTap Tap, string DeviceId, int SnapshotCount)>();
                 foreach (var deviceId in deviceIds)
                 {
+                    if (string.IsNullOrWhiteSpace(deviceId))
+                        continue;
                     var state = _store.LoadOrCreateDevice(sessionPath, location, deviceId, deviceId);
                     if (state.Paused)
                         continue;

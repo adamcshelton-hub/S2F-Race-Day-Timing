@@ -24,6 +24,9 @@ public sealed class ManualBackupCoordinator : INotifyPropertyChanged, IAsyncDisp
     private bool _openConnected;
     private string _status = "";
     private CancellationTokenSource? _activePlayCts;
+    /// <summary>Location for the in-flight continuous Play (multiple devices may Join).</summary>
+    private string? _activePlayLocation;
+    private readonly object _playGate = new();
     private readonly HashSet<string> _playingDeviceKeys = new(StringComparer.OrdinalIgnoreCase);
     /// <summary>Remembers which device Past expanders stay open across ReloadFromDisk.</summary>
     private readonly HashSet<string> _pastExpandedKeys = new(StringComparer.OrdinalIgnoreCase);
@@ -240,16 +243,6 @@ public sealed class ManualBackupCoordinator : INotifyPropertyChanged, IAsyncDisp
             Status = missing.Message;
             return missing;
         }
-        if (_activePlayCts is not null)
-        {
-            var busy = new ManualBackupPlayResult
-            {
-                Success = false,
-                Message = "Already playing — Pause first, or wait for Play to finish."
-            };
-            Status = busy.Message;
-            return busy;
-        }
 
         var deviceIds = _store.ListDeviceIds(_sessionPath, location).ToList();
         if (deviceIds.Count == 0)
@@ -268,8 +261,147 @@ public sealed class ManualBackupCoordinator : INotifyPropertyChanged, IAsyncDisp
         foreach (var id in deviceIds)
             _store.SetPaused(_sessionPath, location, id, false);
 
+        // Already playing this location — Join every device into the live session.
+        if (_activePlayCts is not null
+            && string.Equals(_activePlayLocation, location, StringComparison.OrdinalIgnoreCase))
+        {
+            lock (_playGate)
+            {
+                foreach (var id in deviceIds)
+                    _playingDeviceKeys.Add(DevicePlayKey(location, id));
+            }
+
+            ApplyPlayingFlagsToRows();
+            ReloadFromDisk();
+            var joined = new ManualBackupPlayResult
+            {
+                Success = true,
+                Message = "Playing all devices at " + location + "."
+            };
+            Status = joined.Message;
+            return joined;
+        }
+
+        if (_activePlayCts is not null)
+        {
+            var busy = new ManualBackupPlayResult
+            {
+                Success = false,
+                Message = "Already playing " + (_activePlayLocation ?? "another location")
+                    + " — Pause first, or Play devices at that location."
+            };
+            Status = busy.Message;
+            return busy;
+        }
+
+        return await RunLocationContinuousPlayAsync(location, deviceIds).ConfigureAwait(true);
+    }
+
+    public async Task<ManualBackupPlayResult> PlaySegmentAsync(
+        string location, string deviceId, string? segment, bool replay)
+    {
+        if (string.IsNullOrWhiteSpace(_sessionPath))
+        {
+            var missing = new ManualBackupPlayResult { Success = false, Message = "No Active session for Manual Backup." };
+            Status = missing.Message;
+            return missing;
+        }
+
+        var isCurrent = string.IsNullOrWhiteSpace(segment)
+            || string.Equals(segment, ManualBackupStore.CurrentFileName, StringComparison.OrdinalIgnoreCase);
+
+        // Archives / Replay stay one-shot; Current Play is continuous until Pause.
+        if (!isCurrent || replay)
+        {
+            if (_activePlayCts is not null)
+            {
+                var busy = new ManualBackupPlayResult
+                {
+                    Success = false,
+                    Message = "Already playing — Pause Current first, then Replay."
+                };
+                Status = busy.Message;
+                return busy;
+            }
+
+            Status = replay ? "Replaying…" : "Playing…";
+            var oneshot = await _play.PlaySegmentAsync(
+                    _sessionPath, location, deviceId, segment, replay, CancellationToken.None)
+                .ConfigureAwait(true);
+            Status = oneshot.Message;
+            ReloadFromDisk();
+            return oneshot;
+        }
+
+        _store.SetPaused(_sessionPath, location, deviceId, false);
+
+        // Same location already Playing — Join this device without stopping the first.
+        if (_activePlayCts is not null
+            && string.Equals(_activePlayLocation, location, StringComparison.OrdinalIgnoreCase))
+        {
+            lock (_playGate)
+                _playingDeviceKeys.Add(DevicePlayKey(location, deviceId));
+            ApplyPlayingFlagsToRows();
+            ReloadFromDisk();
+            var joined = new ManualBackupPlayResult
+            {
+                Success = true,
+                Message = "Joined Play for " + deviceId + " @ " + location + "."
+            };
+            Status = joined.Message;
+            return joined;
+        }
+
+        if (_activePlayCts is not null)
+        {
+            var busy = new ManualBackupPlayResult
+            {
+                Success = false,
+                Message = "Already playing " + (_activePlayLocation ?? "another location")
+                    + " — Pause first, or Play another device at that location."
+            };
+            Status = busy.Message;
+            return busy;
+        }
+
+        return await RunLocationContinuousPlayAsync(location, new[] { deviceId }).ConfigureAwait(true);
+    }
+
+    /// <summary>Stops continuous Play for this device only — other devices at the location keep Playing.</summary>
+    public void PausePlaying(string location, string deviceId)
+    {
+        if (string.IsNullOrWhiteSpace(_sessionPath))
+            return;
+        var key = DevicePlayKey(location, deviceId);
+        bool empty;
+        lock (_playGate)
+        {
+            if (!_playingDeviceKeys.Contains(key))
+                return;
+            _playingDeviceKeys.Remove(key);
+            empty = _playingDeviceKeys.Count == 0;
+        }
+
+        _store.SetPaused(_sessionPath, location, deviceId, true);
+        ApplyPlayingFlagsToRows();
+        if (empty)
+        {
+            _activePlayCts?.Cancel();
+            Status = "Pausing…";
+        }
+        else
+        {
+            Status = "Paused " + deviceId + " — other devices still playing.";
+            ReloadFromDisk();
+        }
+    }
+
+    async Task<ManualBackupPlayResult> RunLocationContinuousPlayAsync(
+        string location,
+        IEnumerable<string> deviceIds)
+    {
         Status = "Playing " + location + " — waiting for taps…";
-        var cts = BeginPlay(deviceIds.Select(id => (location, id)));
+        var cts = BeginPlay(location, deviceIds.Select(id => (location, id)));
         var progress = new Progress<int>(n =>
         {
             Status = "Playing " + location + "… " + n.ToString(System.Globalization.CultureInfo.InvariantCulture) + " sent";
@@ -277,7 +409,12 @@ public sealed class ManualBackupCoordinator : INotifyPropertyChanged, IAsyncDisp
         });
         try
         {
-            var result = await _play.PlayAllContinuousAsync(_sessionPath, location, cts.Token, progress)
+            var result = await _play.PlayAllContinuousAsync(
+                    _sessionPath!,
+                    location,
+                    cts.Token,
+                    progress,
+                    () => PlayingDeviceIdsForLocation(location))
                 .ConfigureAwait(true);
             Status = result.Message;
             return result;
@@ -299,80 +436,21 @@ public sealed class ManualBackupCoordinator : INotifyPropertyChanged, IAsyncDisp
         }
     }
 
-    public async Task<ManualBackupPlayResult> PlaySegmentAsync(
-        string location, string deviceId, string? segment, bool replay)
+    IReadOnlyCollection<string> PlayingDeviceIdsForLocation(string location)
     {
-        if (string.IsNullOrWhiteSpace(_sessionPath))
+        var prefix = location + "\n";
+        lock (_playGate)
         {
-            var missing = new ManualBackupPlayResult { Success = false, Message = "No Active session for Manual Backup." };
-            Status = missing.Message;
-            return missing;
-        }
-        if (_activePlayCts is not null)
-        {
-            var busy = new ManualBackupPlayResult
+            var list = new List<string>();
+            foreach (var key in _playingDeviceKeys)
             {
-                Success = false,
-                Message = "Already playing — Pause first, or wait for Play to finish."
-            };
-            Status = busy.Message;
-            return busy;
-        }
+                if (!key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                    continue;
+                list.Add(key.Substring(prefix.Length));
+            }
 
-        var isCurrent = string.IsNullOrWhiteSpace(segment)
-            || string.Equals(segment, ManualBackupStore.CurrentFileName, StringComparison.OrdinalIgnoreCase);
-
-        // Archives / Replay stay one-shot; Current Play is continuous until Pause.
-        if (!isCurrent || replay)
-        {
-            Status = replay ? "Replaying…" : "Playing…";
-            var oneshot = await _play.PlaySegmentAsync(
-                    _sessionPath, location, deviceId, segment, replay, CancellationToken.None)
-                .ConfigureAwait(true);
-            Status = oneshot.Message;
-            ReloadFromDisk();
-            return oneshot;
+            return list;
         }
-
-        _store.SetPaused(_sessionPath, location, deviceId, false);
-        Status = "Playing Current — waiting for taps…";
-        var cts = BeginPlay(new[] { (location, deviceId) });
-        var progress = new Progress<int>(n =>
-        {
-            Status = "Playing… " + n.ToString(System.Globalization.CultureInfo.InvariantCulture) + " sent";
-            ReloadFromDisk();
-        });
-        try
-        {
-            var result = await _play.PlayCurrentContinuousAsync(
-                    _sessionPath, location, deviceId, cts.Token, progress)
-                .ConfigureAwait(true);
-            Status = result.Message;
-            return result;
-        }
-        catch (OperationCanceledException)
-        {
-            var paused = new ManualBackupPlayResult { Success = true, Message = "Paused." };
-            Status = paused.Message;
-            return paused;
-        }
-        finally
-        {
-            EndPlay(cts);
-            ReloadFromDisk();
-        }
-    }
-
-    /// <summary>Stops continuous Play for this device — Pause replaces Play only while playing.</summary>
-    public void PausePlaying(string location, string deviceId)
-    {
-        if (string.IsNullOrWhiteSpace(_sessionPath))
-            return;
-        if (!_playingDeviceKeys.Contains(DevicePlayKey(location, deviceId)))
-            return;
-        _store.SetPaused(_sessionPath, location, deviceId, true);
-        _activePlayCts?.Cancel();
-        Status = "Pausing…";
     }
 
     public void CreateNewFile(string location, string deviceId)
@@ -447,18 +525,37 @@ public sealed class ManualBackupCoordinator : INotifyPropertyChanged, IAsyncDisp
             return;
         _store.SetPaused(_sessionPath, location, deviceId, paused);
         if (paused)
-            _activePlayCts?.Cancel();
+        {
+            bool empty;
+            lock (_playGate)
+            {
+                _playingDeviceKeys.Remove(DevicePlayKey(location, deviceId));
+                empty = _playingDeviceKeys.Count == 0;
+            }
+
+            ApplyPlayingFlagsToRows();
+            if (empty)
+                _activePlayCts?.Cancel();
+        }
+
         ReloadFromDisk();
     }
 
-    private CancellationTokenSource BeginPlay(IEnumerable<(string Location, string DeviceId)> devices)
+    private CancellationTokenSource BeginPlay(
+        string location,
+        IEnumerable<(string Location, string DeviceId)> devices)
     {
         CancelActivePlay();
         var cts = new CancellationTokenSource();
         _activePlayCts = cts;
-        _playingDeviceKeys.Clear();
-        foreach (var (loc, id) in devices)
-            _playingDeviceKeys.Add(DevicePlayKey(loc, id));
+        _activePlayLocation = location;
+        lock (_playGate)
+        {
+            _playingDeviceKeys.Clear();
+            foreach (var (loc, id) in devices)
+                _playingDeviceKeys.Add(DevicePlayKey(loc, id));
+        }
+
         ApplyPlayingFlagsToRows();
         return cts;
     }
@@ -466,8 +563,13 @@ public sealed class ManualBackupCoordinator : INotifyPropertyChanged, IAsyncDisp
     private void EndPlay(CancellationTokenSource cts)
     {
         if (ReferenceEquals(_activePlayCts, cts))
+        {
             _activePlayCts = null;
-        _playingDeviceKeys.Clear();
+            _activePlayLocation = null;
+        }
+
+        lock (_playGate)
+            _playingDeviceKeys.Clear();
         ApplyPlayingFlagsToRows();
         try { cts.Dispose(); } catch { /* ignore */ }
     }
@@ -476,17 +578,23 @@ public sealed class ManualBackupCoordinator : INotifyPropertyChanged, IAsyncDisp
     {
         try { _activePlayCts?.Cancel(); } catch { /* ignore */ }
         _activePlayCts = null;
-        _playingDeviceKeys.Clear();
+        _activePlayLocation = null;
+        lock (_playGate)
+            _playingDeviceKeys.Clear();
         ApplyPlayingFlagsToRows();
     }
 
     private void ApplyPlayingFlagsToRows()
     {
+        HashSet<string> snapshot;
+        lock (_playGate)
+            snapshot = new HashSet<string>(_playingDeviceKeys, StringComparer.OrdinalIgnoreCase);
+
         foreach (var loc in Locations)
         {
             foreach (var device in loc.Devices)
             {
-                var playing = _playingDeviceKeys.Contains(DevicePlayKey(device.Location, device.DeviceId));
+                var playing = snapshot.Contains(DevicePlayKey(device.Location, device.DeviceId));
                 foreach (var file in device.Files)
                     file.IsPlaying = file.IsCurrent && playing;
             }
@@ -537,7 +645,9 @@ public sealed class ManualBackupCoordinator : INotifyPropertyChanged, IAsyncDisp
                     UnplayedCount = unplayed,
                     Coordinator = this
                 };
-                var devicePlaying = _playingDeviceKeys.Contains(DevicePlayKey(loc, deviceId));
+                bool devicePlaying;
+                lock (_playGate)
+                    devicePlaying = _playingDeviceKeys.Contains(DevicePlayKey(loc, deviceId));
                 var deviceDir = _store.GetDeviceDir(_sessionPath!, loc, deviceId);
                 foreach (var arch in archives)
                 {
