@@ -319,5 +319,49 @@ public class ManualBackupStoreTests
             try { Directory.Delete(root, recursive: true); } catch { /* ignore */ }
         }
     }
+
+    [Fact]
+    public void LiveSoftPullPolicy_IntervalUnderTenSeconds_AndTimingOnly()
+    {
+        Assert.True(ManualBackupLiveSoftPullPolicy.Interval <= TimeSpan.FromSeconds(10));
+        Assert.True(ManualBackupLiveSoftPullPolicy.PullBudget > ManualBackupLiveSoftPullPolicy.Interval);
+        Assert.True(ManualBackupLiveSoftPullPolicy.ShouldRun(isTimingRole: true, manualBackupEnabled: true, cloudAvailable: true));
+        Assert.False(ManualBackupLiveSoftPullPolicy.ShouldRun(isTimingRole: false, manualBackupEnabled: true, cloudAvailable: true));
+        Assert.False(ManualBackupLiveSoftPullPolicy.ShouldRun(isTimingRole: true, manualBackupEnabled: false, cloudAvailable: true));
+        Assert.False(ManualBackupLiveSoftPullPolicy.ShouldRun(isTimingRole: true, manualBackupEnabled: true, cloudAvailable: false));
+    }
+
+    [Fact]
+    public void LiveSoftPullMerge_LongerPhoneCurrentDoesNotResetPlayCursor()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "s2f-mb-live-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var library = Path.Combine(root, "Library");
+            var active = Path.Combine(root, "Active");
+            var store = new ManualBackupStore();
+            store.SaveManifest(active, new Models.ManualBackupManifest
+            {
+                Enabled = true,
+                Locations = { "Finish" }
+            });
+            store.AppendTap(active, "Finish", "phone", "Phone", "1");
+            store.AppendTap(active, "Finish", "phone", "Phone", "2");
+            store.SetPlayCursor(active, "Finish", "phone", 1);
+
+            // Phone SoftPull wrote a longer Current on Library (new taps after cursor).
+            store.AppendTap(library, "Finish", "phone", "Phone", "1");
+            store.AppendTap(library, "Finish", "phone", "Phone", "2");
+            store.AppendTap(library, "Finish", "phone", "Phone", "3");
+
+            ManualBackupStore.MergeTreePreferLongerJsonl(library, active);
+            Assert.Equal(3, store.ReadCurrentTaps(active, "Finish", "phone").Count);
+            Assert.Equal(1, store.LoadOrCreateDevice(active, "Finish", "phone", "Phone").PlayCursor);
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); } catch { /* ignore */ }
+        }
+    }
 }
 

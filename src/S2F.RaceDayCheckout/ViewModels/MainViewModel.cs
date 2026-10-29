@@ -86,8 +86,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private ManualBackupFloatWindow? _manualBackupFloat;
     /// <summary>Coalesce rapid bib submits into one Graph upload (avoids file-lock storms).</summary>
     private CancellationTokenSource? _mbPublishDebounceCts;
+    /// <summary>One-shot SoftPull after Backup Laptop open (canceled on Done).</summary>
     private CancellationTokenSource? _mbSoftPullCts;
+    /// <summary>Live SoftPull loop on Main Timing while Manual Backup is Active (Play + idle).</summary>
+    private CancellationTokenSource? _mbLiveSoftPullCts;
     private readonly SemaphoreSlim _mbPublishGate = new(1, 1);
+    private readonly SemaphoreSlim _mbLiveSoftPullGate = new(1, 1);
     private volatile bool _mbPublishAgain;
     private readonly DispatcherTimer _heartbeatTimer;
     private readonly DispatcherTimer _mirrorTimer;
@@ -2508,12 +2512,112 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 Active.Office,
                 Active.RelativePath,
                 leaf ?? Active.RelativePath);
+            SyncManualBackupLiveSoftPull();
         }
         else
         {
+            StopManualBackupLiveSoftPull();
             _manualBackup.DetachSession();
             try { _manualBackupFloat?.Close(); } catch { /* ignore */ }
             _manualBackupFloat = null;
+        }
+    }
+
+    /// <summary>
+    /// Main Timing only: SoftPull MB tree every ~5s while Manual Backup is enabled (Play + idle)
+    /// so phone / Backup Laptop Currents reach Active and file cards stay fresh.
+    /// </summary>
+    private void SyncManualBackupLiveSoftPull()
+    {
+        var timing = Active is { Role: CheckoutRole.Timing };
+        if (!ManualBackupLiveSoftPullPolicy.ShouldRun(timing, _manualBackup.IsEnabled, _cloud.IsAvailable))
+        {
+            StopManualBackupLiveSoftPull();
+            return;
+        }
+
+        if (_mbLiveSoftPullCts is { IsCancellationRequested: false })
+            return;
+
+        var cts = new CancellationTokenSource();
+        _mbLiveSoftPullCts = cts;
+        _ = RunManualBackupLiveSoftPullLoopAsync(cts.Token);
+    }
+
+    private void StopManualBackupLiveSoftPull()
+    {
+        _mbLiveSoftPullCts?.Cancel();
+        _mbLiveSoftPullCts?.Dispose();
+        _mbLiveSoftPullCts = null;
+    }
+
+    private async Task RunManualBackupLiveSoftPullLoopAsync(CancellationToken token)
+    {
+        try
+        {
+            while (!token.IsCancellationRequested)
+            {
+                await Task.Delay(ManualBackupLiveSoftPullPolicy.Interval, token).ConfigureAwait(true);
+                if (Active is not { Role: CheckoutRole.Timing } || !_manualBackup.IsEnabled)
+                    break;
+                await SoftPullManualBackupLiveOnceAsync(token).ConfigureAwait(true);
+            }
+        }
+        catch (OperationCanceledException) { /* stopped */ }
+        catch { /* soft — loop ends; Sync may restart */ }
+        finally
+        {
+            // Clear so SyncManualBackupLiveSoftPull can restart after unexpected exit.
+            if (_mbLiveSoftPullCts is { } live && live.Token == token)
+            {
+                try { live.Dispose(); } catch { /* ignore */ }
+                if (ReferenceEquals(_mbLiveSoftPullCts, live))
+                    _mbLiveSoftPullCts = null;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Download-only SoftPull (no publish) — local taps keep debounced publish; avoid write storms.
+    /// </summary>
+    private async Task SoftPullManualBackupLiveOnceAsync(CancellationToken outerToken)
+    {
+        if (!_cloud.IsAvailable || Active is not { Role: CheckoutRole.Timing } active)
+            return;
+        if (!await _mbLiveSoftPullGate.WaitAsync(0, outerToken).ConfigureAwait(false))
+            return; // single-flight — prior pull still running
+        try
+        {
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(outerToken);
+            linked.CancelAfter(ManualBackupLiveSoftPullPolicy.PullBudget);
+            await _cloud.DownloadSessionAsync(
+                active.LibrarySessionPath,
+                _settings.LibraryRoot,
+                _settings.GraphDriveRoot,
+                status: null,
+                linked.Token,
+                SessionDownloadOptions.ForManualBackupOnly()).ConfigureAwait(false);
+
+            if (Active is not { Role: CheckoutRole.Timing, LibrarySessionPath: var lib }
+                || !string.Equals(lib, active.LibrarySessionPath, StringComparison.OrdinalIgnoreCase))
+                return;
+
+            ManualBackupStore.MergeTreePreferLongerJsonl(
+                active.LibrarySessionPath,
+                active.ActivePath);
+
+            // Refresh file cards (idle + Play). Play TCP loop reads disk independently.
+            await Application.Current.Dispatcher.InvokeAsync(() =>
+            {
+                if (Active is { Role: CheckoutRole.Timing })
+                    _manualBackup.ReloadFromDisk();
+            });
+        }
+        catch (OperationCanceledException) { /* budget / stop */ }
+        catch { /* soft — next tick */ }
+        finally
+        {
+            _mbLiveSoftPullGate.Release();
         }
     }
 
@@ -2576,6 +2680,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
             return;
         _manualBackup.SaveConfig(dlg.Enabled, dlg.Locations);
         Status = _manualBackup.Status;
+        SyncManualBackupLiveSoftPull();
         _ = PublishManualBackupTreeAsync();
     }
 
@@ -2624,13 +2729,20 @@ public sealed class MainViewModel : INotifyPropertyChanged
         return true;
     }
 
-    /// <summary>After Play: publish local taps, then soft-pull phone taps for the next Play.</summary>
+    /// <summary>
+    /// After Play: publish local taps, then soft-pull once as catch-up.
+    /// Live SoftPull loop already pulls during Play; this covers the Pause gap.
+    /// </summary>
     private async Task SyncManualBackupAfterPlayAsync()
     {
         try
         {
             await PublishManualBackupTreeAsync().ConfigureAwait(true);
-            await RefreshManualBackupFromCloudAsync(budget: TimeSpan.FromSeconds(20)).ConfigureAwait(true);
+            // Prefer live pull path when Timing loop is running (download-only + merge).
+            if (_mbLiveSoftPullCts is { IsCancellationRequested: false })
+                await SoftPullManualBackupLiveOnceAsync(CancellationToken.None).ConfigureAwait(true);
+            else
+                await RefreshManualBackupFromCloudAsync(budget: TimeSpan.FromSeconds(20)).ConfigureAwait(true);
         }
         catch { /* soft */ }
     }
