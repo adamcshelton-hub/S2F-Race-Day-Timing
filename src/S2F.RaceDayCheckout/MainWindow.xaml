@@ -722,13 +722,12 @@
                                       <DockPanel LastChildFill="True">
                                         <Border DockPanel.Dock="Left" Width="3" Margin="0,1,4,1" CornerRadius="1"
                                                 Background="{StaticResource AccentBrush}" Opacity="0.55"/>
-                                        <TextBlock DockPanel.Dock="Left" Text="{Binding DisplayName}"
-                                                   Width="40" FontSize="10" FontWeight="SemiBold"
-                                                   VerticalAlignment="Top" Margin="0,2,4,0"
-                                                   TextTrimming="CharacterEllipsis"
-                                                   ToolTip="{Binding DisplayName}"/>
-                                        <!-- Current sticky; Past scrolls underneath -->
+                                        <!-- Full staff / machine name above Current (was 40px truncated). -->
                                         <DockPanel LastChildFill="True">
+                                          <TextBlock DockPanel.Dock="Top" Text="{Binding DisplayName}"
+                                                     FontSize="11" FontWeight="SemiBold"
+                                                     TextWrapping="Wrap" Margin="0,0,0,4"
+                                                     ToolTip="{Binding DisplayName}"/>
                                           <Border DockPanel.Dock="Top" DataContext="{Binding CurrentFile}"
                                                   Padding="5,3" CornerRadius="4" Margin="0,0,0,4"
                                                   HorizontalAlignment="Stretch">
