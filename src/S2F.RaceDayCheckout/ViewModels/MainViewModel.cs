@@ -2693,6 +2693,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
         _ = SyncManualBackupAfterPlayAsync();
     }
 
+    public void PauseManualBackupAll(string location)
+    {
+        _manualBackup.PauseAll(location);
+        Status = _manualBackup.Status;
+    }
+
     public async Task PlayManualBackupSegmentAsync(
         string location, string deviceId, string? segment, bool replay)
     {

@@ -691,7 +691,19 @@
                                   <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
                                     <Button Content="Play All" Style="{StaticResource PrimaryButton}"
                                             MinHeight="22" FontSize="10" Padding="6,1" Margin="0,0,3,0"
+                                            Visibility="{Binding ShowPlayAll, Converter={StaticResource BoolVis}}"
                                             Click="ManualBackupPlayAll_Click" Tag="{Binding Location}"/>
+                                    <Button Content="Pause All" MinHeight="22" FontSize="10" Padding="6,1" Margin="0,0,3,0"
+                                            Visibility="{Binding ShowPauseAll, Converter={StaticResource BoolVis}}"
+                                            Click="ManualBackupPauseAll_Click" Tag="{Binding Location}">
+                                      <Button.Style>
+                                        <Style TargetType="Button" BasedOn="{StaticResource SecondaryButton}">
+                                          <Setter Property="Background" Value="#FDECEA"/>
+                                          <Setter Property="BorderBrush" Value="{StaticResource DangerBrush}"/>
+                                          <Setter Property="Foreground" Value="{StaticResource DangerBrush}"/>
+                                        </Style>
+                                      </Button.Style>
+                                    </Button>
                                     <Button Content="New File" Style="{StaticResource SecondaryButton}"
                                             MinHeight="22" FontSize="10" Padding="6,1"
                                             ToolTip="Create New File All"

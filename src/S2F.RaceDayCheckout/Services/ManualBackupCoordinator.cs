@@ -396,6 +396,41 @@ public sealed class ManualBackupCoordinator : INotifyPropertyChanged, IAsyncDisp
         }
     }
 
+    /// <summary>Pause every Playing device at this location (Play All ↔ Pause All).</summary>
+    public void PauseAll(string location)
+    {
+        if (string.IsNullOrWhiteSpace(_sessionPath) || string.IsNullOrWhiteSpace(location))
+            return;
+
+        List<string> deviceIds;
+        lock (_playGate)
+        {
+            var prefix = location + "\n";
+            deviceIds = _playingDeviceKeys
+                .Where(k => k.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                .Select(k => k.Substring(prefix.Length))
+                .ToList();
+            foreach (var id in deviceIds)
+                _playingDeviceKeys.Remove(DevicePlayKey(location, id));
+        }
+
+        if (deviceIds.Count == 0)
+        {
+            // Nothing tracked as Playing — still cancel if this location owns the session.
+            if (string.Equals(_activePlayLocation, location, StringComparison.OrdinalIgnoreCase))
+                _activePlayCts?.Cancel();
+            return;
+        }
+
+        foreach (var id in deviceIds)
+            _store.SetPaused(_sessionPath, location, id, true);
+
+        ApplyPlayingFlagsToRows();
+        _activePlayCts?.Cancel();
+        Status = "Paused all at " + location + ".";
+        ReloadFromDisk();
+    }
+
     async Task<ManualBackupPlayResult> RunLocationContinuousPlayAsync(
         string location,
         IEnumerable<string> deviceIds)
@@ -592,12 +627,17 @@ public sealed class ManualBackupCoordinator : INotifyPropertyChanged, IAsyncDisp
 
         foreach (var loc in Locations)
         {
+            var anyPlaying = false;
             foreach (var device in loc.Devices)
             {
                 var playing = snapshot.Contains(DevicePlayKey(device.Location, device.DeviceId));
+                if (playing)
+                    anyPlaying = true;
                 foreach (var file in device.Files)
                     file.IsPlaying = file.IsCurrent && playing;
             }
+
+            loc.IsPlayingAny = anyPlaying;
         }
     }
 
@@ -624,7 +664,8 @@ public sealed class ManualBackupCoordinator : INotifyPropertyChanged, IAsyncDisp
             return;
         foreach (var loc in manifest.Locations)
         {
-            var row = new ManualBackupLocationRow { Location = loc };
+            var row = new ManualBackupLocationRow { Location = loc, Coordinator = this };
+            var anyPlaying = false;
             foreach (var deviceId in _store.ListDeviceIds(_sessionPath!, loc))
             {
                 // Refresh this Windows laptop's display name; never overwrite phone names with deviceId.
@@ -648,6 +689,8 @@ public sealed class ManualBackupCoordinator : INotifyPropertyChanged, IAsyncDisp
                 bool devicePlaying;
                 lock (_playGate)
                     devicePlaying = _playingDeviceKeys.Contains(DevicePlayKey(loc, deviceId));
+                if (devicePlaying)
+                    anyPlaying = true;
                 var deviceDir = _store.GetDeviceDir(_sessionPath!, loc, deviceId);
                 foreach (var arch in archives)
                 {
@@ -690,6 +733,8 @@ public sealed class ManualBackupCoordinator : INotifyPropertyChanged, IAsyncDisp
                 deviceRow.PastExpanded = _pastExpandedKeys.Contains(DevicePlayKey(loc, deviceId));
                 row.Devices.Add(deviceRow);
             }
+
+            row.IsPlayingAny = anyPlaying;
             Locations.Add(row);
         }
     }
@@ -719,10 +764,32 @@ public sealed class ManualBackupCoordinator : INotifyPropertyChanged, IAsyncDisp
     }
 }
 
-public sealed class ManualBackupLocationRow
+public sealed class ManualBackupLocationRow : INotifyPropertyChanged
 {
+    private bool _isPlayingAny;
+
     public string Location { get; set; } = "";
+    public ManualBackupCoordinator? Coordinator { get; set; }
     public ObservableCollection<ManualBackupDeviceRow> Devices { get; } = new();
+
+    /// <summary>True while any device Current at this location is mid-Play (Pause All replaces Play All).</summary>
+    public bool IsPlayingAny
+    {
+        get => _isPlayingAny;
+        set
+        {
+            if (_isPlayingAny == value) return;
+            _isPlayingAny = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsPlayingAny)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ShowPlayAll)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ShowPauseAll)));
+        }
+    }
+
+    public bool ShowPlayAll => !IsPlayingAny;
+    public bool ShowPauseAll => IsPlayingAny;
+
+    public event PropertyChangedEventHandler? PropertyChanged;
 }
 
 public sealed class ManualBackupDeviceRow : INotifyPropertyChanged

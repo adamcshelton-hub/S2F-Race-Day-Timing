@@ -739,6 +739,15 @@ public partial class MainWindow : Window
         await _vm.PlayManualBackupAllAsync(loc);
     }
 
+    private void ManualBackupPauseAll_Click(object sender, RoutedEventArgs e)
+    {
+        var loc = (sender as FrameworkElement)?.Tag as string
+                  ?? ((sender as FrameworkElement)?.DataContext as ManualBackupLocationRow)?.Location;
+        if (string.IsNullOrWhiteSpace(loc))
+            return;
+        _vm.PauseManualBackupAll(loc);
+    }
+
     private void ManualBackupCreateAll_Click(object sender, RoutedEventArgs e)
     {
         var loc = (sender as FrameworkElement)?.Tag as string
