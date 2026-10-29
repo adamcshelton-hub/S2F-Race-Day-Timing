@@ -254,6 +254,57 @@ public class ManualBackupStoreTests
     }
 
     [Fact]
+    public void LoadOrCreateDevice_PlayPollWithDeviceIdDoesNotWipeStaffName()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "s2f-mb-name-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var store = new ManualBackupStore();
+            store.SaveManifest(root, new Models.ManualBackupManifest
+            {
+                Enabled = true,
+                Locations = { "Finish" }
+            });
+            store.AppendTap(root, "Finish", "web-abc123def456", "Adam Shelton", "101");
+            // PlayAllContinuous passes deviceId as displayName every poll — must not clobber.
+            var after = store.LoadOrCreateDevice(root, "Finish", "web-abc123def456", "web-abc123def456");
+            Assert.Equal("Adam Shelton", after.DisplayName);
+            Assert.False(ManualBackupStore.IsPlaceholderDisplayName("Adam Shelton", "web-abc123def456"));
+            Assert.True(ManualBackupStore.IsPlaceholderDisplayName("web-abc123def456", "web-abc123def456"));
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); } catch { /* ignore */ }
+        }
+    }
+
+    [Fact]
+    public void MergeTreePreferLongerJsonl_DoesNotReplaceStaffNameWithWebDeviceId()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "s2f-mb-merge-name-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var library = Path.Combine(root, "Library");
+            var active = Path.Combine(root, "Active");
+            var store = new ManualBackupStore();
+            store.SaveManifest(library, new Models.ManualBackupManifest
+            {
+                Enabled = true,
+                Locations = { "Finish" }
+            });
+            var id = "web-576d99e53f134e30";
+            store.AppendTap(active, "Finish", id, "Adam Shelton", "1");
+            store.AppendTap(library, "Finish", id, id, "1"); // Library stuck on device id
+            ManualBackupStore.MergeTreePreferLongerJsonl(library, active);
+            Assert.Equal("Adam Shelton", store.LoadOrCreateDevice(active, "Finish", id, "").DisplayName);
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); } catch { /* ignore */ }
+        }
+    }
+
+    [Fact]
     public void MergeTreePreferLongerJsonl_KeepsLongerCurrent_AndExistingDeviceJson()
     {
         var root = Path.Combine(Path.GetTempPath(), "s2f-mb-merge-" + Guid.NewGuid().ToString("N"));

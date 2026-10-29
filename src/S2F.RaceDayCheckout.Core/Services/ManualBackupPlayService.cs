@@ -45,7 +45,7 @@ public sealed class ManualBackupPlayService
         var batch = new List<(ManualBackupTap Tap, string DeviceId, int AbsoluteIndex)>();
         foreach (var deviceId in deviceIds)
         {
-            var state = _store.LoadOrCreateDevice(sessionPath, location, deviceId, deviceId);
+            var state = _store.LoadOrCreateDevice(sessionPath, location, deviceId, "");
             if (state.Paused)
                 continue;
             var taps = _store.ReadCurrentTaps(sessionPath, location, deviceId);
@@ -91,7 +91,7 @@ public sealed class ManualBackupPlayService
         // Advance each device cursor to end of its current file (all lines considered played through).
         foreach (var deviceId in deviceIds)
         {
-            var state = _store.LoadOrCreateDevice(sessionPath, location, deviceId, deviceId);
+            var state = _store.LoadOrCreateDevice(sessionPath, location, deviceId, "");
             if (state.Paused)
                 continue;
             var taps = _store.ReadCurrentTaps(sessionPath, location, deviceId);
@@ -128,7 +128,7 @@ public sealed class ManualBackupPlayService
             }
         }
 
-        var state = _store.LoadOrCreateDevice(sessionPath, location, deviceId, deviceId);
+        var state = _store.LoadOrCreateDevice(sessionPath, location, deviceId, "");
         if (!replay && state.Paused)
         {
             return new ManualBackupPlayResult
@@ -232,7 +232,7 @@ public sealed class ManualBackupPlayService
         {
             while (!ct.IsCancellationRequested)
             {
-                var state = _store.LoadOrCreateDevice(sessionPath, location, deviceId, deviceId);
+                var state = _store.LoadOrCreateDevice(sessionPath, location, deviceId, "");
                 var all = _store.ReadCurrentTaps(sessionPath, location, deviceId);
                 var batch = all.Skip(state.PlayCursor).Where(t => !t.Voided).ToList();
                 if (batch.Count > 0)
@@ -328,7 +328,7 @@ public sealed class ManualBackupPlayService
                 {
                     if (string.IsNullOrWhiteSpace(deviceId))
                         continue;
-                    var state = _store.LoadOrCreateDevice(sessionPath, location, deviceId, deviceId);
+                    var state = _store.LoadOrCreateDevice(sessionPath, location, deviceId, "");
                     if (state.Paused)
                         continue;
                     var taps = _store.ReadCurrentTaps(sessionPath, location, deviceId);

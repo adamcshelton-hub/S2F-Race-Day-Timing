@@ -99,6 +99,17 @@ public sealed class ManualBackupStore
     public string GetDeviceDir(string sessionPath, string location, string deviceId) =>
         Path.Combine(GetRoot(sessionPath), SanitizeLocation(location), SanitizeDeviceId(deviceId));
 
+    /// <summary>
+    /// True when <paramref name="name"/> is empty or just echoes the device id (e.g. Staffing web-…).
+    /// Play loops must not clobber a real staff name with these.
+    /// </summary>
+    public static bool IsPlaceholderDisplayName(string? name, string deviceId)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+            return true;
+        return string.Equals(name.Trim(), deviceId, StringComparison.OrdinalIgnoreCase);
+    }
+
     public ManualBackupDeviceState LoadOrCreateDevice(
         string sessionPath,
         string location,
@@ -108,6 +119,7 @@ public sealed class ManualBackupStore
         var dir = GetDeviceDir(sessionPath, location, deviceId);
         Directory.CreateDirectory(dir);
         var path = Path.Combine(dir, DeviceFileName);
+        var id = SanitizeDeviceId(deviceId);
         if (File.Exists(path))
         {
             try
@@ -116,8 +128,12 @@ public sealed class ManualBackupStore
                     File.ReadAllText(path), JsonOpts);
                 if (existing is not null)
                 {
-                    if (!string.IsNullOrWhiteSpace(displayName)
-                        && !string.Equals(existing.DisplayName, displayName, StringComparison.Ordinal))
+                    // Play loops pass deviceId as displayName — never let that wipe a staff name.
+                    if (!IsPlaceholderDisplayName(displayName, id)
+                        && !string.Equals(
+                            (existing.DisplayName ?? "").Trim(),
+                            displayName.Trim(),
+                            StringComparison.Ordinal))
                     {
                         existing.DisplayName = displayName.Trim();
                         SaveDeviceState(sessionPath, location, existing);
@@ -130,8 +146,8 @@ public sealed class ManualBackupStore
 
         var state = new ManualBackupDeviceState
         {
-            DeviceId = SanitizeDeviceId(deviceId),
-            DisplayName = string.IsNullOrWhiteSpace(displayName) ? deviceId : displayName.Trim(),
+            DeviceId = id,
+            DisplayName = IsPlaceholderDisplayName(displayName, id) ? id : displayName.Trim(),
             CreatedUtc = DateTimeOffset.UtcNow,
             UpdatedUtc = DateTimeOffset.UtcNow
         };
@@ -558,7 +574,10 @@ public sealed class ManualBackupStore
         }
     }
 
-    /// <summary>Copy DisplayName from Library device.json into Active; leave PlayCursor/Paused alone.</summary>
+    /// <summary>
+    /// Copy DisplayName from Library → Active when Library has a real staff label.
+    /// Never replace a good Active name with deviceId / web-… during SoftPull.
+    /// </summary>
     static void TryMergeDeviceDisplayName(string sourceDeviceJson, string destDeviceJson)
     {
         try
@@ -569,8 +588,14 @@ public sealed class ManualBackupStore
                 File.ReadAllText(destDeviceJson), JsonOpts);
             if (source is null || dest is null)
                 return;
-            if (string.IsNullOrWhiteSpace(source.DisplayName)
-                || string.Equals(dest.DisplayName, source.DisplayName, StringComparison.Ordinal))
+            var deviceId = string.IsNullOrWhiteSpace(dest.DeviceId) ? source.DeviceId : dest.DeviceId;
+            if (IsPlaceholderDisplayName(source.DisplayName, deviceId))
+                return;
+            if (string.Equals(dest.DisplayName, source.DisplayName, StringComparison.Ordinal))
+                return;
+            // Keep a good Active name if Library somehow still has a worse/equal placeholder path.
+            if (!IsPlaceholderDisplayName(dest.DisplayName, deviceId)
+                && IsPlaceholderDisplayName(source.DisplayName, deviceId))
                 return;
             dest.DisplayName = source.DisplayName.Trim();
             dest.UpdatedUtc = DateTimeOffset.UtcNow;
