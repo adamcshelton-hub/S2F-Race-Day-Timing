@@ -1411,14 +1411,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
             default:
                 if (status.StartsWith("finish:upload-progress:", StringComparison.OrdinalIgnoreCase))
                 {
-                    var parts = status.Split(':');
-                    var label = parts.Length > 2 ? parts[2] : "files";
-                    var n = parts.Length > 3 ? parts[3] : "";
                     SetFinishProgress(
                         "3 · Uploading to OneDrive",
-                        string.IsNullOrEmpty(n)
-                            ? $"Uploading {label}…\nKeep this window open."
-                            : $"Uploading {label} ({n})…\nKeep this window open.");
+                        FormatFinishUploadProgress(status) + "\nKeep this window open.");
                     return;
                 }
 
@@ -1434,6 +1429,25 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 SetFinishProgress("Saving your race", FriendlyProgress(status));
                 return;
         }
+    }
+
+    /// <summary>
+    /// Maps <c>finish:upload-progress:N/M</c> to timer-facing "Uploading N of M…".
+    /// </summary>
+    private static string FormatFinishUploadProgress(string status)
+    {
+        const string prefix = "finish:upload-progress:";
+        var payload = status.Length > prefix.Length ? status[prefix.Length..] : string.Empty;
+        var slash = payload.IndexOf('/');
+        if (slash > 0
+            && int.TryParse(payload.AsSpan(0, slash), out var n)
+            && int.TryParse(payload.AsSpan(slash + 1), out var total)
+            && total > 0)
+        {
+            return $"Uploading {n} of {total}…";
+        }
+
+        return "Uploading changed race files…";
     }
 
     public string LibraryRoot
@@ -2373,9 +2387,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
             if (result.RetainActiveForCloudRetry)
             {
                 await ShowBusyResultAsync(
-                    "Saved on this laptop — cloud still needed",
+                    "Saved on This Laptop — Cloud Still Needed",
                     result.Message
-                    + "\n\nDo not shut down yet. Keep this app open and tap Finish again when cellular signal is better."
+                    + "\n\nDo not shut down yet. Keep this app open and tap Finish again when the connection is better."
                     + "\n\nAnother laptop must not check out this event until cloud upload succeeds.");
                 return;
             }
@@ -4128,6 +4142,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 if (s.StartsWith("done:copy", StringComparison.OrdinalIgnoreCase)
                     || s.StartsWith("finish:copy", StringComparison.OrdinalIgnoreCase))
                     SetBusy("Saving Announcer .event", "Copying the .event into the local library…");
+                else if (s.StartsWith("finish:upload-progress:", StringComparison.OrdinalIgnoreCase))
+                    SetBusy("Saving Announcer .event", FormatFinishUploadProgress(s));
                 else if (s.StartsWith("done:sync", StringComparison.OrdinalIgnoreCase)
                          || s.StartsWith("finish:sync", StringComparison.OrdinalIgnoreCase)
                          || s.StartsWith("finish:upload", StringComparison.OrdinalIgnoreCase))
@@ -4152,7 +4168,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 await ShowBusyResultAsync(
                     "Saved on This Laptop — Cloud Still Needed",
                     result.Message
-                    + "\n\nDo not shut down yet. Keep this app open and tap Done again when cellular signal is better.");
+                    + "\n\nDo not shut down yet. Keep this app open and tap Done again when the connection is better.");
                 return;
             }
 

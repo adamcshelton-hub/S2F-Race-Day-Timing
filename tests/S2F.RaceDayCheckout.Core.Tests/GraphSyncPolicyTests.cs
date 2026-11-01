@@ -14,9 +14,10 @@ public class GraphSyncPolicyTests
         Assert.Equal(skip, GraphSyncPolicy.ShouldSkipFolder(name));
 
     [Fact]
-    public void FinishBudget_IsUnderTwoMinutes_ForCellular()
+    public void FinishBudget_MatchesSessionDownload_ForGraphLatency()
     {
-        Assert.True(GraphSyncPolicy.FinishUploadBudget <= TimeSpan.FromSeconds(90));
+        Assert.Equal(GraphSyncPolicy.SessionDownloadBudget, GraphSyncPolicy.FinishUploadBudget);
+        Assert.True(GraphSyncPolicy.FinishUploadBudget <= TimeSpan.FromMinutes(3));
         // Past Races year probes reuse download gate (parallel FolderExists).
         Assert.True(GraphSyncPolicy.DownloadParallelism >= 2);
         Assert.True(GraphSyncPolicy.DownloadParallelismFloor >= 1);

@@ -913,7 +913,7 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
                         ? failedRels
                         : NormalizeSessionRels(onlyRelativePaths),
                     Message =
-                        "Race files to upload were missing or too large for cellular Finish. "
+                        "Race files to upload were missing or too large for Finish. "
                         + "Tap Finish again when the pack is ready, or ask setup for help."
                 };
             }
@@ -2311,10 +2311,15 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
         if (jobs.Count == 0)
             return new UploadBatchResult(0, 0, 0, Array.Empty<string>());
 
+        var total = jobs.Count;
         var succeeded = 0;
         var failed = 0;
         var eventFailed = 0;
+        var completed = 0;
         var failedRels = new System.Collections.Concurrent.ConcurrentBag<string>();
+
+        // Coarse N/M — matches download "Downloading n/total" so Finish is not a silent wait.
+        status?.Report($"finish:upload-progress:0/{total}");
 
         var tasks = jobs.Select(async job =>
         {
@@ -2325,10 +2330,7 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
                 try
                 {
                     await UploadFileWithGuardsAsync(job, gate, cancellationToken).ConfigureAwait(false);
-                    var n = Interlocked.Increment(ref succeeded);
-                    status?.Report(isEvent
-                        ? "finish:upload-progress:timing file"
-                        : $"finish:upload-progress:{job.ProgressLabel}:{n}");
+                    Interlocked.Increment(ref succeeded);
                 }
                 catch (OperationCanceledException)
                 {
@@ -2342,6 +2344,9 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
                     if (!string.IsNullOrWhiteSpace(job.SessionRelativePath))
                         failedRels.Add(job.SessionRelativePath);
                 }
+
+                var n = Interlocked.Increment(ref completed);
+                status?.Report($"finish:upload-progress:{n}/{total}");
             }
         });
 

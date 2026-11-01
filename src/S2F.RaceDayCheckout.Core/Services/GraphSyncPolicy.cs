@@ -25,8 +25,12 @@ public static class GraphSyncPolicy
     /// <summary>Index one office’s event leaves — cancel if cellular stalls.</summary>
     public static readonly TimeSpan OfficeSessionsBudget = TimeSpan.FromSeconds(75);
 
-    /// <summary>Whole Finish cloud upload budget (after local save).</summary>
-    public static readonly TimeSpan FinishUploadBudget = TimeSpan.FromSeconds(90);
+    /// <summary>
+    /// Whole Finish / Announcer Done cloud upload budget (after local save).
+    /// Matches <see cref="SessionDownloadBudget"/> — Graph PUTs are latency-bound; a short
+    /// 90s cap was falsely blaming "cellular" when speedtest Mbps looked fine.
+    /// </summary>
+    public static readonly TimeSpan FinishUploadBudget = TimeSpan.FromMinutes(3);
 
     /// <summary>Checkout session pack download (one event). Progress must stay live — cellular.</summary>
     public static readonly TimeSpan SessionDownloadBudget = TimeSpan.FromMinutes(3);

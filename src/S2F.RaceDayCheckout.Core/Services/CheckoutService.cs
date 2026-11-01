@@ -177,7 +177,7 @@ public sealed class CheckoutService
             try
             {
                 using var pullCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                // Must match DownloadSessionAsync's own budget — FinishUploadBudget (90s) was truncating packs.
+                // Must match DownloadSessionAsync's own budget — do not wrap in a shorter Finish budget.
                 pullCts.CancelAfter(GraphSyncPolicy.SessionDownloadBudget);
                 pull = await _cloud.DownloadSessionAsync(
                     request.Pack.Path,
@@ -703,7 +703,7 @@ public sealed class CheckoutService
                     stillPending = uploadRelativePaths;
                     syncMessage = cancellationToken.IsCancellationRequested
                         ? "Done was interrupted before cloud upload finished. The .event is saved on this laptop — tap Done again."
-                        : "Cloud upload timed out on cellular. The .event is saved on this laptop — tap Done again when signal improves.";
+                        : "Cloud upload timed out. The .event is saved on this laptop — tap Done again when the connection is better.";
                 }
 
                 if (!syncOk)
@@ -1017,7 +1017,7 @@ public sealed class CheckoutService
                 stillPending = uploadRelativePaths;
                 syncMessage = cancellationToken.IsCancellationRequested
                     ? "Finish was interrupted before cloud upload finished. Race files are saved on this laptop — tap Finish again."
-                    : "Cloud upload timed out on cellular. Race files are saved on this laptop — tap Finish again when signal improves.";
+                    : "Cloud upload timed out. Race files are saved on this laptop — tap Finish again when the connection is better.";
             }
 
             if (!syncOk)
