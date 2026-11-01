@@ -89,6 +89,30 @@ public static class GraphSyncPolicy
     public static bool ShouldSkipFolder(string folderName) =>
         !string.IsNullOrEmpty(folderName) && SkipFolderNames.Contains(folderName);
 
+    /// <summary>
+    /// Normal Timing/Announcer session pack pull: download when local is missing, sizes differ,
+    /// or OneDrive <c>lastModified</c> is clearly newer. Same-size content edits (e.g. Entries.ini
+    /// timestamps) must not leave a stale <c>C:\S2F\Library</c> copy on the next laptop.
+    /// Uses children-list metadata only — no extra Graph round-trip.
+    /// </summary>
+    public static bool NeedsSessionFileDownload(
+        bool localExists,
+        long localLength,
+        DateTime localLastWriteUtc,
+        long? remoteSize,
+        DateTime? remoteLastModifiedUtc)
+    {
+        if (!localExists || remoteSize is not long remote)
+            return true;
+        if (localLength != remote)
+            return true;
+        // Same size — still pull when cloud is newer (2s skew). Matches Announcer DB's behavior.
+        if (remoteLastModifiedUtc is { } remoteUtc
+            && localLastWriteUtc < remoteUtc.AddSeconds(-2))
+            return true;
+        return false;
+    }
+
     public static bool ShouldSkipFile(string filePath, long maxBytes)
     {
         try

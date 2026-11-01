@@ -40,4 +40,48 @@ public class GraphSyncPolicyTests
         Assert.True(GraphSyncPolicy.DownloadMaxAttempts >= 3);
         Assert.Equal(GraphSyncPolicy.DownloadMaxAttempts, GraphSyncPolicy.UploadMaxAttempts);
     }
+
+    [Fact]
+    public void NeedsSessionFileDownload_MissingLocal_True() =>
+        Assert.True(GraphSyncPolicy.NeedsSessionFileDownload(
+            localExists: false,
+            localLength: 0,
+            localLastWriteUtc: DateTime.MinValue,
+            remoteSize: 996,
+            remoteLastModifiedUtc: DateTime.UtcNow));
+
+    [Fact]
+    public void NeedsSessionFileDownload_SizeDiffers_True() =>
+        Assert.True(GraphSyncPolicy.NeedsSessionFileDownload(
+            localExists: true,
+            localLength: 879,
+            localLastWriteUtc: DateTime.UtcNow.AddDays(-1),
+            remoteSize: 996,
+            remoteLastModifiedUtc: DateTime.UtcNow));
+
+    [Fact]
+    public void NeedsSessionFileDownload_SameSizeRemoteNewer_True()
+    {
+        // Entries.ini timestamp edit: same 996 bytes, newer OneDrive version on 2nd laptop.
+        var localWrite = new DateTime(2026, 10, 27, 15, 42, 0, DateTimeKind.Utc);
+        var remoteWrite = new DateTime(2026, 10, 31, 15, 27, 0, DateTimeKind.Utc);
+        Assert.True(GraphSyncPolicy.NeedsSessionFileDownload(
+            localExists: true,
+            localLength: 996,
+            localLastWriteUtc: localWrite,
+            remoteSize: 996,
+            remoteLastModifiedUtc: remoteWrite));
+    }
+
+    [Fact]
+    public void NeedsSessionFileDownload_SameSizeLocalCurrent_False()
+    {
+        var stamp = new DateTime(2026, 10, 31, 15, 27, 0, DateTimeKind.Utc);
+        Assert.False(GraphSyncPolicy.NeedsSessionFileDownload(
+            localExists: true,
+            localLength: 996,
+            localLastWriteUtc: stamp,
+            remoteSize: 996,
+            remoteLastModifiedUtc: stamp));
+    }
 }

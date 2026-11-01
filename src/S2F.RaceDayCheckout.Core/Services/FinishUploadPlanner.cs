@@ -22,6 +22,9 @@ public static class FinishUploadPlanner
             PathService.RunScoreFolderName,
             results);
 
+        // Entries.ini / Entries.INI — explicit pass for casing variants after the tree walk.
+        TryAddEntriesIni(active.ActivePath, active.LibrarySessionPath, results);
+
         var activeDbs = Path.Combine(active.ActivePath, SharedFolderLinkService.DbsFolderName);
         var libraryDbs = Path.Combine(active.LibrarySessionPath, SharedFolderLinkService.DbsFolderName);
         if (Directory.Exists(activeDbs) && !IsReparsePoint(activeDbs))
@@ -128,7 +131,45 @@ public static class FinishUploadPlanner
         }
     }
 
-    /// <summary>True when Active differs from Library (missing, size, or content).</summary>
+    /// <summary>Explicit Entries.ini / Entries.INI pass so either casing is compared.</summary>
+    private static void TryAddEntriesIni(string activeSession, string librarySession, List<string> results)
+    {
+        if (!TryFindEntriesIni(activeSession, out var activeIni, out var fileName))
+            return;
+
+        var rel = Path.Combine(PathService.RunScoreFolderName, fileName);
+        var relNorm = NormalizeRelative(rel);
+        if (results.Any(r => string.Equals(NormalizeRelative(r), relNorm, StringComparison.OrdinalIgnoreCase)))
+            return;
+
+        if (!TryFindEntriesIni(librarySession, out var libraryIni, out _))
+            libraryIni = Path.Combine(librarySession, PathService.RunScoreFolderName, fileName);
+        if (NeedsUpload(activeIni, libraryIni))
+            results.Add(rel);
+    }
+
+    private static bool TryFindEntriesIni(string sessionPath, out string path, out string fileName)
+    {
+        foreach (var name in new[] { "Entries.ini", "Entries.INI" })
+        {
+            var candidate = Path.Combine(sessionPath, PathService.RunScoreFolderName, name);
+            if (!File.Exists(candidate))
+                continue;
+            path = candidate;
+            fileName = Path.GetFileName(candidate);
+            return true;
+        }
+
+        path = string.Empty;
+        fileName = string.Empty;
+        return false;
+    }
+
+    /// <summary>
+    /// True when Active differs from Library (missing, size, or content).
+    /// Always byte-compares same-size files — never mtime-skip. Finish runs after the race;
+    /// completeness beats avoiding a local compare (Entries.ini timestamps, ENTRIES.DTA, etc.).
+    /// </summary>
     public static bool NeedsUpload(string activeFile, string libraryFile)
     {
         if (!File.Exists(activeFile))
@@ -141,15 +182,8 @@ public static class FinishUploadPlanner
         if (a.Length != b.Length)
             return true;
 
-        // Same size + Active clearly older than Library (2s skew) → unchanged.
-        // Do NOT treat "Active slightly newer" as unchanged without a byte compare —
-        // RunScore can rewrite same-length files within that window and we would
-        // skip Finish upload (Active≈Library trap after a failed cloud Finish).
-        if (a.LastWriteTimeUtc < b.LastWriteTimeUtc.AddSeconds(-2))
-            return false;
-
-        // Same size and Active same-or-newer — compare bytes (mtime bumps with no edit
-        // still return false; real same-size content edits return true).
+        // Same size — compare bytes. Mtime alone lies after checkout/index and for fixed-width
+        // RunScore edits; identical content still returns false (no Graph PUT).
         return !FilesEqual(activeFile, libraryFile);
     }
 

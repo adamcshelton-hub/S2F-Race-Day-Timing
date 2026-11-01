@@ -95,6 +95,88 @@ public class FinishUploadPlannerTests
     }
 
     [Fact]
+    public void NeedsUpload_SameSizeActiveOlderThanLibrary_StillComparesBytes()
+    {
+        // Finish never mtime-skips — same-length RS edits must still Graph.
+        var root = Path.Combine(Path.GetTempPath(), "s2f-finish-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var libDir = Path.Combine(root, "lib");
+            var actDir = Path.Combine(root, "act");
+            Directory.CreateDirectory(libDir);
+            Directory.CreateDirectory(actDir);
+            var library = Path.Combine(libDir, "ENTRIES.DTA");
+            var active = Path.Combine(actDir, "ENTRIES.DTA");
+            File.WriteAllText(library, "race name            default-value");
+            File.SetLastWriteTimeUtc(library, DateTime.UtcNow);
+            File.WriteAllText(active, "race name            raceday-value");
+            File.SetLastWriteTimeUtc(active, DateTime.UtcNow.AddMinutes(-10));
+            Assert.Equal(new FileInfo(library).Length, new FileInfo(active).Length);
+
+            Assert.True(FinishUploadPlanner.NeedsUpload(active, library));
+        }
+        finally
+        {
+            TryDelete(root);
+        }
+    }
+
+    [Fact]
+    public void CollectChanged_EntriesIniVariableEdit_ActiveOlder_Included()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "s2f-finish-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var library = Path.Combine(root, "Library", "Race");
+            var active = Path.Combine(root, "Active", "Race");
+            SeedIdenticalPack(library, active);
+
+            var libIni = Path.Combine(library, PathService.RunScoreFolderName, "Entries.ini");
+            var actIni = Path.Combine(active, PathService.RunScoreFolderName, "Entries.ini");
+            var newer = DateTime.UtcNow;
+            var older = newer.AddMinutes(-15);
+            // Same length lines — classic RunScore variable column layout.
+            WriteFixed(libIni, "custom var           default-value-xx", newer);
+            WriteFixed(actIni, "custom var           race-day-value-yy", older);
+
+            var changed = FinishUploadPlanner.CollectChangedRelativePaths(MakeCheckout(active, library));
+            Assert.Contains(
+                changed,
+                p => p.Replace('\\', '/').EndsWith("RUNSCORE/Entries.ini", StringComparison.OrdinalIgnoreCase));
+        }
+        finally
+        {
+            TryDelete(root);
+        }
+    }
+
+    [Fact]
+    public void CollectChanged_EntriesIniIdentical_NotIncluded()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "s2f-finish-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var library = Path.Combine(root, "Library", "Race");
+            var active = Path.Combine(root, "Active", "Race");
+            SeedIdenticalPack(library, active);
+
+            var stamp = DateTime.UtcNow.AddDays(-1);
+            var body = "race name            Demo Race";
+            WriteFixed(Path.Combine(library, PathService.RunScoreFolderName, "Entries.ini"), body, stamp);
+            WriteFixed(Path.Combine(active, PathService.RunScoreFolderName, "Entries.ini"), body, stamp);
+
+            var changed = FinishUploadPlanner.CollectChangedRelativePaths(MakeCheckout(active, library));
+            Assert.DoesNotContain(
+                changed,
+                p => p.Replace('\\', '/').EndsWith("RUNSCORE/Entries.ini", StringComparison.OrdinalIgnoreCase));
+        }
+        finally
+        {
+            TryDelete(root);
+        }
+    }
+
+    [Fact]
     public void CollectChanged_NewEventFile_Included()
     {
         var root = Path.Combine(Path.GetTempPath(), "s2f-finish-" + Guid.NewGuid().ToString("N"));

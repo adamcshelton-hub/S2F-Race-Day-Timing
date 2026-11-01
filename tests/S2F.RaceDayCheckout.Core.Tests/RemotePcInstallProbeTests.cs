@@ -4,6 +4,11 @@ namespace S2F.RaceDayCheckout.Core.Tests;
 
 public class RemotePcInstallProbeTests
 {
+    private static readonly Func<IEnumerable<string>> None = () => Array.Empty<string>();
+
+    private static Func<Environment.SpecialFolder, string> Folders(string root86 = "PF86", string root = "PF") =>
+        folder => folder == Environment.SpecialFolder.ProgramFilesX86 ? root86 : root;
+
     [Fact]
     public void IsRemotePcInstalledOnWindows_TrueWhenSuiteLauncherPresent()
     {
@@ -13,9 +18,10 @@ public class RemotePcInstallProbeTests
 
         Assert.True(RemotePcInstallProbe.IsRemotePcInstalledOnWindows(
             fileExists: files.Contains,
-            getFolderPath: folder => folder == Environment.SpecialFolder.ProgramFilesX86
-                ? root86
-                : "PF"));
+            getFolderPath: Folders(root86),
+            enumerateUninstallDisplayNames: None,
+            enumerateServiceImagePaths: None,
+            enumerateProcessNames: None));
     }
 
     [Fact]
@@ -27,9 +33,10 @@ public class RemotePcInstallProbeTests
 
         Assert.True(RemotePcInstallProbe.IsRemotePcInstalledOnWindows(
             fileExists: files.Contains,
-            getFolderPath: folder => folder == Environment.SpecialFolder.ProgramFilesX86
-                ? root86
-                : "PF"));
+            getFolderPath: Folders(root86),
+            enumerateUninstallDisplayNames: None,
+            enumerateServiceImagePaths: None,
+            enumerateProcessNames: None));
     }
 
     [Fact]
@@ -37,10 +44,84 @@ public class RemotePcInstallProbeTests
     {
         Assert.False(RemotePcInstallProbe.IsRemotePcInstalledOnWindows(
             fileExists: _ => false,
-            getFolderPath: folder => folder == Environment.SpecialFolder.ProgramFilesX86
-                ? "PF86"
-                : "PF"));
+            getFolderPath: Folders(),
+            enumerateUninstallDisplayNames: None,
+            enumerateServiceImagePaths: None,
+            enumerateProcessNames: None));
     }
+
+    [Fact]
+    public void IsRemotePcInstalledOnWindows_TrueWhenUninstallDisplayNamePresent()
+    {
+        Assert.True(RemotePcInstallProbe.IsRemotePcInstalledOnWindows(
+            fileExists: _ => false,
+            getFolderPath: Folders(),
+            enumerateUninstallDisplayNames: () => ["RemotePC Host"],
+            enumerateServiceImagePaths: None,
+            enumerateProcessNames: None));
+    }
+
+    [Fact]
+    public void IsRemotePcInstalledOnWindows_TrueWhenServiceImagePathContainsRemotePc()
+    {
+        Assert.True(RemotePcInstallProbe.IsRemotePcInstalledOnWindows(
+            fileExists: _ => false,
+            getFolderPath: Folders(),
+            enumerateUninstallDisplayNames: None,
+            enumerateServiceImagePaths: () =>
+            [
+                @"""C:\Program Files (x86)\RemotePC\RemotePCService.exe"""
+            ],
+            enumerateProcessNames: None));
+    }
+
+    [Fact]
+    public void IsRemotePcInstalledOnWindows_TrueWhenHostProcessRunning()
+    {
+        Assert.True(RemotePcInstallProbe.IsRemotePcInstalledOnWindows(
+            fileExists: _ => false,
+            getFolderPath: Folders(),
+            enumerateUninstallDisplayNames: None,
+            enumerateServiceImagePaths: None,
+            enumerateProcessNames: () => ["RemotePCService"]));
+    }
+
+    [Fact]
+    public void IsRemotePcInstalledOnWindows_IgnoresUnrelatedRpcServicePath()
+    {
+        Assert.False(RemotePcInstallProbe.IsRemotePcInstalledOnWindows(
+            fileExists: _ => false,
+            getFolderPath: Folders(),
+            enumerateUninstallDisplayNames: None,
+            enumerateServiceImagePaths: () => [@"%SystemRoot%\system32\svchost.exe -k RPCSS"],
+            enumerateProcessNames: None));
+    }
+
+    [Theory]
+    [InlineData("RemotePC Host", true)]
+    [InlineData("Chrome", false)]
+    [InlineData(null, false)]
+    public void LooksLikeRemotePcProduct_MatchesDisplayName(string? name, bool expected) =>
+        Assert.Equal(expected, RemotePcInstallProbe.LooksLikeRemotePcProduct(name));
+
+    [Theory]
+    [InlineData(@"C:\Program Files\RemotePC\RemotePCService.exe", true)]
+    [InlineData(@"""C:\Program Files (x86)\RemotePC\RemotePCService.exe"" -service", true)]
+    [InlineData(@"%SystemRoot%\system32\svchost.exe -k RPCSS", false)]
+    [InlineData(null, false)]
+    public void LooksLikeRemotePcPath_MatchesImagePath(string? path, bool expected) =>
+        Assert.Equal(expected, RemotePcInstallProbe.LooksLikeRemotePcPath(path));
+
+    [Theory]
+    [InlineData("RemotePCService", true)]
+    [InlineData("RemotePCHost", true)]
+    [InlineData("SuiteLauncher", true)]
+    [InlineData("RemotePCService.exe", true)]
+    [InlineData("chrome", false)]
+    [InlineData("svchost", false)]
+    [InlineData(null, false)]
+    public void LooksLikeRemotePcProcess_MatchesKnownHosts(string? name, bool expected) =>
+        Assert.Equal(expected, RemotePcInstallProbe.LooksLikeRemotePcProcess(name));
 
     [Fact]
     public void WaitUntilRemotePcInstalledOnWindows_TrueWhenMarkerAppearsAfterDelay()
@@ -55,9 +136,10 @@ public class RemotePcInstallProbeTests
             timeout: TimeSpan.FromSeconds(10),
             pollInterval: TimeSpan.FromSeconds(2),
             fileExists: files.Contains,
-            getFolderPath: folder => folder == Environment.SpecialFolder.ProgramFilesX86
-                ? root86
-                : "PF",
+            getFolderPath: Folders(root86),
+            enumerateUninstallDisplayNames: None,
+            enumerateServiceImagePaths: None,
+            enumerateProcessNames: None,
             delay: d =>
             {
                 sleeps++;
@@ -81,9 +163,10 @@ public class RemotePcInstallProbeTests
             timeout: TimeSpan.FromSeconds(10),
             pollInterval: TimeSpan.FromSeconds(2),
             fileExists: files.Contains,
-            getFolderPath: folder => folder == Environment.SpecialFolder.ProgramFilesX86
-                ? root86
-                : "PF",
+            getFolderPath: Folders(root86),
+            enumerateUninstallDisplayNames: None,
+            enumerateServiceImagePaths: None,
+            enumerateProcessNames: None,
             delay: _ => sleeps++,
             utcNow: () => DateTime.UtcNow));
 
@@ -100,9 +183,10 @@ public class RemotePcInstallProbeTests
             timeout: TimeSpan.FromSeconds(5),
             pollInterval: TimeSpan.FromSeconds(2),
             fileExists: _ => false,
-            getFolderPath: folder => folder == Environment.SpecialFolder.ProgramFilesX86
-                ? "PF86"
-                : "PF",
+            getFolderPath: Folders(),
+            enumerateUninstallDisplayNames: None,
+            enumerateServiceImagePaths: None,
+            enumerateProcessNames: None,
             delay: d =>
             {
                 sleeps++;
