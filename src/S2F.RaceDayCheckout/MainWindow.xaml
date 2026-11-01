@@ -302,8 +302,9 @@
           <StackPanel>
           <TextBlock Text="{Binding StepTitle}" FontSize="28" FontWeight="SemiBold"
                      TextTrimming="CharacterEllipsis"/>
+          <!-- MinHeight ≈ 2 lines so Announcer's longer Office subtitle doesn't shove the role row down. -->
           <TextBlock Text="{Binding StepSubtitle}" Foreground="{StaticResource MutedBrush}"
-                     FontSize="15" Margin="0,6,0,0" TextWrapping="Wrap"/>
+                     FontSize="15" Margin="0,6,0,0" TextWrapping="Wrap" MinHeight="40"/>
           </StackPanel>
           <!-- Signed-in status on the title row, top-right — does not push the office list down. -->
           <Border Grid.Column="1" CornerRadius="8" Padding="14,8" Margin="20,2,0,0" MaxWidth="340"
