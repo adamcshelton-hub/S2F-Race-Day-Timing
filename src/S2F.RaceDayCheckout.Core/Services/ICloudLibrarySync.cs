@@ -16,8 +16,7 @@ public sealed class CloudSyncResult
 }
 
 /// <summary>
-/// App-owned sync between local <c>LibraryRoot</c> and Business OneDrive via Microsoft Graph
-/// (shared race account <c>/me/drive</c>).
+/// App-owned sync between local <c>LibraryRoot</c> and personal OneDrive via Microsoft Graph.
 /// Race-day laptops do not use the OneDrive desktop client — Graph is the only cloud path.
 /// </summary>
 public interface ICloudLibrarySync

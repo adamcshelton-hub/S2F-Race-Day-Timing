@@ -6,7 +6,7 @@ using S2F.RaceDayCheckout.Core.Models;
 namespace S2F.RaceDayCheckout.Core.Services;
 
 /// <summary>
-/// Business OneDrive sync via Microsoft Graph REST (<c>/me/drive</c> — shared race account).
+/// Personal OneDrive sync via Microsoft Graph REST (<c>/me/drive</c>).
 /// Tuned for race-day cellular: small payloads, short timeouts, parallel session download.
 /// </summary>
 public sealed class GraphDriveSyncService : ICloudLibrarySync
@@ -346,7 +346,7 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
             budget.CancelAfter(GraphSyncPolicy.SessionDownloadBudget);
             var dbsOnly = options?.DbsOnly == true;
 
-            // Parallel per-file download (launch path). Folder ZIP on Business OneDrive is optional later.
+            // Graph does not support folder-as-ZIP on personal OneDrive (?format=zip is for Office→PDF).
             // Enumerate once, then download several files at a time.
             var slim = options?.Role == CheckoutRole.Announcer;
             var overlayOnly = options?.AutosaveOverlayOnly == true;

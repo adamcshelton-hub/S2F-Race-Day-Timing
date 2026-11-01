@@ -7,24 +7,13 @@ using S2F.RaceDayCheckout.Core.Services;
 
 namespace S2F.RaceDayCheckout.Services;
 
-/// <summary>
-/// MSAL public-client auth for the shared M365 Business OneDrive race account
-/// (<c>timing@start2finish.onmicrosoft.com</c>) — Graph <c>/me/drive</c> only.
-/// </summary>
+/// <summary>MSAL public-client auth for personal Microsoft accounts (info@ OneDrive).</summary>
 public sealed class GraphAuthService : IGraphTokenProvider
 {
     private static readonly string[] Scopes = ["Files.ReadWrite", "User.Read", "offline_access"];
 
-    /// <summary>Legacy personal-MSA cache — ignored after the Business OneDrive cutover.</summary>
-    private const string LegacyPersonalCacheFileName = "token_cache.bin";
-
-    /// <summary>Work-account token cache (new file so personal MSA tokens cannot stick).</summary>
-    private const string OrgCacheFileName = "token_cache_m365.bin";
-
     private readonly string _clientId;
-    private readonly string _tenantId;
     private readonly string _cachePath;
-    private readonly string _cacheDir;
     private IPublicClientApplication? _app;
     private IAccount? _account;
     private bool _cacheRegistered;
@@ -32,21 +21,17 @@ public sealed class GraphAuthService : IGraphTokenProvider
     private string? _memoryToken;
     private DateTimeOffset _memoryTokenExpires = DateTimeOffset.MinValue;
 
-    public GraphAuthService(string? clientId = null, string? tenantId = null)
+    public GraphAuthService(string? clientId = null)
     {
         _clientId = string.IsNullOrWhiteSpace(clientId)
             ? AppSettings.DefaultGraphClientId
             : clientId.Trim();
-        _tenantId = string.IsNullOrWhiteSpace(tenantId)
-            ? AppSettings.DefaultGraphTenantId
-            : tenantId.Trim();
-        _cacheDir = Path.Combine(
+        var cacheDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
             "S2FRaceDayCheckout",
             "msal");
-        Directory.CreateDirectory(_cacheDir);
-        _cachePath = Path.Combine(_cacheDir, OrgCacheFileName);
-        TryDeleteLegacyPersonalCache();
+        Directory.CreateDirectory(cacheDir);
+        _cachePath = Path.Combine(cacheDir, "token_cache.bin");
     }
 
     public bool IsSignedIn
@@ -151,7 +136,7 @@ public sealed class GraphAuthService : IGraphTokenProvider
 
         _app = PublicClientApplicationBuilder
             .Create(_clientId)
-            .WithAuthority($"https://login.microsoftonline.com/{_tenantId}")
+            .WithAuthority(AzureCloudInstance.AzurePublic, AadAuthorityAudience.PersonalMicrosoftAccount)
             .WithRedirectUri("http://localhost")
             .WithClientName("S2F Race Day Timing")
             .WithWindowsEmbeddedBrowserSupport()
@@ -172,20 +157,6 @@ public sealed class GraphAuthService : IGraphTokenProvider
         }
 
         return _app;
-    }
-
-    private void TryDeleteLegacyPersonalCache()
-    {
-        try
-        {
-            var legacy = Path.Combine(_cacheDir, LegacyPersonalCacheFileName);
-            if (File.Exists(legacy))
-                File.Delete(legacy);
-        }
-        catch
-        {
-            // Non-fatal — org cache file is what MSAL reads now.
-        }
     }
 
     private void RegisterDpapiCache(IPublicClientApplication app)

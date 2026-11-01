@@ -36,8 +36,8 @@ public static class GraphSyncPolicy
     public static readonly TimeSpan SessionDownloadBudget = TimeSpan.FromMinutes(3);
 
     /// <summary>
-    /// Concurrent file transfers for one session pack (download or upload). Folder-ZIP download is
-    /// optional on Business OneDrive later; parallel GETs/PUTs are the launch path. Not an integrity
+    /// Concurrent file transfers for one session pack (download or upload). Graph has no folder-ZIP
+    /// for personal OneDrive; parallel GETs/PUTs are the bulk option that works. Not an integrity
     /// limit — guarded by Retry-After cooldown + temporary concurrency backoff on 429/503.
     /// </summary>
     public const int DownloadParallelism = 8;
