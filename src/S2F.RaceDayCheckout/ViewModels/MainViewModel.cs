@@ -198,7 +198,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public MainViewModel()
     {
         _settings = _settingsStore.LoadAndPersistMigrations();
-        _graphAuth = new GraphAuthService(_settings.GraphClientId);
+        _graphAuth = new GraphAuthService(_settings.GraphClientId, _settings.GraphTenantId);
         _cloud = new GraphDriveSyncService(_graphAuth);
         _locks = new CheckoutLockService(_paths, _machine);
         _scanner = new LibraryScanner(_paths, _locks);
