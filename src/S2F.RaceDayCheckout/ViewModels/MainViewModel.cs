@@ -1530,13 +1530,13 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     public string GraphLandingStatus =>
         IsGraphSignedIn
-            ? $"Signed in as {_graphAuth.AccountEmail ?? "OneDrive"}. This laptop can download and sync race files."
+            ? "OneDrive is ready. This laptop can download and sync race files."
             : "Sign in to OneDrive to begin. This laptop does not use the OneDrive desktop app — "
               + "you cannot choose an office or load a race until you are signed in.";
 
-    /// <summary>Compact account line for the header-row ready chip (office step, signed in).</summary>
+    /// <summary>Compact detail for the header-row ready chip (office step, signed in). Account email is Admin-only.</summary>
     public string GraphReadyInlineDetail =>
-        $"Signed in as {_graphAuth.AccountEmail ?? "OneDrive"}";
+        "This laptop can download and sync race files.";
 
     /// <summary>Signed-in chip on the page-title row, top-right — does not push the office list down.</summary>
     public bool ShowGraphReadyInline => IsOfficeStep && IsGraphSignedIn;
@@ -3428,7 +3428,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 return;
             }
 
-            Status = $"Signed in as {_graphAuth.AccountEmail}.";
+            Status = "Signed in to OneDrive.";
             NotifyGraphStatus();
             await SyncVendorSecretsFromGraphAsync().ConfigureAwait(true);
             await RefreshLibraryFromGraphAsync();
