@@ -271,7 +271,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
             catch { /* non-fatal — list stays usable */ }
         };
 
-        EnsureLocalRoots(); // office name folders under C:\S2F\Library — no Graph
+        EnsureLocalRoots(); // Library + RaceDay roots only — office folders come from OneDrive
         LoadAdminUnlock();
         ReloadFromDisk();
         RefreshLaptopClockSyncStatus();
@@ -905,7 +905,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private string _newAdminRaceStartTime = string.Empty;
     private RaceStartEntry? _adminRaceStartEditOriginal;
     private string _laptopClockText = string.Empty;
-    private string _laptopClockSyncLabel = "Clock";
+    private string _laptopClockSyncLabel = "Sync Clock";
     private LaptopClockSyncKind _laptopClockSyncKind = LaptopClockSyncKind.Unknown;
     private bool _raceStartBoardRebuildSuspended;
 
@@ -952,15 +952,25 @@ public sealed class MainViewModel : INotifyPropertyChanged
     /// <summary>True only when staff should verify the laptop clock (no green Synced badge).</summary>
     public bool ShowLaptopClockWarning => LaptopClockSyncKind == LaptopClockSyncKind.CheckClock;
 
+    private static readonly System.Windows.Media.SolidColorBrush ClockSyncAttentionBrush = FrozenBrush(0xE6, 0xC3, 0x5C);
+    private static readonly System.Windows.Media.SolidColorBrush ClockSyncIdleBrush = FrozenBrush(0xC8, 0xC8, 0xC8);
+
     public System.Windows.Media.Brush LaptopClockSyncBrush =>
-        new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xE6, 0xC3, 0x5C));
+        ShowLaptopClockWarning ? ClockSyncAttentionBrush : ClockSyncIdleBrush;
+
+    private static System.Windows.Media.SolidColorBrush FrozenBrush(byte r, byte g, byte b)
+    {
+        var brush = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(r, g, b));
+        brush.Freeze();
+        return brush;
+    }
 
     public void RefreshLaptopClockSyncStatus()
     {
         _settings = _settingsStore.Load();
         var kind = LaptopClockSyncStatus.Evaluate(_settings, DateTimeOffset.UtcNow, DateTimeOffset.Now);
         LaptopClockSyncKind = kind;
-        LaptopClockSyncLabel = LaptopClockSyncStatus.WarningLabel(kind);
+        LaptopClockSyncLabel = "Sync Clock";
     }
 
     private void TickLaptopClock()
@@ -3559,7 +3569,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
             var result = await _cloud.RefreshOfficeListAsync(
                 _settings.LibraryRoot,
                 _settings.GraphDriveRoot,
-                new Progress<string>(s => Status = s));
+                new Progress<string>(s => Status = s),
+                protectSessionPath: Active?.LibrarySessionPath);
             Status = result.Message;
             if (!result.Success && blockUi)
                 Alert("OneDrive library", result.Message);
@@ -5464,33 +5475,15 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public void RefreshGraphLandingStatus() => NotifyGraphStatus();
 
     /// <summary>
-    /// If any allowed office folder is missing locally, probe Graph for those offices only
-    /// (no event trees). Partial local caches (e.g. 5 of 8) must not skip the rest.
+    /// Probe known office names when signed in (no event trees). A full local set is not
+    /// proof the folders are still on OneDrive — staff delete offices there.
     /// </summary>
     public async Task EnsureLibraryIndexedFromGraphAsync()
     {
         if (!_cloud.IsAvailable || HasActive)
             return;
 
-        if (!HasMissingOfficeFolders())
-            return;
-
         await RefreshLibraryFromGraphAsync(blockUi: false);
-    }
-
-    private bool HasMissingOfficeFolders()
-    {
-        var root = _settings.LibraryRoot;
-        if (string.IsNullOrWhiteSpace(root))
-            return true;
-
-        foreach (var name in PathService.AllowedOfficeFolders)
-        {
-            if (!Directory.Exists(Path.Combine(root, name)))
-                return true;
-        }
-
-        return false;
     }
 
     public void EditRunScoreSop()
@@ -5572,13 +5565,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         try
         {
             if (!string.IsNullOrWhiteSpace(_settings.LibraryRoot))
-            {
                 Directory.CreateDirectory(_settings.LibraryRoot);
-                // Known office names — show immediately without waiting on Graph (cellular).
-                // Events still load from Graph only when an office is picked and local list is empty.
-                foreach (var office in PathService.AllowedOfficeFolders)
-                    Directory.CreateDirectory(Path.Combine(_settings.LibraryRoot, office));
-            }
             DefenderExclusionPolicy.EnsureRaceDayFolders(_settings.RaceDayRoot);
         }
         catch

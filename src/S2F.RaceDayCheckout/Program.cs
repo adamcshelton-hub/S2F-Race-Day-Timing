@@ -16,6 +16,7 @@ public static class Program
             {
                 DefenderExclusionPrompt.MarkOfferPending();
                 TaskbarPinPrompt.MarkOfferPending();
+                SystemTimeSyncPrompt.MarkOfferPending();
             })
             .Run();
 

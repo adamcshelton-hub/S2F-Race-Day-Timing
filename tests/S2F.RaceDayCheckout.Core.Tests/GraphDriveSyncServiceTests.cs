@@ -33,6 +33,17 @@ public class GraphDriveSyncServiceTests
     }
 
     [Fact]
+    public void FormatOfficeListMessage_ReportsFoundAndRemoved()
+    {
+        Assert.Equal(
+            "Found 6 office folder(s). 1 removed (not on OneDrive).",
+            GraphDriveSyncService.FormatOfficeListMessage(6, 1));
+        Assert.Equal(
+            "No office folders found on OneDrive. Check Graph folder path in Admin.",
+            GraphDriveSyncService.FormatOfficeListMessage(0, 0));
+    }
+
+    [Fact]
     public void FormatOfficeSessionsRefreshMessage_AlreadyInSync_DoesNotSayNoEvents()
     {
         // Bug: created=0 pruned=0 used to mean “no RUNSCORE on OneDrive” even when remoteCount > 0.

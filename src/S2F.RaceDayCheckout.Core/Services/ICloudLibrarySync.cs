@@ -26,14 +26,16 @@ public interface ICloudLibrarySync
     bool IsAvailable { get; }
 
     /// <summary>
-    /// List remote <b>office</b> folders only and ensure empty local office dirs exist.
-    /// Does not walk events (cellular — one level at a time).
+    /// Probe known office folder names only. Create local folders that exist on OneDrive
+    /// and remove local ones confirmed missing. Does not walk events.
+    /// A timed-out probe must not remove anything.
     /// </summary>
     Task<CloudSyncResult> RefreshOfficeListAsync(
         string libraryRoot,
         string graphDriveRoot,
         IProgress<string>? status = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        string? protectSessionPath = null);
 
     /// <summary>
     /// Index session leaves under one office (placeholders with RUNSCORE) so
@@ -218,7 +220,7 @@ public sealed class NullCloudLibrarySync : ICloudLibrarySync
     public bool IsAvailable => false;
 
     public Task<CloudSyncResult> RefreshOfficeListAsync(
-        string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default) =>
+        string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default, string? protectSessionPath = null) =>
         Task.FromResult(new CloudSyncResult { Success = true, Message = "Graph not signed in." });
 
     public Task<CloudSyncResult> RefreshOfficeSessionsAsync(

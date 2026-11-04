@@ -353,20 +353,32 @@ public partial class MainWindow : Window
         // Not on checkout; not again on routine updates once DefenderExclusionsConfigured is set.
         DefenderExclusionPrompt.TryOffer(this);
 
-        // After first-install UAC (Defender), sync Windows clock when HTTPS skew is material.
-        // Soft budget — never blocks checkout if UAC/network stalls.
+        // First install: one administrator prompt to register the clock-sync task.
+        // Later launches run that task only when HTTPS skew is material. Internal budgets
+        // cover UAC, the probe, and the task — checkout is not wrapped in a second timeout.
         try
         {
-            await SystemTimeSyncPrompt.TryRunAsync(this, msg => _vm.Status = msg)
-                .WaitAsync(TimeSpan.FromSeconds(100));
-        }
-        catch (TimeoutException)
-        {
-            RaceDayTrace.Write("time-sync launch budget exceeded");
+            await SystemTimeSyncPrompt.RunStartupAsync(this, msg => _vm.Status = msg);
         }
         catch
         {
             // Non-fatal
+        }
+        finally
+        {
+            _vm.RefreshLaptopClockSyncStatus();
+        }
+    }
+
+    private async void SyncLaptopClock_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            await SystemTimeSyncPrompt.SyncNowAsync(this, msg => _vm.Status = msg);
+        }
+        catch
+        {
+            // Non-fatal — SyncNowAsync already logs.
         }
         finally
         {

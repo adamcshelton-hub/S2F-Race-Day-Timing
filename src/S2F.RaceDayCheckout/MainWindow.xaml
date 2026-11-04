@@ -264,18 +264,24 @@
                          VerticalAlignment="Center"/>
             </StackPanel>
           </DockPanel>
-          <!-- Military laptop clock — top center; amber Check Clock only when sync is doubtful -->
-          <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center"
-                      IsHitTestVisible="False">
+          <!-- Military laptop clock — top center. Sync Clock is always available; amber when sync is doubtful. -->
+          <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
             <TextBlock Text="{Binding LaptopClockText}"
                        Foreground="White" FontSize="36" FontWeight="SemiBold"
                        FontFamily="Consolas, Cascadia Mono, Courier New"
-                       HorizontalAlignment="Center"/>
-            <TextBlock Text="{Binding LaptopClockSyncLabel}"
-                       Foreground="{Binding LaptopClockSyncBrush}"
+                       HorizontalAlignment="Center"
+                       IsHitTestVisible="False"/>
+            <TextBlock HorizontalAlignment="Center" Margin="0,2,0,0"
                        FontSize="13" FontWeight="SemiBold"
-                       HorizontalAlignment="Center" Margin="0,2,0,0"
-                       Visibility="{Binding ShowLaptopClockWarning, Converter={StaticResource BoolVis}}"/>
+                       Foreground="{Binding LaptopClockSyncBrush}">
+              <Hyperlink Click="SyncLaptopClock_Click"
+                         Foreground="{Binding LaptopClockSyncBrush}"
+                         TextDecorations="Underline"
+                         Cursor="Hand"
+                         ToolTip="Sets the Windows clock from internet time. Administrator permission is only needed the first time.">
+                <Run Text="{Binding LaptopClockSyncLabel}"/>
+              </Hyperlink>
+            </TextBlock>
           </StackPanel>
         </Grid>
       </Border>

@@ -70,4 +70,54 @@ public class LibrarySessionCacheTests
             try { Directory.Delete(office, true); } catch { /* ignore */ }
         }
     }
+
+    [Fact]
+    public void PruneOffices_RemovesConfirmedAbsent_KeepsOthers()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "s2f-offices-" + Guid.NewGuid().ToString("N"));
+        var testOffice = Path.Combine(root, "Test Office");
+        var memphis = Path.Combine(root, "Memphis");
+        Directory.CreateDirectory(Path.Combine(testOffice, "Sandbox", PathService.RunScoreFolderName));
+        Directory.CreateDirectory(memphis);
+        Directory.CreateDirectory(Path.Combine(root, "Not An Office"));
+
+        try
+        {
+            var removed = LibrarySessionCache.PruneOfficesConfirmedAbsent(
+                root,
+                new[] { "Test Office", "Not An Office" });
+
+            Assert.Equal(1, removed);
+            Assert.False(Directory.Exists(testOffice));
+            Assert.True(Directory.Exists(memphis));
+            Assert.True(Directory.Exists(Path.Combine(root, "Not An Office")));
+        }
+        finally
+        {
+            try { Directory.Delete(root, true); } catch { /* ignore */ }
+        }
+    }
+
+    [Fact]
+    public void PruneOffices_SkipsOfficeThatContainsActiveCheckout()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "s2f-offices-" + Guid.NewGuid().ToString("N"));
+        var session = Path.Combine(root, "Test Office", "2026 - Live");
+        Directory.CreateDirectory(Path.Combine(session, PathService.RunScoreFolderName));
+
+        try
+        {
+            var removed = LibrarySessionCache.PruneOfficesConfirmedAbsent(
+                root,
+                new[] { "Test Office" },
+                protectSessionPath: session);
+
+            Assert.Equal(0, removed);
+            Assert.True(Directory.Exists(session));
+        }
+        finally
+        {
+            try { Directory.Delete(root, true); } catch { /* ignore */ }
+        }
+    }
 }

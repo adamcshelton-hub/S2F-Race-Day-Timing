@@ -55,8 +55,8 @@ public sealed class AppSettings
     public bool DefenderExclusionsApplied { get; set; }
 
     /// <summary>
-    /// Last time this laptop successfully corrected (or confirmed) system clock via launch sync.
-    /// Used to avoid repeating elevated sync when the clock is already good.
+    /// Last time a fresh HTTPS check confirmed this laptop’s clock.
+    /// Clears the header warning. Does not skip a later correction when skew is measured again.
     /// </summary>
     public DateTimeOffset? LastSuccessfulTimeSyncUtc { get; set; }
 

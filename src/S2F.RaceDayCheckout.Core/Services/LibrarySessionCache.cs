@@ -1,9 +1,9 @@
 namespace S2F.RaceDayCheckout.Core.Services;
 
 /// <summary>
-/// Local <c>C:\S2F\Library</c> session folders vs OneDrive for one office.
-/// Staff periodically move finished events into Past Races on OneDrive — local leftovers
-/// under the old office must be pruned on the next Graph index of that office only.
+/// Local <c>C:\S2F\Library</c> vs OneDrive.
+/// Staff move finished events into Past Races, and sometimes remove a whole office folder.
+/// Prune only after a completed Graph check — never after a timeout or a partial list.
 /// </summary>
 public static class LibrarySessionCache
 {
@@ -29,6 +29,62 @@ public static class LibrarySessionCache
             if (Directory.Exists(Path.Combine(dir, PathService.RunScoreFolderName)))
                 yield return dir;
         }
+    }
+
+    /// <summary>
+    /// Delete local allowed-office folders confirmed missing on a completed Graph probe.
+    /// Skips the office that contains <paramref name="protectSessionPath"/> (active checkout).
+    /// </summary>
+    public static int PruneOfficesConfirmedAbsent(
+        string libraryRoot,
+        IReadOnlyCollection<string> confirmedAbsent,
+        string? protectSessionPath = null)
+    {
+        if (string.IsNullOrWhiteSpace(libraryRoot)
+            || !Directory.Exists(libraryRoot)
+            || confirmedAbsent.Count == 0)
+            return 0;
+
+        var protect = string.IsNullOrWhiteSpace(protectSessionPath)
+            ? null
+            : Path.GetFullPath(protectSessionPath);
+        var removed = 0;
+
+        foreach (var name in confirmedAbsent)
+        {
+            if (string.IsNullOrWhiteSpace(name)
+                || !PathService.AllowedOfficeFolders.Contains(name, StringComparer.OrdinalIgnoreCase))
+                continue;
+
+            var dir = Path.Combine(libraryRoot, name);
+            if (!Directory.Exists(dir))
+                continue;
+
+            var full = Path.GetFullPath(dir);
+            if (protect is not null && IsSameOrUnder(protect, full))
+                continue;
+
+            try
+            {
+                Directory.Delete(full, recursive: true);
+                removed++;
+            }
+            catch
+            {
+                // Locked / in use — leave it on the office list until the next check.
+            }
+        }
+
+        return removed;
+    }
+
+    private static bool IsSameOrUnder(string path, string folder)
+    {
+        if (path.Equals(folder, StringComparison.OrdinalIgnoreCase))
+            return true;
+        var prefix = folder.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            + Path.DirectorySeparatorChar;
+        return path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>

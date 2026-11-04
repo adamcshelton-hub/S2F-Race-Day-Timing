@@ -3,7 +3,9 @@ using S2F.RaceDayCheckout.Core.Models;
 namespace S2F.RaceDayCheckout.Core.Services;
 
 /// <summary>
-/// Launch clock-sync decisions. Corrects Windows time when skew is material; never blocks checkout.
+/// Clock-sync decisions. The Windows clock is corrected by a one-time scheduled task;
+/// these helpers decide when to run it and when a fresh HTTPS probe counts as success.
+/// Never blocks checkout.
 /// </summary>
 public static class SystemTimeSyncPolicy
 {
@@ -49,19 +51,34 @@ public static class SystemTimeSyncPolicy
         && utcNow - last >= TimeSpan.Zero;
 
     /// <summary>
-    /// Whether to run elevated correction. Only when HTTPS measured a material skew —
-    /// offline / probe failure does not pop UAC (NTP would fail too on the same hotspot).
+    /// Whether a measured skew is large enough to correct. Offline / probe failure is not —
+    /// there is no reference time, and NTP is often blocked on the same hotspot.
+    /// A prior UAC cancel does not suppress this: the scheduled task does not prompt.
     /// </summary>
-    public static bool ShouldAttemptCorrection(
-        TimeSpan? absoluteSkew,
-        AppSettings settings,
-        DateTimeOffset localNow)
-    {
-        if (WasUacDeclinedToday(settings, localNow))
-            return false;
+    public static bool ShouldAttemptCorrection(TimeSpan? absoluteSkew) =>
+        absoluteSkew is { } skew && skew >= CorrectThreshold;
 
-        return absoluteSkew is { } skew && skew >= CorrectThreshold;
+    /// <summary>What a fresh HTTPS measurement says about the laptop clock.</summary>
+    public static ClockSyncReading ClassifySkew(TimeSpan? absoluteSkew)
+    {
+        if (absoluteSkew is not { } skew)
+            return ClockSyncReading.Unknown;
+
+        if (skew < CorrectThreshold)
+            return ClockSyncReading.Confirmed;
+
+        if (skew < WarnThreshold)
+            return ClockSyncReading.Close;
+
+        return ClockSyncReading.Off;
     }
+
+    /// <summary>
+    /// Persist a success only when a fresh probe landed inside the warn band.
+    /// A missing probe is not success — the elevated script used to exit 0 either way.
+    /// </summary>
+    public static bool ShouldPersistSuccess(ClockSyncReading reading) =>
+        reading is ClockSyncReading.Confirmed or ClockSyncReading.Close;
 
     public static bool ShouldWarnAboutSkew(
         TimeSpan? absoluteSkew,
@@ -77,6 +94,8 @@ public static class SystemTimeSyncPolicy
     {
         settings.LastSuccessfulTimeSyncUtc = utcNow;
         settings.TimeSyncUacDeclinedLocalDate = null;
+        // A verified sync clears today's warning so the header does not stay on Check Clock.
+        settings.TimeSyncSkewWarnedLocalDate = null;
     }
 
     public static void MarkUacDeclined(AppSettings settings, DateTimeOffset localNow) =>
@@ -87,32 +106,20 @@ public static class SystemTimeSyncPolicy
 
     public static TimeSpan AbsoluteSkew(DateTimeOffset referenceUtc, DateTimeOffset localUtcNow) =>
         (referenceUtc - localUtcNow).Duration();
+}
 
-    /// <summary>
-    /// Build elevated PowerShell: start W32Time, force resync, optionally set clock from HTTPS UTC.
-    /// Setting from HTTPS covers cellular hotspots that block NTP UDP 123.
-    /// </summary>
-    public static string BuildElevatedSyncScript(DateTimeOffset? setClockFromUtc)
-    {
-        // Keep script ASCII-simple for temp .ps1 files.
-        var sb = new System.Text.StringBuilder();
-        sb.AppendLine("$ErrorActionPreference = 'Continue'");
-        sb.AppendLine("try {");
-        sb.AppendLine("  $svc = Get-Service -Name W32Time -ErrorAction SilentlyContinue");
-        sb.AppendLine("  if ($null -ne $svc -and $svc.Status -ne 'Running') { Start-Service -Name W32Time -ErrorAction SilentlyContinue }");
-        sb.AppendLine("} catch { }");
-        sb.AppendLine("try { & w32tm.exe /resync /force | Out-Null } catch { }");
-        if (setClockFromUtc is { } utc)
-        {
-            // Round-trip UTC → local via .NET so DST/zone match the laptop.
-            var roundTrip = utc.UtcDateTime.ToString("o", System.Globalization.CultureInfo.InvariantCulture);
-            sb.AppendLine(
-                "try { Set-Date -Date ([DateTime]::Parse('"
-                + roundTrip
-                + "', [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind).ToLocalTime()) | Out-Null } catch { }");
-        }
+/// <summary>Fresh HTTPS reading of the laptop clock.</summary>
+public enum ClockSyncReading
+{
+    /// <summary>Probe failed or did not run.</summary>
+    Unknown,
 
-        sb.AppendLine("exit 0");
-        return sb.ToString();
-    }
+    /// <summary>Skew is under the 1s correction floor.</summary>
+    Confirmed,
+
+    /// <summary>Inside the 2s warn band. Close enough to clear the badge.</summary>
+    Close,
+
+    /// <summary>At or past the warn threshold.</summary>
+    Off
 }

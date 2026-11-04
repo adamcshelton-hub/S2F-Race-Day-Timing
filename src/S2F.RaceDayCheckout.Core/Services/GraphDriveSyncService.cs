@@ -34,7 +34,8 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
         string libraryRoot,
         string graphDriveRoot,
         IProgress<string>? status = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? protectSessionPath = null)
     {
         if (!_tokens.IsSignedIn)
             return new CloudSyncResult { Success = false, Message = "Sign in to OneDrive first." };
@@ -51,15 +52,32 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
                 : $"Listing offices under {rootPath}…");
 
             var found = 0;
+            List<string> absent;
             if (!string.IsNullOrEmpty(rootPath))
             {
-                // Cellular: one children list under Start 2 - Personal (~9 folders), not OD root.
+                // Parent must exist. A 404 here is an empty children list — do not treat that
+                // as "every office was deleted" and wipe the local cache.
+                if (!await FolderExistsAsync(rootPath, budget.Token).ConfigureAwait(false))
+                {
+                    return new CloudSyncResult
+                    {
+                        Success = false,
+                        Message = $"OneDrive folder “{rootPath}” was not found. Check the Graph folder path in Admin."
+                    };
+                }
+
+                // Cellular: one children list under that folder (~9 names), not the whole drive.
                 var remote = await ListChildFoldersAsync(rootPath, budget.Token).ConfigureAwait(false);
+                absent = new List<string>();
                 foreach (var officeName in PathService.AllowedOfficeFolders)
                 {
                     budget.Token.ThrowIfCancellationRequested();
                     if (!remote.Contains(officeName, StringComparer.OrdinalIgnoreCase))
+                    {
+                        absent.Add(officeName);
                         continue;
+                    }
+
                     Directory.CreateDirectory(Path.Combine(libraryRoot, officeName));
                     found++;
                 }
@@ -67,24 +85,36 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
             else
             {
                 // No GraphDriveRoot: probe known names only — never list entire OneDrive root.
-                foreach (var officeName in PathService.AllowedOfficeFolders)
+                // Parallel: this runs on startup, and serial GETs burn the 20s budget on cellular.
+                var probes = PathService.AllowedOfficeFolders
+                    .Select(async officeName => (
+                        Name: officeName,
+                        Exists: await FolderExistsAsync(officeName, budget.Token).ConfigureAwait(false)))
+                    .ToArray();
+                var results = await Task.WhenAll(probes).ConfigureAwait(false);
+                absent = new List<string>();
+                foreach (var (officeName, exists) in results)
                 {
-                    budget.Token.ThrowIfCancellationRequested();
-                    status?.Report($"Checking {officeName}…");
-                    if (!await FolderExistsAsync(officeName, budget.Token).ConfigureAwait(false))
+                    if (!exists)
+                    {
+                        absent.Add(officeName);
                         continue;
+                    }
+
                     Directory.CreateDirectory(Path.Combine(libraryRoot, officeName));
                     found++;
                 }
             }
 
+            // Loop finished — every allowed office was confirmed present or absent.
+            var removed = LibrarySessionCache.PruneOfficesConfirmedAbsent(
+                libraryRoot, absent, protectSessionPath);
+
             return new CloudSyncResult
             {
                 Success = true,
-                FilesTransferred = found,
-                Message = found > 0
-                    ? $"Found {found} office folder(s)."
-                    : "No office folders found on OneDrive. Check Graph folder path in Admin."
+                FilesTransferred = found + removed,
+                Message = FormatOfficeListMessage(found, removed)
             };
         }
         catch (OperationCanceledException)
@@ -1842,6 +1872,19 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
         // e.g. every event was moved to Past Races.
         var pruned = LibrarySessionCache.PruneSessionsNotOnRemote(officeLocal, remote, protectSessionPath);
         return (created, pruned, remote.Count);
+    }
+
+    public static string FormatOfficeListMessage(int found, int removed)
+    {
+        if (found == 0 && removed == 0)
+            return "No office folders found on OneDrive. Check Graph folder path in Admin.";
+
+        var parts = new List<string>();
+        if (found > 0)
+            parts.Add($"Found {found} office folder(s).");
+        if (removed > 0)
+            parts.Add($"{removed} removed (not on OneDrive).");
+        return string.Join(" ", parts);
     }
 
     /// <summary>

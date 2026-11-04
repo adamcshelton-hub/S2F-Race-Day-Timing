@@ -657,7 +657,7 @@ public class CheckoutServiceTests
         public bool IsAvailable => true;
 
         public Task<CloudSyncResult> RefreshOfficeListAsync(
-            string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default) =>
+            string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default, string? protectSessionPath = null) =>
             Task.FromResult(new CloudSyncResult { Success = true });
 
         public Task<CloudSyncResult> RefreshOfficeSessionsAsync(
@@ -1471,7 +1471,7 @@ public class CheckoutServiceTests
         public IReadOnlyList<string>? LastOnlyRelativePaths { get; private set; }
 
         public Task<CloudSyncResult> RefreshOfficeListAsync(
-            string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default) =>
+            string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default, string? protectSessionPath = null) =>
             Task.FromResult(new CloudSyncResult { Success = true });
 
         public Task<CloudSyncResult> RefreshOfficeSessionsAsync(
