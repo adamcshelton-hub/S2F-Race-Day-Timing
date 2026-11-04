@@ -71,6 +71,12 @@ public sealed class SettingsStore : ISettingsStore
         // Offices (Test Office, Memphis, …) live at My files — empty GraphDriveRoot.
         if (string.Equals(settings.GraphDriveRoot?.Trim(), "Start 2 - Personal", StringComparison.OrdinalIgnoreCase))
             settings.GraphDriveRoot = string.Empty;
+        // Personal-MSA Graph app → M365 Business tenant app (shared timing@ race account).
+        if (string.IsNullOrWhiteSpace(settings.GraphClientId)
+            || string.Equals(settings.GraphClientId.Trim(), AppSettings.LegacyPersonalGraphClientId, StringComparison.OrdinalIgnoreCase))
+            settings.GraphClientId = AppSettings.DefaultGraphClientId;
+        if (string.IsNullOrWhiteSpace(settings.GraphTenantId))
+            settings.GraphTenantId = AppSettings.DefaultGraphTenantId;
         return settings;
     }
 

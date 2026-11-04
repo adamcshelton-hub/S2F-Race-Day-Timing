@@ -36,8 +36,8 @@ public static class GraphSyncPolicy
     public static readonly TimeSpan SessionDownloadBudget = TimeSpan.FromMinutes(3);
 
     /// <summary>
-    /// Concurrent file transfers for one session pack (download or upload). Graph has no folder-ZIP
-    /// for personal OneDrive; parallel GETs/PUTs are the bulk option that works. Not an integrity
+    /// Concurrent file transfers for one session pack (download or upload). Folder-ZIP download is
+    /// optional on Business OneDrive later; parallel GETs/PUTs are the launch path. Not an integrity
     /// limit — guarded by Retry-After cooldown + temporary concurrency backoff on 429/503.
     /// </summary>
     public const int DownloadParallelism = 8;
@@ -88,6 +88,30 @@ public static class GraphSyncPolicy
 
     public static bool ShouldSkipFolder(string folderName) =>
         !string.IsNullOrEmpty(folderName) && SkipFolderNames.Contains(folderName);
+
+    /// <summary>
+    /// Normal Timing/Announcer session pack pull: download when local is missing, sizes differ,
+    /// or OneDrive <c>lastModified</c> is clearly newer. Same-size content edits (e.g. Entries.ini
+    /// timestamps) must not leave a stale <c>C:\S2F\Library</c> copy on the next laptop.
+    /// Uses children-list metadata only — no extra Graph round-trip.
+    /// </summary>
+    public static bool NeedsSessionFileDownload(
+        bool localExists,
+        long localLength,
+        DateTime localLastWriteUtc,
+        long? remoteSize,
+        DateTime? remoteLastModifiedUtc)
+    {
+        if (!localExists || remoteSize is not long remote)
+            return true;
+        if (localLength != remote)
+            return true;
+        // Same size — still pull when cloud is newer (2s skew). Matches Announcer DB's behavior.
+        if (remoteLastModifiedUtc is { } remoteUtc
+            && localLastWriteUtc < remoteUtc.AddSeconds(-2))
+            return true;
+        return false;
+    }
 
     public static bool ShouldSkipFile(string filePath, long maxBytes)
     {

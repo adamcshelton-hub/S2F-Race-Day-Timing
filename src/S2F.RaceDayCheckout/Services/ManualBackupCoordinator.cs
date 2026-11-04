@@ -717,6 +717,7 @@ public sealed class ManualBackupCoordinator : INotifyPropertyChanged, IAsyncDisp
         {
             var row = new ManualBackupLocationRow { Location = loc, Coordinator = this };
             var anyPlaying = false;
+            var built = new List<ManualBackupDeviceRow>();
             foreach (var deviceId in _store.ListDeviceIds(_sessionPath!, loc))
             {
                 // Refresh this Windows laptop's display name; never overwrite phone names with deviceId.
@@ -782,14 +783,34 @@ public sealed class ManualBackupCoordinator : INotifyPropertyChanged, IAsyncDisp
                 deviceRow.Files.Add(current);
                 deviceRow.CurrentFile = current;
                 deviceRow.PastExpanded = _pastExpandedKeys.Contains(DevicePlayKey(loc, deviceId));
-                row.Devices.Add(deviceRow);
+                built.Add(deviceRow);
             }
+
+            // Live writers first. Empty Currents that already have Past files sort last
+            // (that card is hidden; the row is just the collapsed Past expander).
+            foreach (var deviceRow in built
+                         .OrderBy(DeviceListRank)
+                         .ThenBy(d => d.DisplayName, StringComparer.OrdinalIgnoreCase))
+                row.Devices.Add(deviceRow);
 
             row.IsPlayingAny = anyPlaying;
             Locations.Add(row);
         }
 
         OnPropertyChanged(nameof(LocationsPanelMinWidth));
+    }
+
+    /// <summary>
+    /// 0 = Current has taps. 1 = waiting device (empty Current, no Past).
+    /// 2 = empty Current beside Past files — placeholder, shown collapsed.
+    /// </summary>
+    private static int DeviceListRank(ManualBackupDeviceRow device)
+    {
+        if (device.CurrentCount > 0)
+            return 0;
+        if (device.Archives.Count == 0)
+            return 1;
+        return 2;
     }
 
     private async Task ProbeOpenLoopAsync()
@@ -871,6 +892,14 @@ public sealed class ManualBackupDeviceRow : INotifyPropertyChanged
     public ObservableCollection<ManualBackupFileCard> Archives { get; } = new();
     public ManualBackupFileCard? CurrentFile { get; set; }
     public bool HasArchives => Archives.Count > 0;
+
+    /// <summary>
+    /// Empty Current next to existing Past files is a placeholder (0 entries).
+    /// Hide it so the device collapses to Past until new taps arrive.
+    /// A waiting device with no Past, and any Current that has taps, stay visible.
+    /// </summary>
+    public bool ShowCurrentCard => CurrentCount > 0 || Archives.Count == 0;
+
     public string PastHeader =>
         Archives.Count == 1 ? "Past (1)" : "Past (" + Archives.Count.ToString() + ")";
 
@@ -936,6 +965,9 @@ public sealed class ManualBackupFileCard : INotifyPropertyChanged
     /// <summary>Entry total for the chip (e.g. <c>12 entries</c>).</summary>
     public string CountLabel =>
         Count == 1 ? "1 entry" : Count.ToString() + " entries";
+
+    /// <summary>First/Last lines are placeholders until the file has taps.</summary>
+    public bool HasTapLines => Count > 0;
 
     public event PropertyChangedEventHandler? PropertyChanged;
 }

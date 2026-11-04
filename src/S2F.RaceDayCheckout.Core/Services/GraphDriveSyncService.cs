@@ -6,7 +6,7 @@ using S2F.RaceDayCheckout.Core.Models;
 namespace S2F.RaceDayCheckout.Core.Services;
 
 /// <summary>
-/// Personal OneDrive sync via Microsoft Graph REST (<c>/me/drive</c>).
+/// Business OneDrive sync via Microsoft Graph REST (<c>/me/drive</c> — shared race account).
 /// Tuned for race-day cellular: small payloads, short timeouts, parallel session download.
 /// </summary>
 public sealed class GraphDriveSyncService : ICloudLibrarySync
@@ -346,7 +346,7 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
             budget.CancelAfter(GraphSyncPolicy.SessionDownloadBudget);
             var dbsOnly = options?.DbsOnly == true;
 
-            // Graph does not support folder-as-ZIP on personal OneDrive (?format=zip is for Office→PDF).
+            // Parallel per-file download (launch path). Folder ZIP on Business OneDrive is optional later.
             // Enumerate once, then download several files at a time.
             var slim = options?.Role == CheckoutRole.Announcer;
             var overlayOnly = options?.AutosaveOverlayOnly == true;
@@ -393,10 +393,9 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
                 ? GraphSyncPolicy.MidRaceMaxFileBytes
                 : GraphSyncPolicy.FinishMaxFileBytes;
 
-            // Normal pack: skip unchanged by size (cellular). Live _autosave reclaim must always
-            // re-pull — Entries.DTA / results often change content without a size change, and a
-            // stale local overlay would otherwise win after force take-over.
-            // Announcer DB's mid-race: also re-pull when remote lastModified is newer (same-size CSV edits).
+            // Normal pack: skip when size matches AND local mtime is not older than OneDrive
+            // (cellular). Same-size Entries.ini / RS edits still re-pull via lastModified.
+            // Live _autosave reclaim always re-pulls — stale local overlay must not win after take-over.
             // Manual Backup jsonl (mbOnly SoftPull AND full Timing pack pull): only when remote
             // grew. Never replace a longer local — cellular Done timeout / mid-entry must not lose taps.
             var downloadQueue = jobs
@@ -422,17 +421,22 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
                         }
                         catch { return true; }
                     }
-                    if (!File.Exists(j.LocalPath) || j.Size is not long remoteSize)
-                        return true;
                     try
                     {
+                        if (!File.Exists(j.LocalPath))
+                            return GraphSyncPolicy.NeedsSessionFileDownload(
+                                localExists: false,
+                                localLength: 0,
+                                localLastWriteUtc: DateTime.MinValue,
+                                remoteSize: j.Size,
+                                remoteLastModifiedUtc: j.LastModifiedUtc);
                         var local = new FileInfo(j.LocalPath);
-                        if (local.Length != remoteSize)
-                            return true;
-                        if (dbsOnly && j.LastModifiedUtc is { } remoteUtc
-                            && local.LastWriteTimeUtc < remoteUtc.AddSeconds(-2))
-                            return true;
-                        return false;
+                        return GraphSyncPolicy.NeedsSessionFileDownload(
+                            localExists: true,
+                            localLength: local.Length,
+                            localLastWriteUtc: local.LastWriteTimeUtc,
+                            remoteSize: j.Size,
+                            remoteLastModifiedUtc: j.LastModifiedUtc);
                     }
                     catch { return true; }
                 })

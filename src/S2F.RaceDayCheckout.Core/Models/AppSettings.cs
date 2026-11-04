@@ -73,12 +73,25 @@ public sealed class AppSettings
     public string? TimeSyncSkewWarnedLocalDate { get; set; }
 
     /// <summary>
-    /// Entra app (public client) Application ID for personal OneDrive Graph sync.
-    /// Default is the S2F Race Day Timing registration.
+    /// Legacy personal-MSA Entra app — migrated away; kept only so settings.json can detect upgrades.
     /// </summary>
-    public const string DefaultGraphClientId = "1f6ccaf7-e19c-4223-92d2-c3b825fc2bfe";
+    public const string LegacyPersonalGraphClientId = "1f6ccaf7-e19c-4223-92d2-c3b825fc2bfe";
+
+    /// <summary>
+    /// Entra app (public client) Application ID for M365 Business OneDrive Graph sync
+    /// (shared <c>timing@start2finish.onmicrosoft.com</c> race account).
+    /// </summary>
+    public const string DefaultGraphClientId = "f4a49f7b-88bf-4096-9c53-d4413bd9c475";
+
+    /// <summary>
+    /// Directory (tenant) ID for <c>start2finish.onmicrosoft.com</c>.
+    /// </summary>
+    public const string DefaultGraphTenantId = "570b27a7-46ae-45cc-88cd-8f887958546d";
 
     public string GraphClientId { get; set; } = DefaultGraphClientId;
+
+    /// <summary>Entra directory (tenant) ID. Empty in settings falls back to <see cref="DefaultGraphTenantId"/>.</summary>
+    public string GraphTenantId { get; set; } = DefaultGraphTenantId;
 
     /// <summary>
     /// Folder under the signed-in OneDrive root that maps to <see cref="LibraryRoot"/>.

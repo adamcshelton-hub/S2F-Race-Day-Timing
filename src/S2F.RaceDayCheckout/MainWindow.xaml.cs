@@ -35,6 +35,19 @@ public partial class MainWindow : Window
             Application.Current.SessionEnding += App_SessionEnding;
     }
 
+    /// <summary>
+    /// Default wheel is several lines per notch and jumps past these short cards.
+    /// One notch moves 24px (about half the usual physical step).
+    /// </summary>
+    private void ManualBackupColumn_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        if (sender is not ScrollViewer scroll)
+            return;
+        const double pixelsPerNotch = 24;
+        scroll.ScrollToVerticalOffset(scroll.VerticalOffset - e.Delta / 120.0 * pixelsPerNotch);
+        e.Handled = true;
+    }
+
     private void ManualBackup_PropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
         if (e.PropertyName is null

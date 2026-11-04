@@ -11,8 +11,9 @@ namespace S2F.RaceDayCheckout.Services;
 /// <summary>
 /// Silent RemotePC host deploy for bare Windows timing laptops only.
 /// Skips when: Parallels guest (RemotePC lives on the Mac), any existing RemotePC
-/// host/suite install, or missing bundled redist.
-/// Never re-runs the deploy MSI over a full viewer+host suite.
+/// host/suite signal (Program Files markers, uninstall registry, host service ImagePath,
+/// or running host process), or missing bundled redist.
+/// Never re-runs the deploy MSI over a live or alternate-path host.
 /// </summary>
 public static class RemotePcSetup
 {
@@ -144,6 +145,11 @@ public static class RemotePcSetup
                     "RemotePC setup finished but the host was not detected. "
                     + "Confirm the Configuration ID and try again, or install RemotePC manually.");
             }
+
+            // Existing host (Store / alternate path) may still be present after a conflicting MSI —
+            // expanded probe (service / process / uninstall) treats that as already installed.
+            if (RemotePcInstallProbe.IsRemotePcInstalledOnWindows())
+                return new InstallResult(true, string.Empty);
 
             return new InstallResult(false, "RemotePC setup exited with code " + code + ".");
         }
