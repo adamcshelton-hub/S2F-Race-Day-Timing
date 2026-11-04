@@ -279,7 +279,7 @@
                          TextDecorations="Underline"
                          Cursor="Hand"
                          ToolTip="Sets the Windows clock from internet time. Administrator permission is only needed the first time.">
-                <Run Text="{Binding LaptopClockSyncLabel}"/>
+                <Run Text="{Binding LaptopClockSyncLabel, Mode=OneWay}"/>
               </Hyperlink>
             </TextBlock>
           </StackPanel>
