@@ -358,15 +358,11 @@ public partial class MainWindow : Window
         // cover UAC, the probe, and the task — checkout is not wrapped in a second timeout.
         try
         {
-            await SystemTimeSyncPrompt.RunStartupAsync(this, msg => _vm.Status = msg);
+            await SystemTimeSyncPrompt.RunStartupAsync(this, _vm.ApplyClockHeader);
         }
         catch
         {
             // Non-fatal
-        }
-        finally
-        {
-            _vm.RefreshLaptopClockSyncStatus();
         }
     }
 
@@ -374,15 +370,11 @@ public partial class MainWindow : Window
     {
         try
         {
-            await SystemTimeSyncPrompt.SyncNowAsync(this, msg => _vm.Status = msg);
+            await SystemTimeSyncPrompt.SyncNowAsync(this, _vm.ApplyClockHeader);
         }
         catch
         {
             // Non-fatal — SyncNowAsync already logs.
-        }
-        finally
-        {
-            _vm.RefreshLaptopClockSyncStatus();
         }
     }
 
@@ -717,7 +709,10 @@ public partial class MainWindow : Window
         await _vm.SaveAdminRaceStartsAsync();
 
     private async void CheckUpdates_Click(object sender, RoutedEventArgs e) =>
-        await UpdateService.CheckForUpdatesInteractiveAsync(_vm.HasActive, this);
+        await UpdateService.CheckForUpdatesInteractiveAsync(
+            _vm.HasActive,
+            this,
+            msg => _vm.Status = msg);
 
     private void Back_Click(object sender, RoutedEventArgs e) => _vm.GoBack();
 

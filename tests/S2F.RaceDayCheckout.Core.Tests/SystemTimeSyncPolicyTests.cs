@@ -84,9 +84,6 @@ public class SystemTimeSyncPolicyTests
         Assert.Null(settings.TimeSyncUacDeclinedLocalDate);
         Assert.Null(settings.TimeSyncSkewWarnedLocalDate);
         Assert.Equal(NoonUtc, settings.LastSuccessfulTimeSyncUtc);
-        Assert.Equal(
-            LaptopClockSyncKind.Synced,
-            LaptopClockSyncStatus.Evaluate(settings, NoonUtc, NoonUtc));
     }
 
     [Fact]

@@ -264,21 +264,24 @@
                          VerticalAlignment="Center"/>
             </StackPanel>
           </DockPanel>
-          <!-- Military laptop clock — top center. Sync Clock is always available; amber when sync is doubtful. -->
+          <!-- Military laptop clock — top center. Click the time to sync. A line appears only while checking or when the clock is off. -->
           <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
             <TextBlock Text="{Binding LaptopClockText}"
                        Foreground="White" FontSize="36" FontWeight="SemiBold"
                        FontFamily="Consolas, Cascadia Mono, Courier New"
                        HorizontalAlignment="Center"
-                       IsHitTestVisible="False"/>
+                       Cursor="Hand"
+                       MouseLeftButtonUp="SyncLaptopClock_Click"
+                       ToolTip="Sync the Windows clock from internet time. Administrator permission is only needed the first time."/>
             <TextBlock HorizontalAlignment="Center" Margin="0,2,0,0"
                        FontSize="13" FontWeight="SemiBold"
-                       Foreground="{Binding LaptopClockSyncBrush}">
+                       Foreground="{Binding LaptopClockSyncBrush}"
+                       Visibility="{Binding ShowLaptopClockSyncLabel, Converter={StaticResource BoolVis}}">
               <Hyperlink Click="SyncLaptopClock_Click"
                          Foreground="{Binding LaptopClockSyncBrush}"
                          TextDecorations="Underline"
                          Cursor="Hand"
-                         ToolTip="Sets the Windows clock from internet time. Administrator permission is only needed the first time.">
+                         ToolTip="Sync the Windows clock from internet time. Administrator permission is only needed the first time.">
                 <Run Text="{Binding LaptopClockSyncLabel, Mode=OneWay}"/>
               </Hyperlink>
             </TextBlock>

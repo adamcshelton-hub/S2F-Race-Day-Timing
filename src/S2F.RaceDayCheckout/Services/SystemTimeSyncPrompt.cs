@@ -4,9 +4,9 @@ using S2F.RaceDayCheckout.Core.Services;
 namespace S2F.RaceDayCheckout.Services;
 
 /// <summary>
-/// Windows clock sync. First install (or the first Sync Clock click) asks for administrator
-/// permission once and registers a scheduled task. Later runs call that task — no second prompt.
-/// Success is a fresh HTTPS time check. Checkout is never blocked.
+/// Windows clock sync. First install asks for administrator permission once and registers a
+/// scheduled task. Later, clicking the time runs that task. The line under the clock follows
+/// the latest HTTPS check. Checkout is never blocked.
 /// </summary>
 public static class SystemTimeSyncPrompt
 {
@@ -15,7 +15,7 @@ public static class SystemTimeSyncPrompt
 
     public static void MarkOfferPending() => _offerOnStartup = true;
 
-    public static async Task RunStartupAsync(Window? owner, Action<string>? setStatus = null)
+    public static async Task RunStartupAsync(Window? owner, Action<ClockHeaderNotice>? notify = null)
     {
         if (!await Gate.WaitAsync(0).ConfigureAwait(true))
             return;
@@ -25,14 +25,15 @@ public static class SystemTimeSyncPrompt
             if (_offerOnStartup)
             {
                 _offerOnStartup = false;
-                EnsureTask(owner, setStatus);
+                EnsureTask(owner, notify);
             }
 
-            await SyncCoreAsync(owner, setStatus, manual: false).ConfigureAwait(true);
+            await SyncCoreAsync(owner, notify, manual: false).ConfigureAwait(true);
         }
         catch (Exception ex)
         {
             RaceDayTrace.Write($"time-sync exception error={ex.GetType().Name}: {ex.Message}");
+            notify?.Invoke(ClockHeaderNotice.Hidden);
         }
         finally
         {
@@ -40,24 +41,19 @@ public static class SystemTimeSyncPrompt
         }
     }
 
-    public static async Task SyncNowAsync(Window? owner, Action<string>? setStatus = null)
+    public static async Task SyncNowAsync(Window? owner, Action<ClockHeaderNotice>? notify = null)
     {
         if (!await Gate.WaitAsync(0).ConfigureAwait(true))
-        {
-            setStatus?.Invoke("Clock sync is already running.");
             return;
-        }
 
         try
         {
-            if (!EnsureTask(owner, setStatus))
-                return;
-
-            await SyncCoreAsync(owner, setStatus, manual: true).ConfigureAwait(true);
+            await SyncCoreAsync(owner, notify, manual: true).ConfigureAwait(true);
         }
         catch (Exception ex)
         {
             RaceDayTrace.Write($"time-sync exception error={ex.GetType().Name}: {ex.Message}");
+            notify?.Invoke(ClockHeaderNotice.Unconfirmed);
         }
         finally
         {
@@ -65,7 +61,7 @@ public static class SystemTimeSyncPrompt
         }
     }
 
-    private static bool EnsureTask(Window? owner, Action<string>? setStatus)
+    private static bool EnsureTask(Window? owner, Action<ClockHeaderNotice>? notify)
     {
         if (ClockSyncTaskRunner.IsRegistered())
             return true;
@@ -75,19 +71,19 @@ public static class SystemTimeSyncPrompt
             "Sync Laptop Clock",
             "This lets Race Day Timing set the Windows clock from internet time. "
             + "Windows will ask for administrator permission once. "
-            + "After that, Sync Clock runs without another prompt.\n\n"
+            + "After that, clicking the time does not ask again.\n\n"
             + "You can skip. Checkout still works.",
             yesLabel: "Enable Sync",
             noLabel: "Skip");
         if (!accepted)
             return false;
 
-        return Register(owner, setStatus);
+        return Register(owner, notify);
     }
 
-    private static bool Register(Window? owner, Action<string>? setStatus)
+    private static bool Register(Window? owner, Action<ClockHeaderNotice>? notify)
     {
-        setStatus?.Invoke("Waiting for administrator approval…");
+        notify?.Invoke(ClockHeaderNotice.WaitingForAdmin);
         var reg = ClockSyncTaskRunner.TryRegister();
         RaceDayTrace.Write(
             $"time-sync register ok={reg.Success} declined={reg.UacDeclined} detail={reg.Message}");
@@ -101,51 +97,59 @@ public static class SystemTimeSyncPrompt
         TimerDialog.Alert(
             owner,
             title,
-            body + "\n\nSync Clock can try again. Checkout still works.");
+            body + "\n\nClick the time to try again. Checkout still works.");
         return false;
     }
 
-    private static async Task SyncCoreAsync(Window? owner, Action<string>? setStatus, bool manual)
+    private static async Task SyncCoreAsync(Window? owner, Action<ClockHeaderNotice>? notify, bool manual)
     {
+        if (manual)
+            notify?.Invoke(ClockHeaderNotice.Checking);
+
         var before = await ProbeAsync().ConfigureAwait(true);
+        var beforeReading = SystemTimeSyncPolicy.ClassifySkew(before.AbsoluteSkew);
         RaceDayTrace.Write(
             $"time-sync probe ok={before.Success} skew={(before.AbsoluteSkew is { } s ? s.TotalSeconds.ToString("0.0") + "s" : "n/a")} detail={before.Detail}");
 
-        if (SystemTimeSyncPolicy.ClassifySkew(before.AbsoluteSkew) == ClockSyncReading.Confirmed)
+        if (beforeReading == ClockSyncReading.Confirmed)
         {
             PersistSuccess();
-            if (manual)
-                setStatus?.Invoke("Laptop clock synced.");
+            notify?.Invoke(manual ? ClockHeaderNotice.Synced : ClockHeaderNotice.Hidden);
+            return;
+        }
+
+        if (!manual && !SystemTimeSyncPolicy.ShouldAttemptCorrection(before.AbsoluteSkew))
+        {
+            notify?.Invoke(ClockHeaderNotice.Hidden);
             return;
         }
 
         if (!ClockSyncTaskRunner.IsRegistered())
         {
-            if (manual)
-            {
-                TimerDialog.Alert(
-                    owner,
-                    "Couldn't Sync Clock",
-                    "Clock sync isn't set up on this laptop yet.\n\nCheckout still works.");
-            }
-            else
+            if (!manual)
             {
                 MaybeWarn(owner, before.AbsoluteSkew, DateTimeOffset.Now);
+                notify?.Invoke(ClockHeaderNotice.ForReading(beforeReading, before.AbsoluteSkew, attemptedCorrection: false, manual: false));
+                return;
             }
 
-            return;
+            if (!EnsureTask(owner, notify))
+            {
+                notify?.Invoke(ClockHeaderNotice.ForReading(beforeReading, before.AbsoluteSkew, attemptedCorrection: false, manual: true));
+                return;
+            }
         }
 
-        if (!manual && !SystemTimeSyncPolicy.ShouldAttemptCorrection(before.AbsoluteSkew))
-            return;
+        if (manual)
+            notify?.Invoke(ClockHeaderNotice.Checking);
 
-        setStatus?.Invoke("Syncing laptop clock…");
-        var trigger = await TriggerAsync(owner, setStatus, before.ReferenceUtc, manual, allowRepair: manual)
+        var trigger = await TriggerAsync(owner, notify, before.ReferenceUtc, manual, allowRepair: manual)
             .ConfigureAwait(true);
         if (trigger is null)
         {
             if (!manual)
                 MaybeWarn(owner, before.AbsoluteSkew, DateTimeOffset.Now);
+            notify?.Invoke(ClockHeaderNotice.ForReading(beforeReading, before.AbsoluteSkew, attemptedCorrection: false, manual));
             return;
         }
 
@@ -157,52 +161,47 @@ public static class SystemTimeSyncPrompt
         if (SystemTimeSyncPolicy.ShouldPersistSuccess(reading))
         {
             PersistSuccess();
-            setStatus?.Invoke(reading == ClockSyncReading.Confirmed
-                ? "Laptop clock synced."
-                : "Laptop clock is within a couple of seconds of internet time.");
+            notify?.Invoke(manual ? ClockHeaderNotice.Synced : ClockHeaderNotice.Hidden);
             return;
+        }
+
+        // Follow-up probe failed. Keep the earlier off reading so a dead network
+        // does not clear a warning we already earned.
+        if (reading == ClockSyncReading.Unknown && beforeReading == ClockSyncReading.Off)
+        {
+            reading = beforeReading;
         }
 
         var skew = after.AbsoluteSkew ?? before.AbsoluteSkew;
-        if (manual)
-        {
-            if (reading == ClockSyncReading.Off && skew is { } seconds)
-            {
-                TimerDialog.Alert(
-                    owner,
-                    "Laptop Clock Still Off",
-                    "This laptop’s clock is still about "
-                    + FormatSkew(seconds.TotalSeconds)
-                    + " off from internet time.\n\n"
-                    + "RunScore and chip timing use the Windows clock. "
-                    + "Try Sync Clock again before the race start.\n\n"
-                    + "Checkout still works.");
-            }
-            else
-            {
-                TimerDialog.Alert(
-                    owner,
-                    "Couldn't Confirm Laptop Clock",
-                    "Race Day Timing couldn't confirm the laptop clock against internet time. "
-                    + "Try Sync Clock again before the race start.\n\n"
-                    + "Checkout still works.");
-            }
+        var notice = ClockHeaderNotice.ForReading(reading, skew, attemptedCorrection: true, manual);
+        notify?.Invoke(notice);
 
-            return;
+        if (manual && reading == ClockSyncReading.Off && skew is { } seconds)
+        {
+            TimerDialog.Alert(
+                owner,
+                "Laptop Clock Still Off",
+                "This laptop’s clock is still about "
+                + ClockHeaderNotice.FormatDuration(seconds.TotalSeconds)
+                + " off from internet time.\n\n"
+                + "RunScore and chip timing use the Windows clock. "
+                + "Click the time at the top of the window to try again before the race start.\n\n"
+                + "Checkout still works.");
         }
 
-        MaybeWarn(owner, skew, DateTimeOffset.Now);
+        if (!manual)
+            MaybeWarn(owner, skew, DateTimeOffset.Now);
     }
 
     private static async Task<ClockSyncTaskRunner.TriggerResult?> TriggerAsync(
         Window? owner,
-        Action<string>? setStatus,
+        Action<ClockHeaderNotice>? notify,
         DateTimeOffset? referenceUtc,
         bool manual,
         bool allowRepair)
     {
         var id = Guid.NewGuid().ToString("N");
-        if (!TryWrite(owner, setStatus, id, referenceUtc, manual))
+        if (!TryWrite(owner, notify, id, referenceUtc, manual))
             return null;
 
         var trigger = await ClockSyncTaskRunner
@@ -212,11 +211,11 @@ public static class SystemTimeSyncPrompt
         if (trigger.AccessDenied && allowRepair)
         {
             RaceDayTrace.Write("time-sync task access denied; registering again");
-            if (!Register(owner, setStatus))
+            if (!Register(owner, notify))
                 return null;
 
             id = Guid.NewGuid().ToString("N");
-            if (!TryWrite(owner, setStatus, id, referenceUtc, manual))
+            if (!TryWrite(owner, notify, id, referenceUtc, manual))
                 return null;
 
             trigger = await ClockSyncTaskRunner
@@ -243,7 +242,7 @@ public static class SystemTimeSyncPrompt
 
     private static bool TryWrite(
         Window? owner,
-        Action<string>? setStatus,
+        Action<ClockHeaderNotice>? notify,
         string id,
         DateTimeOffset? referenceUtc,
         bool manual)
@@ -263,7 +262,7 @@ public static class SystemTimeSyncPrompt
         }
         catch (UnauthorizedAccessException)
         {
-            if (!manual || !Register(owner, setStatus))
+            if (!manual || !Register(owner, notify))
                 return false;
 
             try
@@ -331,18 +330,11 @@ public static class SystemTimeSyncPrompt
             owner,
             "Laptop Clock May Be Wrong",
             "This laptop’s clock is about "
-            + FormatSkew(seconds)
+            + ClockHeaderNotice.FormatDuration(seconds)
             + " off from internet time.\n\n"
             + "RunScore and chip timing use the Windows clock. "
-            + "Use Sync Clock under the time at the top of the window.\n\n"
+            + "Click the time at the top of the window to sync it.\n\n"
             + "Checkout still works — fix the clock before race start if you can.");
     }
 
-    private static string FormatSkew(double seconds)
-    {
-        var abs = Math.Abs(seconds);
-        if (abs >= 120)
-            return (abs / 60.0).ToString("0") + " minutes";
-        return abs.ToString("0") + " seconds";
-    }
 }

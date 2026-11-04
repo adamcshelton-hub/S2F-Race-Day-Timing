@@ -274,7 +274,6 @@ public sealed class MainViewModel : INotifyPropertyChanged
         EnsureLocalRoots(); // Library + RaceDay roots only — office folders come from OneDrive
         LoadAdminUnlock();
         ReloadFromDisk();
-        RefreshLaptopClockSyncStatus();
         TickLaptopClock();
         _clockTimer.Start();
         _heartbeatTimer.Start();
@@ -905,8 +904,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private string _newAdminRaceStartTime = string.Empty;
     private RaceStartEntry? _adminRaceStartEditOriginal;
     private string _laptopClockText = string.Empty;
-    private string _laptopClockSyncLabel = "Sync Clock";
-    private LaptopClockSyncKind _laptopClockSyncKind = LaptopClockSyncKind.Unknown;
+    private string _laptopClockSyncLabel = string.Empty;
+    private ClockHeaderKind _laptopClockHeaderKind = ClockHeaderKind.Hidden;
+    private int _clockHeaderGeneration;
     private bool _raceStartBoardRebuildSuspended;
 
     public string NewAdminRaceStartCategory
@@ -934,29 +934,27 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public string LaptopClockSyncLabel
     {
         get => _laptopClockSyncLabel;
-        private set => Set(ref _laptopClockSyncLabel, value);
-    }
-
-    public LaptopClockSyncKind LaptopClockSyncKind
-    {
-        get => _laptopClockSyncKind;
         private set
         {
-            if (!Set(ref _laptopClockSyncKind, value))
+            if (!Set(ref _laptopClockSyncLabel, value))
                 return;
-            OnPropertyChanged(nameof(LaptopClockSyncBrush));
-            OnPropertyChanged(nameof(ShowLaptopClockWarning));
+            OnPropertyChanged(nameof(ShowLaptopClockSyncLabel));
         }
     }
 
-    /// <summary>True only when staff should verify the laptop clock (no green Synced badge).</summary>
-    public bool ShowLaptopClockWarning => LaptopClockSyncKind == LaptopClockSyncKind.CheckClock;
+    public bool ShowLaptopClockSyncLabel => _laptopClockSyncLabel.Length > 0;
 
     private static readonly System.Windows.Media.SolidColorBrush ClockSyncAttentionBrush = FrozenBrush(0xE6, 0xC3, 0x5C);
     private static readonly System.Windows.Media.SolidColorBrush ClockSyncIdleBrush = FrozenBrush(0xC8, 0xC8, 0xC8);
+    private static readonly System.Windows.Media.SolidColorBrush ClockSyncSyncedBrush = FrozenBrush(0x8F, 0xD1, 0x9A);
 
     public System.Windows.Media.Brush LaptopClockSyncBrush =>
-        ShowLaptopClockWarning ? ClockSyncAttentionBrush : ClockSyncIdleBrush;
+        _laptopClockHeaderKind switch
+        {
+            ClockHeaderKind.CheckClock or ClockHeaderKind.StillOff => ClockSyncAttentionBrush,
+            ClockHeaderKind.Synced => ClockSyncSyncedBrush,
+            _ => ClockSyncIdleBrush
+        };
 
     private static System.Windows.Media.SolidColorBrush FrozenBrush(byte r, byte g, byte b)
     {
@@ -965,12 +963,26 @@ public sealed class MainViewModel : INotifyPropertyChanged
         return brush;
     }
 
-    public void RefreshLaptopClockSyncStatus()
+    /// <summary>Line under the clock. A transient notice clears itself.</summary>
+    public void ApplyClockHeader(ClockHeaderNotice notice)
     {
-        _settings = _settingsStore.Load();
-        var kind = LaptopClockSyncStatus.Evaluate(_settings, DateTimeOffset.UtcNow, DateTimeOffset.Now);
-        LaptopClockSyncKind = kind;
-        LaptopClockSyncLabel = "Sync Clock";
+        var generation = ++_clockHeaderGeneration;
+        _laptopClockHeaderKind = notice.Kind;
+        LaptopClockSyncLabel = notice.Label;
+        OnPropertyChanged(nameof(LaptopClockSyncBrush));
+        if (!notice.Transient || notice.Label.Length == 0)
+            return;
+        _ = ClearClockHeaderLater(generation);
+    }
+
+    private async Task ClearClockHeaderLater(int generation)
+    {
+        await Task.Delay(TimeSpan.FromSeconds(2.5)).ConfigureAwait(true);
+        if (generation != _clockHeaderGeneration)
+            return;
+        _laptopClockHeaderKind = ClockHeaderKind.Hidden;
+        LaptopClockSyncLabel = string.Empty;
+        OnPropertyChanged(nameof(LaptopClockSyncBrush));
     }
 
     private void TickLaptopClock()

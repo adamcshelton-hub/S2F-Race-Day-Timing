@@ -15,7 +15,11 @@ public static class UpdateService
     public const string RepoUrl = "https://github.com/adamcshelton-hub/S2F-Race-Day-Timing";
     public const string PackId = "S2F.RaceDayCheckout";
 
-    private static int _interactiveCheckRunning;
+    /// <summary>
+    /// One check at a time, including the download prompt. Startup and Check for Updates
+    /// otherwise each call GitHub and each open "Update Available".
+    /// </summary>
+    private static readonly SemaphoreSlim Gate = new(1, 1);
 
     public static string CurrentChannel =>
         RuntimeInformation.ProcessArchitecture == Architecture.Arm64 ? "win-arm64" : "win-x64";
@@ -30,6 +34,10 @@ public static class UpdateService
         Window? owner = null,
         Action<string>? setStatus = null)
     {
+        // Do not wait. The in-flight check may need this UI thread to show its dialog.
+        if (!await Gate.WaitAsync(0).ConfigureAwait(true))
+            return;
+
         try
         {
             var mgr = CreateManager();
@@ -54,12 +62,22 @@ public static class UpdateService
         {
             setStatus?.Invoke("Couldn't check for updates: " + ShortError(ex));
         }
+        finally
+        {
+            Gate.Release();
+        }
     }
 
-    public static async Task CheckForUpdatesInteractiveAsync(bool hasActiveCheckout, Window? owner = null)
+    public static async Task CheckForUpdatesInteractiveAsync(
+        bool hasActiveCheckout,
+        Window? owner = null,
+        Action<string>? setStatus = null)
     {
-        if (Interlocked.CompareExchange(ref _interactiveCheckRunning, 1, 0) != 0)
+        if (!await Gate.WaitAsync(0).ConfigureAwait(true))
+        {
+            setStatus?.Invoke("Already checking for updates…");
             return;
+        }
 
         TimerDialog.ProgressSession? progress = null;
         try
@@ -106,7 +124,7 @@ public static class UpdateService
         finally
         {
             progress?.Dispose();
-            Interlocked.Exchange(ref _interactiveCheckRunning, 0);
+            Gate.Release();
         }
     }
 
