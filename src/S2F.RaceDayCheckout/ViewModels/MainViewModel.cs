@@ -119,6 +119,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private string _status = string.Empty;
     private string _progressText = string.Empty;
     private string? _selectedOffice;
+    /// <summary>
+    /// True after staff open an office themselves. Startup's office-folder probe calls
+    /// <see cref="ReloadFromDisk"/> when it finishes; that must not send them back to
+    /// Choose Your Office. Auto-advance when the disk has exactly one office does not set this.
+    /// </summary>
+    private bool _raceDayOfficeChosen;
     /// <summary>Under Past Races only — e.g. empty, <c>Memphis Past Races</c>, or <c>Memphis Past Races/2025</c>.</summary>
     private string _pastRacesRelative = string.Empty;
     private EventPackInfo? _selectedSession;
@@ -1601,8 +1607,19 @@ public sealed class MainViewModel : INotifyPropertyChanged
         try { new RunScorePreferencesService().RestoreNativePrefs(); }
         catch { /* non-fatal */ }
 
-        LoadOffices();
+        // Office names only. Rebuilding the event list here races a browse already on screen
+        // (startup probe, or a reload that finishes after staff open an office).
+        LoadOffices(refreshSessions: false);
         SyncDisplayNameFromMachine();
+
+        if (ShouldKeepRaceDayBrowse())
+        {
+            RaceDayTrace.Write($"kept event list for {SelectedOffice} — office refresh stayed on the open office");
+            return;
+        }
+
+        ApplyRaceDayListFilter();
+        _raceDayOfficeChosen = false;
         Status = Directory.Exists(_settings.LibraryRoot)
             ? string.Empty
             : "Library folder not found. Ask setup staff to check Admin settings.";
@@ -1614,7 +1631,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
             return;
         }
 
-        // One office → show session step; Graph fill runs via SelectOfficeAsync when needed.
+        // One office on disk → event list. Staff did not click it. A later probe that finds
+        // more offices returns to Choose Your Office. A click sets _raceDayOfficeChosen and stays.
         if (Offices.Count == 1)
         {
             SelectedOffice = Offices[0];
@@ -1624,6 +1642,19 @@ public sealed class MainViewModel : INotifyPropertyChanged
         else
             Step = WizardStep.Office;
     }
+
+    /// <summary>Staff are on the event list (or .event pick) for an office they opened.</summary>
+    private bool IsUserBrowsingChosenOffice() =>
+        _raceDayOfficeChosen && Step is WizardStep.Session or WizardStep.EventFile;
+
+    /// <summary>
+    /// Staff already opened this office and it is still on disk. A late office-list refresh
+    /// (Window load probes OneDrive without blocking the list) must leave the event list up.
+    /// </summary>
+    private bool ShouldKeepRaceDayBrowse() =>
+        IsUserBrowsingChosenOffice()
+        && IsGraphSignedIn
+        && Offices.Any(name => string.Equals(name, SelectedOffice, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>Race-day browse/checkout requires Graph. Active mid-race stays on screen if already checked out.</summary>
     private bool EnsureGraphSignedInToBegin(string action)
@@ -1763,13 +1794,16 @@ public sealed class MainViewModel : INotifyPropertyChanged
             }
         }
 
-        Step = Step switch
+        var next = Step switch
         {
             WizardStep.Session => WizardStep.Office,
             WizardStep.EventFile => WizardStep.Session,
             WizardStep.Admin => HasActive ? WizardStep.Active : WizardStep.Office,
             _ => Step
         };
+        if (next == WizardStep.Office)
+            _raceDayOfficeChosen = false;
+        Step = next;
     }
 
     /// <summary>
@@ -1781,6 +1815,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
         if (Step != WizardStep.Admin)
             return;
 
+        if (!HasActive)
+            _raceDayOfficeChosen = false;
         Step = HasActive ? WizardStep.Active : WizardStep.Office;
     }
 
@@ -1814,6 +1850,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(StepSubtitle));
 
         // Leave the office list before any await — paint first so lag cannot look like "nothing happened."
+        // Mark the choice first so a startup office probe finishing on this same turn cannot
+        // send the view back to Choose Your Office.
+        _raceDayOfficeChosen = true;
         Step = WizardStep.Session;
         UpdateSessionLockPolling();
         SetBusy($"Loading events for {office}…");
@@ -2528,6 +2567,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
 
         var result = _launcher.LaunchRunScore(Active, _settings);
+        if (result.SupersededListingCloudPaths.Count > 0)
+            _ = DeleteSupersededListingsAsync(result.SupersededListingCloudPaths);
+
         if (!result.Success)
             Alert("RunScore", result.Message);
         else
@@ -2536,6 +2578,27 @@ public sealed class MainViewModel : INotifyPropertyChanged
                      || result.Message.Contains("preference", StringComparison.OrdinalIgnoreCase)
                 ? "RunScore opening… (preferences set to SOP)"
                 : "RunScore opening…";
+    }
+
+    private async Task DeleteSupersededListingsAsync(IReadOnlyList<string> libraryFilePaths)
+    {
+        if (!_cloud.IsAvailable)
+            return;
+        foreach (var path in libraryFilePaths)
+        {
+            try
+            {
+                await _cloud.DeleteLibraryFileAsync(
+                    path,
+                    _settings.LibraryRoot,
+                    _settings.GraphDriveRoot,
+                    CancellationToken.None).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Local name is already gone. The next checkout tries the cloud delete again.
+            }
+        }
     }
 
     private void SyncManualBackupAttachment()
@@ -3333,6 +3396,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 : Active.ScopedPaths.Append(name).ToList(),
             CheckedOutAt = Active.CheckedOutAt,
             PendingFinishUploadRelativePaths = Active.PendingFinishUploadRelativePaths,
+            PendingListingCloudFixes = Active.PendingListingCloudFixes,
             RaceStarts = Active.RaceStarts
         };
         _activeStore.Save(Active);
@@ -3485,6 +3549,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
             if (!HasActive && Step is WizardStep.Session or WizardStep.EventFile)
             {
                 _pastRacesRelative = string.Empty;
+                _raceDayOfficeChosen = false;
                 SelectedSession = null;
                 SelectedEventFile = null;
                 Step = WizardStep.Office;
@@ -3571,26 +3636,44 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 Busy = true;
                 BusyTitle = "Loading offices from OneDrive…";
             }
-            else
+            else if (!IsUserBrowsingChosenOffice())
                 Status = "Checking office folders on OneDrive…";
 
             // Intentional Graph moment — also pick up rotated OneDrive vendor secrets.
             await SyncVendorSecretsFromGraphAsync().ConfigureAwait(true);
 
+            // Background startup probe: keep the index for an office staff already opened
+            // so finishing the probe does not force another event-list walk on cellular.
+            // Admin Refresh Offices (blockUi) still drops the cache.
+            IReadOnlyList<string> keepIndex = blockUi
+                ? Array.Empty<string>()
+                : SnapshotGraphIndexForCurrentBrowse();
             _graphIndexedOffices.Clear();
+            foreach (var key in keepIndex)
+                _graphIndexedOffices.Add(key);
+
             var result = await _cloud.RefreshOfficeListAsync(
                 _settings.LibraryRoot,
                 _settings.GraphDriveRoot,
-                new Progress<string>(s => Status = s),
+                new Progress<string>(s =>
+                {
+                    if (!IsUserBrowsingChosenOffice())
+                        Status = s;
+                }),
                 protectSessionPath: Active?.LibrarySessionPath);
-            Status = result.Message;
+            if (!IsUserBrowsingChosenOffice())
+                Status = result.Message;
             if (!result.Success && blockUi)
                 Alert("OneDrive library", result.Message);
+            // Refreshes office names. Stays on the event list when staff already opened an office.
             ReloadFromDisk();
         }
         catch (Exception ex)
         {
-            Status = "OneDrive office check failed.";
+            if (IsUserBrowsingChosenOffice())
+                RaceDayTrace.Write($"office probe failed during browse: {ex.GetType().Name}: {ex.Message}");
+            else
+                Status = "OneDrive office check failed.";
             if (blockUi)
                 Alert("OneDrive library", ex.Message);
         }
@@ -3764,6 +3847,34 @@ public sealed class MainViewModel : INotifyPropertyChanged
     }
 
     private static string EventNamesCacheKey(string scope) => "events:" + scope;
+
+    /// <summary>
+    /// Index keys for the office currently on screen. Empty when staff have not opened one,
+    /// so an intentional Refresh Offices still drops the whole cache.
+    /// </summary>
+    private List<string> SnapshotGraphIndexForCurrentBrowse()
+    {
+        if (!_raceDayOfficeChosen || string.IsNullOrWhiteSpace(SelectedOffice))
+            return [];
+
+        var office = SelectedOffice;
+        return _graphIndexedOffices.Where(key => GraphIndexKeyBelongsToOffice(key, office)).ToList();
+    }
+
+    private static bool GraphIndexKeyBelongsToOffice(string key, string office)
+    {
+        if (string.Equals(key, office, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(key, EventNamesCacheKey(office), StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        if (!string.Equals(office, EventBuilderService.PastRacesFolderName, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        // Past Races level cache: "Past Races:…" and "events:Past Races:…".
+        if (key.StartsWith(office + ":", StringComparison.OrdinalIgnoreCase))
+            return true;
+        return key.StartsWith(EventNamesCacheKey(office) + ":", StringComparison.OrdinalIgnoreCase);
+    }
 
     private async Task LoadLiveOfficeSessionsAsync(string office)
     {
@@ -6065,12 +6176,15 @@ public sealed class MainViewModel : INotifyPropertyChanged
         await CheckoutAsync();
     }
 
-    private void LoadOffices()
+    private void LoadOffices(bool refreshSessions = true)
     {
         Offices.Clear();
         foreach (var office in _scanner.ListOffices(_settings.LibraryRoot))
             Offices.Add(office.Name);
-        ApplyRaceDayListFilter();
+        if (refreshSessions)
+            ApplyRaceDayListFilter();
+        else
+            ApplyVisibleOffices();
     }
 
     private void LoadSessions(string office)
@@ -6090,17 +6204,22 @@ public sealed class MainViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(EmptySessionsBody));
     }
 
-    private void ApplyRaceDayListFilter()
+    private void ApplyVisibleOffices()
     {
         var q = _raceDayListFilter.Trim();
-
         VisibleOffices.Clear();
         foreach (var name in Offices)
         {
             if (q.Length == 0 || name.Contains(q, StringComparison.OrdinalIgnoreCase))
                 VisibleOffices.Add(name);
         }
+    }
 
+    private void ApplyRaceDayListFilter()
+    {
+        ApplyVisibleOffices();
+
+        var q = _raceDayListFilter.Trim();
         var matched = new List<EventPackInfo>();
         foreach (var entry in Sessions)
         {

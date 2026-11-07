@@ -250,6 +250,10 @@ public sealed class CheckoutService
 
         // Graph-only: Library under C:\S2F\Library is real files from Graph download (or a
         // prior pull). Library bytes come from Graph download only.
+        // A previous Finish can leave both ReportTemplate.B.lst and ReportTemplate.lst on
+        // OneDrive. When the bytes match, drop the invalid name before RunScore opens.
+        // A lone .B.lst stays — RunScore renames that itself.
+        var droppedListings = RunScoreListingNames.DropIdenticalInvalidDuplicates(libraryRunScore).ToList();
         statusProgress?.Report("Copying race files to this laptop…");
         await _copy.CopyDirectoryAsync(libraryRunScore, activeRunScore, progress, cancellationToken);
         Directory.CreateDirectory(activePath);
@@ -279,6 +283,18 @@ public sealed class CheckoutService
                     statusProgress,
                     cancellationToken)
             : 0;
+
+        // Reclaim overlay can copy the invalid name back onto Active. Drop that copy too.
+        droppedListings.AddRange(RunScoreListingNames.DropIdenticalInvalidDuplicates(activeRunScore));
+        if (useGraph && droppedListings.Count > 0)
+        {
+            await TryDeleteIdenticalInvalidListingsAsync(
+                request.Pack.Path,
+                request.Settings.LibraryRoot,
+                request.Settings.GraphDriveRoot,
+                droppedListings,
+                cancellationToken).ConfigureAwait(false);
+        }
 
         var scoped = new List<string> { PathService.RunScoreFolderName };
         if (!string.IsNullOrWhiteSpace(primary))
@@ -855,7 +871,8 @@ public sealed class CheckoutService
         // Graph-only: no OneDrive desktop client on race-day laptops. Finish must upload via Graph.
         if (!_cloud.IsAvailable)
         {
-            if (active.PendingFinishUploadRelativePaths is { Count: > 0 })
+            if (active.PendingFinishUploadRelativePaths is { Count: > 0 }
+                || active.PendingListingCloudFixes is { Count: > 0 })
             {
                 return new CheckinResult
                 {
@@ -937,9 +954,18 @@ public sealed class CheckoutService
         if (!uploadRelativePaths.Contains(raceStartsRel, StringComparer.OrdinalIgnoreCase))
             uploadRelativePaths.Add(raceStartsRel);
 
+        // Listing renames (color, sort, .B → plain, Gray) are not in the byte diff as deletes.
+        // Plan while Library still has the old names. Persist across a failed upload so the
+        // next Finish still removes the old OneDrive name after Active and Library match.
+        var activeRunScorePlan = Path.Combine(active.ActivePath, PathService.RunScoreFolderName);
+        var libraryRunScorePlan = Path.Combine(active.LibrarySessionPath, PathService.RunScoreFolderName);
+        var listingPlan = RunScoreListingNames.PlanFinish(activeRunScorePlan, libraryRunScorePlan);
+        var listingFixes = RunScoreListingNames.MergePending(listingPlan, active.PendingListingCloudFixes);
+
         // Once we mutate Library toward Active, any failure before Graph success must keep
         // pending paths — otherwise the next Finish sees Active≈Library and skips upload.
         var mustRetainCloudPending = uploadRelativePaths.Count > 0
+            || listingFixes.Count > 0
             || active.PendingFinishUploadRelativePaths is { Count: > 0 };
 
         var autosavePath = active.AutosavePath;
@@ -988,12 +1014,40 @@ public sealed class CheckoutService
             }
 
             // Cloud upload BEFORE releasing the lock / clearing Active.
+            // Same 3-minute budget covers listing rename/delete — those are a few small calls,
+            // not a second pack transfer.
             statusProgress?.Report("finish:sync");
             IReadOnlyList<string>? stillPending = null;
             try
             {
                 using var uploadCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 uploadCts.CancelAfter(GraphSyncPolicy.FinishUploadBudget);
+
+                if (listingFixes.Count > 0)
+                {
+                    active = active.WithPendingListingCloudFixes(listingFixes);
+                    _activeStore.Save(active);
+                    var renamed = await RunScoreListingNames.RenameMatchingListingsAsync(
+                        _cloud,
+                        active.LibrarySessionPath,
+                        settings.LibraryRoot,
+                        settings.GraphDriveRoot,
+                        listingFixes,
+                        uploadCts.Token).ConfigureAwait(false);
+                    listingFixes = renamed.StillPending;
+                    active = active.WithPendingListingCloudFixes(listingFixes);
+                    _activeStore.Save(active);
+                    if (renamed.SkipUploadRelativePaths.Count > 0)
+                    {
+                        var skip = new HashSet<string>(
+                            renamed.SkipUploadRelativePaths.Select(FinishUploadPlanner.NormalizeRelative),
+                            StringComparer.OrdinalIgnoreCase);
+                        uploadRelativePaths = uploadRelativePaths
+                            .Where(p => !skip.Contains(FinishUploadPlanner.NormalizeRelative(p)))
+                            .ToList();
+                    }
+                }
+
                 var upload = await _cloud.UploadSessionAsync(
                     active.LibrarySessionPath,
                     settings.LibraryRoot,
@@ -1009,6 +1063,29 @@ public sealed class CheckoutService
                     stillPending = upload.FailedRelativePaths.Count > 0
                         ? upload.FailedRelativePaths
                         : uploadRelativePaths;
+                }
+                else if (listingFixes.Count > 0)
+                {
+                    var stillListed = await RunScoreListingNames.DeleteSupersededListingsAsync(
+                        _cloud,
+                        active.ActivePath,
+                        active.LibrarySessionPath,
+                        settings.LibraryRoot,
+                        settings.GraphDriveRoot,
+                        listingFixes,
+                        uploadRelativePaths,
+                        uploadCts.Token).ConfigureAwait(false);
+                    listingFixes = stillListed.ToList();
+                    // Upload landed. Do not retry those PUTs — only the old listing names remain.
+                    active = active.WithPendingFinishUpload(null).WithPendingListingCloudFixes(listingFixes);
+                    if (listingFixes.Count > 0)
+                    {
+                        syncOk = false;
+                        stillPending = Array.Empty<string>();
+                        syncMessage =
+                            "Finish uploaded the race, but an old listing name is still on OneDrive. "
+                            + "Tap Finish again to remove it.";
+                    }
                 }
             }
             catch (OperationCanceledException)
@@ -1197,6 +1274,41 @@ public sealed class CheckoutService
             AutosaveCleared = true,
             Message = message
         };
+    }
+
+    /// <summary>
+    /// OneDrive already has the plain listing. Remove the identical invalid-letter copy.
+    /// A miss does not fail checkout — the next checkout tries again. Local files are already dropped.
+    /// </summary>
+    private async Task TryDeleteIdenticalInvalidListingsAsync(
+        string librarySessionPath,
+        string libraryRoot,
+        string graphDriveRoot,
+        IReadOnlyList<string> runScoreRelativePaths,
+        CancellationToken cancellationToken)
+    {
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        budget.CancelAfter(TimeSpan.FromSeconds(20));
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var rel in runScoreRelativePaths)
+        {
+            if (string.IsNullOrWhiteSpace(rel) || !seen.Add(rel))
+                continue;
+            try
+            {
+                var local = Path.Combine(librarySessionPath, PathService.RunScoreFolderName, rel);
+                await _cloud.DeleteLibraryFileAsync(local, libraryRoot, graphDriveRoot, budget.Token)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
+            catch
+            {
+                // Weak cell. Local name is already gone, so this race does not show the dialog.
+            }
+        }
     }
 
     /// <summary>

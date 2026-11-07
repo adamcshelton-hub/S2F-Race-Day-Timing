@@ -1,3 +1,5 @@
+using S2F.RaceDayCheckout.Core.Services;
+
 namespace S2F.RaceDayCheckout.Core.Models;
 
 public sealed class OfficeInfo
@@ -202,6 +204,12 @@ public sealed class ActiveCheckout
     public IReadOnlyList<string>? PendingFinishUploadRelativePaths { get; init; }
 
     /// <summary>
+    /// Listing names still on OneDrive after a Finish upload that did not remove the old name.
+    /// Cleared when Active is removed. Empty means no listing rename/delete is waiting.
+    /// </summary>
+    public IReadOnlyList<RunScoreListingNames.PendingListingCloudFix>? PendingListingCloudFixes { get; init; }
+
+    /// <summary>
     /// Category start times for on-site countdown / count-up (local Active only — not Graph).
     /// Cleared when Active is removed (Finish / abandon).
     /// </summary>
@@ -230,6 +238,28 @@ public sealed class ActiveCheckout
         PendingFinishUploadRelativePaths = pendingPaths is { Count: > 0 }
             ? pendingPaths.ToList()
             : null,
+        PendingListingCloudFixes = PendingListingCloudFixes,
+        RaceStarts = RaceStarts.ToList()
+    };
+
+    public ActiveCheckout WithPendingListingCloudFixes(
+        IReadOnlyList<RunScoreListingNames.PendingListingCloudFix>? fixes) => new()
+    {
+        Office = Office,
+        ParentEvent = ParentEvent,
+        SessionName = SessionName,
+        RelativePath = RelativePath,
+        LibrarySessionPath = LibrarySessionPath,
+        ActivePath = ActivePath,
+        BackupPath = BackupPath,
+        AutosavePath = AutosavePath,
+        DbsPath = DbsPath,
+        PrimaryEventFile = PrimaryEventFile,
+        Role = Role,
+        ScopedPaths = ScopedPaths,
+        CheckedOutAt = CheckedOutAt,
+        PendingFinishUploadRelativePaths = PendingFinishUploadRelativePaths,
+        PendingListingCloudFixes = fixes is { Count: > 0 } ? fixes.ToList() : null,
         RaceStarts = RaceStarts.ToList()
     };
 
@@ -249,6 +279,7 @@ public sealed class ActiveCheckout
         ScopedPaths = ScopedPaths,
         CheckedOutAt = CheckedOutAt,
         PendingFinishUploadRelativePaths = PendingFinishUploadRelativePaths,
+        PendingListingCloudFixes = PendingListingCloudFixes,
         RaceStarts = raceStarts.Count > 0 ? raceStarts.ToList() : Array.Empty<RaceStartEntry>()
     };
 }

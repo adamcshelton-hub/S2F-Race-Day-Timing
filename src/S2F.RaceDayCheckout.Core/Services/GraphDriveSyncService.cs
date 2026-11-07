@@ -1269,6 +1269,53 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
         }
     }
 
+    /// <summary>
+    /// Rename one drive item in place. Same folder, new file name. Does not upload bytes.
+    /// </summary>
+    public async Task<CloudSyncResult> RenameLibraryFileAsync(
+        string localFilePath,
+        string newFileName,
+        string libraryRoot,
+        string graphDriveRoot,
+        CancellationToken cancellationToken = default)
+    {
+        if (!_tokens.IsSignedIn)
+            return new CloudSyncResult { Success = false, Message = "Graph not signed in." };
+        if (string.IsNullOrWhiteSpace(localFilePath) || string.IsNullOrWhiteSpace(newFileName))
+            return new CloudSyncResult { Success = false, Message = "No file to rename." };
+        if (newFileName.IndexOfAny(new[] { '/', '\\' }) >= 0)
+            return new CloudSyncResult { Success = false, Message = "Listing rename must stay in the same folder." };
+
+        try
+        {
+            var relative = ToDriveRelative(localFilePath, libraryRoot, graphDriveRoot);
+            if (relative is null)
+                return new CloudSyncResult { Success = false, Message = "Path outside LibraryRoot." };
+
+            var url = ItemPathUrl(relative);
+            if (!url.EndsWith(':'))
+                url += ":";
+            var body = "{\"name\":" + JsonSerializer.Serialize(newFileName)
+                + ",\"@microsoft.graph.conflictBehavior\":\"fail\"}";
+            using var req = await CreateRequestAsync(new HttpMethod("PATCH"), url, cancellationToken)
+                .ConfigureAwait(false);
+            req.Content = new StringContent(body, Encoding.UTF8, "application/json");
+            using var resp = await _http.SendAsync(req, cancellationToken).ConfigureAwait(false);
+            if (resp.IsSuccessStatusCode)
+                return new CloudSyncResult { Success = true, Message = "Renamed." };
+
+            return new CloudSyncResult
+            {
+                Success = false,
+                Message = "Graph rename failed: " + (int)resp.StatusCode
+            };
+        }
+        catch (Exception ex)
+        {
+            return new CloudSyncResult { Success = false, Message = "Graph rename failed: " + ex.Message };
+        }
+    }
+
     /// <inheritdoc />
     public async Task<CloudSyncResult> AppendManualBackupTapsAsync(
         string librarySessionPath,

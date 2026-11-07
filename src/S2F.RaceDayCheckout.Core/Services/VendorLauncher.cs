@@ -7,6 +7,12 @@ public sealed class LaunchResult
 {
     public bool Success { get; init; }
     public string Message { get; init; } = string.Empty;
+
+    /// <summary>
+    /// Library paths of identical invalid-letter listings removed locally.
+    /// The caller deletes those names on OneDrive. Empty when nothing was dropped.
+    /// </summary>
+    public IReadOnlyList<string> SupersededListingCloudPaths { get; init; } = Array.Empty<string>();
 }
 
 public sealed class VendorLauncher
@@ -26,6 +32,10 @@ public sealed class VendorLauncher
         var runScoreDir = Path.Combine(active.ActivePath, PathService.RunScoreFolderName);
         if (!Directory.Exists(runScoreDir))
             return new LaunchResult { Success = false, Message = $"Active RUNSCORE missing: {runScoreDir}" };
+
+        // Both names on disk (a previous Finish left the old OneDrive name) make Listings
+        // fail the rename. Drop the identical invalid name. A lone .B.lst stays.
+        var superseded = DropIdenticalInvalidListingCloudPaths(active, runScoreDir);
 
         // Zero timer steps: enforce company SOP prefs (alternate Backup folder, 1-min auto-save, etc.)
         // before RSServer loads the registry into memory.
@@ -56,6 +66,7 @@ public sealed class VendorLauncher
                 return new LaunchResult
                 {
                     Success = true,
+                    SupersededListingCloudPaths = superseded,
                     Message = "RunScore exe not found — opened Active RUNSCORE folder. Set RunScore path in Settings for one-click launch."
                               + prefNote
                 };
@@ -81,6 +92,7 @@ public sealed class VendorLauncher
             return new LaunchResult
             {
                 Success = true,
+                SupersededListingCloudPaths = superseded,
                 Message = (raceFile is null
                     ? $"Launched RunScore. Open the race under {runScoreDir}."
                     : $"Launched RunScore with {Path.GetFileName(raceFile)}.")
@@ -89,7 +101,12 @@ public sealed class VendorLauncher
         }
         catch (Exception ex)
         {
-            return new LaunchResult { Success = false, Message = "Failed to launch RunScore: " + ex.Message };
+            return new LaunchResult
+            {
+                Success = false,
+                SupersededListingCloudPaths = superseded,
+                Message = "Failed to launch RunScore: " + ex.Message
+            };
         }
     }
 
@@ -386,6 +403,56 @@ public sealed class VendorLauncher
 
         return Directory.GetFiles(runScoreDir, "*.FRM").FirstOrDefault()
                ?? Directory.GetFiles(runScoreDir, "*.frm").FirstOrDefault();
+    }
+
+    private static IReadOnlyList<string> DropIdenticalInvalidListingCloudPaths(
+        ActiveCheckout active,
+        string activeRunScore)
+    {
+        var cloudPaths = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var libraryRunScore = string.IsNullOrWhiteSpace(active.LibrarySessionPath)
+            ? ""
+            : Path.Combine(active.LibrarySessionPath, PathService.RunScoreFolderName);
+
+        void Collect(string runScoreDir)
+        {
+            if (!Directory.Exists(runScoreDir))
+                return;
+            foreach (var rel in RunScoreListingNames.DropIdenticalInvalidDuplicates(runScoreDir))
+            {
+                if (string.IsNullOrEmpty(libraryRunScore))
+                    continue;
+                var cloud = Path.Combine(libraryRunScore, rel);
+                if (seen.Add(cloud))
+                    cloudPaths.Add(cloud);
+            }
+        }
+
+        if (!string.IsNullOrEmpty(libraryRunScore))
+            Collect(libraryRunScore);
+        if (!SameDirectory(activeRunScore, libraryRunScore))
+            Collect(activeRunScore);
+        return cloudPaths;
+    }
+
+    private static bool SameDirectory(string a, string b)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(a) || string.IsNullOrWhiteSpace(b))
+                return false;
+            if (!Directory.Exists(a) || !Directory.Exists(b))
+                return false;
+            return string.Equals(
+                Path.GetFullPath(a).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                Path.GetFullPath(b).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static string? ResolveRunScoreExe(AppSettings settings)

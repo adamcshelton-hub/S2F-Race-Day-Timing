@@ -311,6 +311,8 @@ public partial class MainWindow : Window
         }
 
         // Optional: confirm which offices exist on OneDrive (does not block showing the list).
+        // If staff open an office before this returns, the finished probe must not
+        // send them back to Choose Your Office.
         try
         {
             await _vm.EnsureLibraryIndexedFromGraphAsync()

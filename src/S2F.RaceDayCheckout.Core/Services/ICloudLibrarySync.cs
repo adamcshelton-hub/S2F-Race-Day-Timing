@@ -172,6 +172,17 @@ public interface ICloudLibrarySync
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Rename one Library file on Graph in the same folder. Does not upload a second copy.
+    /// 409 (new name already exists) and 404 are failures — the caller uploads, then deletes the old name.
+    /// </summary>
+    Task<CloudSyncResult> RenameLibraryFileAsync(
+        string localFilePath,
+        string newFileName,
+        string libraryRoot,
+        string graphDriveRoot,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Append one or many Manual Backup taps to this device’s <c>current.jsonl</c> in a single
     /// Graph RMW (GET → id-merge → PUT → verify). Same contract as Staffing <c>appendDeviceTaps</c>.
     /// Caps at <see cref="ManualBackupStore.MaxBatch"/>. Empty input is a no-op success.
@@ -274,6 +285,10 @@ public sealed class NullCloudLibrarySync : ICloudLibrarySync
     public Task<CloudSyncResult> DeleteLibraryFileAsync(
         string localFilePath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
         Task.FromResult(new CloudSyncResult { Success = true, Message = "Graph not signed in." });
+
+    public Task<CloudSyncResult> RenameLibraryFileAsync(
+        string localFilePath, string newFileName, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
+        Task.FromResult(new CloudSyncResult { Success = false, Message = "Graph not signed in." });
 
     public Task<CloudSyncResult> AppendManualBackupTapsAsync(
         string librarySessionPath,

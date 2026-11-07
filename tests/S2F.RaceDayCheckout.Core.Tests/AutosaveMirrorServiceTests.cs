@@ -416,6 +416,10 @@ public class AutosaveMirrorServiceTests
             string localFilePath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
             Task.FromResult(new CloudSyncResult { Success = true });
 
+        public Task<CloudSyncResult> RenameLibraryFileAsync(
+            string localFilePath, string newFileName, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new CloudSyncResult { Success = false, Message = "not renamed" });
+
         public Task<CloudSyncResult> AppendManualBackupTapsAsync(
             string librarySessionPath,
             string libraryRoot,
@@ -523,6 +527,10 @@ public class AutosaveMirrorServiceTests
         public Task<CloudSyncResult> DeleteLibraryFileAsync(
             string localFilePath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
             Task.FromResult(new CloudSyncResult { Success = true });
+
+        public Task<CloudSyncResult> RenameLibraryFileAsync(
+            string localFilePath, string newFileName, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new CloudSyncResult { Success = false, Message = "not renamed" });
 
         public Task<CloudSyncResult> AppendManualBackupTapsAsync(
             string librarySessionPath,
