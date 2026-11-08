@@ -130,6 +130,48 @@ public static class LibrarySessionCache
         return pruned;
     }
 
+    /// <summary>
+    /// Delete immediate child folders that are not in a completed one-level remote list.
+    /// Does not walk deeper. Never call with a partial list.
+    /// </summary>
+    public static int PruneImmediateFoldersNotOnRemote(
+        string folderLocal,
+        IReadOnlyCollection<string> remoteChildNames,
+        string? protectSessionPath = null)
+    {
+        if (!Directory.Exists(folderLocal) || remoteChildNames is null)
+            return 0;
+
+        var remote = new HashSet<string>(remoteChildNames, StringComparer.OrdinalIgnoreCase);
+        var protect = string.IsNullOrWhiteSpace(protectSessionPath)
+            ? null
+            : Path.GetFullPath(protectSessionPath);
+        var pruned = 0;
+
+        foreach (var child in Directory.EnumerateDirectories(folderLocal).ToList())
+        {
+            var name = Path.GetFileName(child);
+            if (string.IsNullOrEmpty(name) || remote.Contains(name))
+                continue;
+
+            var full = Path.GetFullPath(child);
+            if (protect is not null && IsSameOrUnder(protect, full))
+                continue;
+
+            try
+            {
+                Directory.Delete(full, recursive: true);
+                pruned++;
+            }
+            catch
+            {
+                // Locked / in use — leave it until the next list.
+            }
+        }
+
+        return pruned;
+    }
+
     private static bool HasHiddenAppSegment(string officePath, string directoryPath)
     {
         var relative = Path.GetRelativePath(officePath, directoryPath);

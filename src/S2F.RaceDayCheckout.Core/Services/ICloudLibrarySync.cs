@@ -51,7 +51,8 @@ public interface ICloudLibrarySync
 
     /// <summary>
     /// List <b>one</b> folder’s children under the library (cellular — no recursion).
-    /// Creates matching empty local dirs. When <paramref name="probeSessionLeaves"/> is true,
+    /// Creates matching empty local dirs and removes immediate local folders that are not
+    /// in that completed list. When <paramref name="probeSessionLeaves"/> is true,
     /// also creates RUNSCORE placeholders for children that are session leaves on OneDrive.
     /// </summary>
     Task<CloudSyncResult> RefreshFolderChildrenAsync(
@@ -60,7 +61,8 @@ public interface ICloudLibrarySync
         string relativeUnderLibrary,
         bool probeSessionLeaves = false,
         IProgress<string>? status = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        string? protectSessionPath = null);
 
     /// <summary>
     /// Download a session pack into the local library path.
@@ -239,7 +241,7 @@ public sealed class NullCloudLibrarySync : ICloudLibrarySync
         Task.FromResult(new CloudSyncResult { Success = true, Message = "Graph not signed in." });
 
     public Task<CloudSyncResult> RefreshFolderChildrenAsync(
-        string libraryRoot, string graphDriveRoot, string relativeUnderLibrary, bool probeSessionLeaves = false, IProgress<string>? status = null, CancellationToken cancellationToken = default) =>
+        string libraryRoot, string graphDriveRoot, string relativeUnderLibrary, bool probeSessionLeaves = false, IProgress<string>? status = null, CancellationToken cancellationToken = default, string? protectSessionPath = null) =>
         Task.FromResult(new CloudSyncResult { Success = true, Message = "Graph not signed in." });
 
     public Task<CloudSyncResult> DownloadSessionAsync(

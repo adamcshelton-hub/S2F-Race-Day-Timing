@@ -665,7 +665,7 @@ public class CheckoutServiceTests
             Task.FromResult(new CloudSyncResult { Success = true });
 
         public Task<CloudSyncResult> RefreshFolderChildrenAsync(
-            string libraryRoot, string graphDriveRoot, string relativeUnderLibrary, bool probeSessionLeaves = false, IProgress<string>? status = null, CancellationToken cancellationToken = default) =>
+            string libraryRoot, string graphDriveRoot, string relativeUnderLibrary, bool probeSessionLeaves = false, IProgress<string>? status = null, CancellationToken cancellationToken = default, string? protectSessionPath = null) =>
             Task.FromResult(new CloudSyncResult { Success = true });
 
         public virtual Task<CloudSyncResult> DownloadSessionAsync(
@@ -1483,7 +1483,7 @@ public class CheckoutServiceTests
             Task.FromResult(new CloudSyncResult { Success = true });
 
         public Task<CloudSyncResult> RefreshFolderChildrenAsync(
-            string libraryRoot, string graphDriveRoot, string relativeUnderLibrary, bool probeSessionLeaves = false, IProgress<string>? status = null, CancellationToken cancellationToken = default) =>
+            string libraryRoot, string graphDriveRoot, string relativeUnderLibrary, bool probeSessionLeaves = false, IProgress<string>? status = null, CancellationToken cancellationToken = default, string? protectSessionPath = null) =>
             Task.FromResult(new CloudSyncResult { Success = true });
 
         public Task<CloudSyncResult> DownloadSessionAsync(

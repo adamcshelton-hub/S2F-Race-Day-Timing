@@ -201,7 +201,8 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
         string relativeUnderLibrary,
         bool probeSessionLeaves = false,
         IProgress<string>? status = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? protectSessionPath = null)
     {
         if (!_tokens.IsSignedIn)
             return new CloudSyncResult { Success = false, Message = "Sign in to OneDrive first." };
@@ -232,7 +233,28 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
                 };
             }
 
-            var children = await ListChildFoldersAsync(cloudFolder, budget.Token).ConfigureAwait(false);
+            // 404 is not an empty folder — do not prune local names from a missing list.
+            var items = await ListChildItemsAsync(cloudFolder, budget.Token, notFoundReturnsNull: true)
+                .ConfigureAwait(false);
+            if (items is null)
+            {
+                return new CloudSyncResult
+                {
+                    Success = false,
+                    Message = $"Could not list “{relative}” on OneDrive."
+                };
+            }
+
+            var children = items
+                .Where(i => i.IsFolder && !string.IsNullOrWhiteSpace(i.Name))
+                .Select(i => i.Name!)
+                .ToList();
+
+            // Full one-level list is in hand. Drop local folders OneDrive no longer has
+            // before any slower race-leaf probes. Do not walk deeper.
+            var pruned = LibrarySessionCache.PruneImmediateFoldersNotOnRemote(
+                localFolder, children, protectSessionPath);
+
             var created = 0;
             var sessions = 0;
             var probeNames = new List<string>();
@@ -306,13 +328,15 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
                 }
             }
 
+            var shown = children.Count(c => !IsSkippedChildFolderName(c));
+            var removedNote = pruned > 0 ? $" {pruned} removed (not on OneDrive)." : "";
             return new CloudSyncResult
             {
                 Success = true,
-                FilesTransferred = created + sessions,
+                FilesTransferred = created + sessions + pruned,
                 Message = sessions > 0
-                    ? $"Found {children.Count} item(s), {sessions} event(s)."
-                    : $"Found {Math.Max(created, children.Count(c => !IsSkippedChildFolderName(c)))} folder(s)."
+                    ? $"Found {children.Count} item(s), {sessions} event(s).{removedNote}"
+                    : $"Found {Math.Max(created, shown)} folder(s).{removedNote}"
             };
         }
         catch (OperationCanceledException)
@@ -677,7 +701,7 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
         budget.CancelAfter(GraphSyncPolicy.OfficeListBudget);
         try
         {
-            var items = await ListChildItemsAsync(relative, budget.Token).ConfigureAwait(false);
+            var items = await ListChildItemsAsync(relative, budget.Token).ConfigureAwait(false) ?? [];
             return items
                 .Where(i => i.IsFile && !string.IsNullOrWhiteSpace(i.Name)
                             && i.Name.EndsWith(".event", StringComparison.OrdinalIgnoreCase))
@@ -1969,7 +1993,7 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
         var cloudPath = string.IsNullOrEmpty(relativeUnderOffice)
             ? officeCloud
             : JoinDrivePath(officeCloud, relativeUnderOffice);
-        var children = await ListChildItemsAsync(cloudPath, cancellationToken).ConfigureAwait(false);
+        var children = await ListChildItemsAsync(cloudPath, cancellationToken).ConfigureAwait(false) ?? [];
 
         var hasRunScore = children.Any(c =>
             c.IsFolder
@@ -2017,11 +2041,14 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
 
     private async Task<List<string>> ListChildFoldersAsync(string parentPath, CancellationToken cancellationToken)
     {
-        var items = await ListChildItemsAsync(parentPath, cancellationToken).ConfigureAwait(false);
+        var items = await ListChildItemsAsync(parentPath, cancellationToken).ConfigureAwait(false) ?? [];
         return items.Where(i => i.IsFolder && !string.IsNullOrWhiteSpace(i.Name)).Select(i => i.Name!).ToList();
     }
 
-    private async Task<List<DriveChild>> ListChildItemsAsync(string parentPath, CancellationToken cancellationToken)
+    private async Task<List<DriveChild>?> ListChildItemsAsync(
+        string parentPath,
+        CancellationToken cancellationToken,
+        bool notFoundReturnsNull = false)
     {
         var results = new List<DriveChild>();
         // Cellular: skip unused Graph item facets on every children page.
@@ -2031,7 +2058,7 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
             using var req = await CreateRequestAsync(HttpMethod.Get, url, cancellationToken).ConfigureAwait(false);
             using var resp = await _http.SendAsync(req, cancellationToken).ConfigureAwait(false);
             if (resp.StatusCode == System.Net.HttpStatusCode.NotFound)
-                return results;
+                return notFoundReturnsNull ? null : results;
             resp.EnsureSuccessStatusCode();
             await using var stream = await resp.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
             var page = await JsonSerializer.DeserializeAsync<GraphChildrenPage>(stream, JsonOptions, cancellationToken)
@@ -2069,7 +2096,7 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
         List<DriveChild> children;
         try
         {
-            children = await ListChildItemsAsync(cloudPath, cancellationToken).ConfigureAwait(false);
+            children = await ListChildItemsAsync(cloudPath, cancellationToken).ConfigureAwait(false) ?? [];
         }
         catch
         {
@@ -2727,7 +2754,7 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
         List<DriveChild> children;
         try
         {
-            children = await ListChildItemsAsync(cloudPath, cancellationToken).ConfigureAwait(false);
+            children = await ListChildItemsAsync(cloudPath, cancellationToken).ConfigureAwait(false) ?? [];
         }
         catch
         {

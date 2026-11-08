@@ -72,6 +72,38 @@ public class LibrarySessionCacheTests
     }
 
     [Fact]
+    public void PruneImmediate_RemovesFoldersMissingFromOneLevelList_KeepsDeeperMatchAndActive()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "s2f-level-" + Guid.NewGuid().ToString("N"));
+        var keep = Path.Combine(root, "St. Louis Past Races");
+        var gone = Path.Combine(root, "St. Louis");
+        var active = Path.Combine(root, "Memphis", "2025");
+        Directory.CreateDirectory(Path.Combine(keep, "2025"));
+        Directory.CreateDirectory(gone);
+        Directory.CreateDirectory(active);
+        File.WriteAllText(Path.Combine(root, "WinHttpHeader.txt"), "x");
+
+        try
+        {
+            var pruned = LibrarySessionCache.PruneImmediateFoldersNotOnRemote(
+                root,
+                ["St. Louis Past Races", "Memphis Past Races"],
+                protectSessionPath: active);
+
+            Assert.Equal(1, pruned);
+            Assert.True(Directory.Exists(keep));
+            Assert.True(Directory.Exists(Path.Combine(keep, "2025")));
+            Assert.True(Directory.Exists(active));
+            Assert.False(Directory.Exists(gone));
+            Assert.True(File.Exists(Path.Combine(root, "WinHttpHeader.txt")));
+        }
+        finally
+        {
+            try { Directory.Delete(root, true); } catch { /* ignore */ }
+        }
+    }
+
+    [Fact]
     public void PruneOffices_RemovesConfirmedAbsent_KeepsOthers()
     {
         var root = Path.Combine(Path.GetTempPath(), "s2f-offices-" + Guid.NewGuid().ToString("N"));

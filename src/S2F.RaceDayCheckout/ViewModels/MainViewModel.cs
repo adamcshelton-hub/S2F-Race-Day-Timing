@@ -3798,7 +3798,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 _settings.GraphDriveRoot,
                 relative,
                 probeSessionLeaves: probeLeaves,
-                new Progress<string>(s => Status = s));
+                new Progress<string>(s => Status = s),
+                protectSessionPath: Active?.LibrarySessionPath);
             Status = result.Message;
             if (!result.Success)
                 Alert("OneDrive", result.Message);
@@ -4638,7 +4639,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 _settings.GraphDriveRoot,
                 EventBuilderService.TemplatesFolderName,
                 probeSessionLeaves: true,
-                new Progress<string>(s => Status = s)).ConfigureAwait(true);
+                new Progress<string>(s => Status = s),
+                protectSessionPath: Active?.LibrarySessionPath).ConfigureAwait(true);
             Status = result.Message;
             if (result.Success)
                 _graphIndexedOffices.Add(TemplatesGraphCacheKey);

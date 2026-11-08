@@ -373,7 +373,7 @@ public class AutosaveMirrorServiceTests
             Task.FromResult(new CloudSyncResult { Success = true });
 
         public Task<CloudSyncResult> RefreshFolderChildrenAsync(
-            string libraryRoot, string graphDriveRoot, string relativeUnderLibrary, bool probeSessionLeaves = false, IProgress<string>? status = null, CancellationToken cancellationToken = default) =>
+            string libraryRoot, string graphDriveRoot, string relativeUnderLibrary, bool probeSessionLeaves = false, IProgress<string>? status = null, CancellationToken cancellationToken = default, string? protectSessionPath = null) =>
             Task.FromResult(new CloudSyncResult { Success = true });
 
         public Task<CloudSyncResult> DownloadSessionRolesAsync(
@@ -485,7 +485,7 @@ public class AutosaveMirrorServiceTests
             Task.FromResult(new CloudSyncResult { Success = true });
 
         public Task<CloudSyncResult> RefreshFolderChildrenAsync(
-            string libraryRoot, string graphDriveRoot, string relativeUnderLibrary, bool probeSessionLeaves = false, IProgress<string>? status = null, CancellationToken cancellationToken = default) =>
+            string libraryRoot, string graphDriveRoot, string relativeUnderLibrary, bool probeSessionLeaves = false, IProgress<string>? status = null, CancellationToken cancellationToken = default, string? protectSessionPath = null) =>
             Task.FromResult(new CloudSyncResult { Success = true });
 
         public Task<CloudSyncResult> DownloadSessionAsync(
