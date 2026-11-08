@@ -198,6 +198,31 @@ public class FinishUploadPlannerTests
     }
 
     [Fact]
+    public void CollectChanged_IgnoredChipReads_IncludesAnyDateWrittenLocally()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "s2f-finish-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var library = Path.Combine(root, "Library", "Race");
+            var active = Path.Combine(root, "Active", "Race");
+            SeedIdenticalPack(library, active);
+            var rs = Path.Combine(active, PathService.RunScoreFolderName);
+            var today = DateTime.Today.ToString("yyyy-MM-dd");
+            var yesterday = DateTime.Today.AddDays(-1).ToString("yyyy-MM-dd");
+            File.WriteAllText(Path.Combine(rs, today + "_IgnoredRawChipReads.txt"), "today");
+            File.WriteAllText(Path.Combine(rs, yesterday + "_IgnoredCloudChipReads.txt"), "old");
+
+            var changed = FinishUploadPlanner.CollectChangedRelativePaths(MakeCheckout(active, library));
+            Assert.Contains(changed, p => p.Contains(today + "_IgnoredRawChipReads.txt", StringComparison.OrdinalIgnoreCase));
+            Assert.Contains(changed, p => p.Contains(yesterday + "_IgnoredCloudChipReads.txt", StringComparison.OrdinalIgnoreCase));
+        }
+        finally
+        {
+            TryDelete(root);
+        }
+    }
+
+    [Fact]
     public void NeedsUpload_MissingLibrary_True()
     {
         var root = Path.Combine(Path.GetTempPath(), "s2f-finish-" + Guid.NewGuid().ToString("N"));

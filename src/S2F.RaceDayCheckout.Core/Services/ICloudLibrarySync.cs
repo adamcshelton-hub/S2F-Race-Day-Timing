@@ -13,6 +13,12 @@ public sealed class CloudSyncResult
     /// Empty on full success or when the whole planned set should be retried (timeout / hard fail).
     /// </summary>
     public IReadOnlyList<string> FailedRelativePaths { get; init; } = Array.Empty<string>();
+
+    /// <summary>
+    /// Non-blocking Finish note (oversized RunScore log left on the laptop).
+    /// Success stays true — the next laptop does not need this file.
+    /// </summary>
+    public string? SkippedNote { get; init; }
 }
 
 /// <summary>

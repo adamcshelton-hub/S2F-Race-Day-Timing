@@ -2478,6 +2478,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
                     + "Ask setup to delete that folder before the next race so post-event edits are not overwritten.";
             }
 
+            if (!string.IsNullOrWhiteSpace(result.CloudNote))
+                doneBody += "\n\n" + result.CloudNote;
+
             // Same branded overlay — OK to dismiss. Navigate after OK so Edit Current load doesn't flash Busy.
             await ShowBusyResultAsync("Done", doneBody);
 

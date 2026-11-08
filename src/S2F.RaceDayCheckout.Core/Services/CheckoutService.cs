@@ -46,6 +46,9 @@ public sealed class CheckinResult
     /// so staff can tap Finish again without another machine taking a stale cloud pack.
     /// </summary>
     public bool RetainActiveForCloudRetry { get; init; }
+
+    /// <summary>Shown on Done when a support file was left on the laptop (oversized RunScore log).</summary>
+    public string? CloudNote { get; init; }
 }
 
 public sealed class CheckoutService
@@ -254,8 +257,13 @@ public sealed class CheckoutService
         // OneDrive. When the bytes match, drop the invalid name before RunScore opens.
         // A lone .B.lst stays — RunScore renames that itself.
         var droppedListings = RunScoreListingNames.DropIdenticalInvalidDuplicates(libraryRunScore).ToList();
+        GraphSyncPolicy.RemoveLocalIgnoredChipReads(libraryRunScore);
         statusProgress?.Report("Copying race files to this laptop…");
         await _copy.CopyDirectoryAsync(libraryRunScore, activeRunScore, progress, cancellationToken);
+        // Library may still hold Logs, Events, or ignored-chip files from an older checkout.
+        // RunScore appends to today's file if it is already there — do not hand it a previous copy.
+        GraphSyncPolicy.RemoveLocalRunScoreLogs(activeRunScore);
+        GraphSyncPolicy.RemoveLocalIgnoredChipReads(activeRunScore);
         Directory.CreateDirectory(activePath);
         if (libraryEventFile is not null)
             File.Copy(libraryEventFile, Path.Combine(activePath, primary), overwrite: true);
@@ -971,6 +979,7 @@ public sealed class CheckoutService
         var autosavePath = active.AutosavePath;
         var syncOk = true;
         var syncMessage = string.Empty;
+        string? cloudNote = null;
 
         try
         {
@@ -1057,6 +1066,7 @@ public sealed class CheckoutService
                     onlyRelativePaths: uploadRelativePaths);
                 syncOk = upload.Success;
                 syncMessage = upload.Message;
+                cloudNote = upload.SkippedNote;
                 if (!syncOk)
                 {
                     // Partial fail → only remaining paths; hard fail / empty list → full planned set.
@@ -1227,6 +1237,7 @@ public sealed class CheckoutService
             {
                 Success = true,
                 AutosaveCleared = autosaveCleared,
+                CloudNote = cloudNote,
                 Message =
                     $"Checked in; could not remove Active folder: {activeRemoveError}. "
                     + "Race files were uploaded — safe to shut down after closing leftover folders."
@@ -1239,6 +1250,7 @@ public sealed class CheckoutService
         {
             Success = true,
             AutosaveCleared = autosaveCleared,
+            CloudNote = cloudNote,
             Message =
                 "Finish complete. Race files were uploaded to OneDrive. You can shut down this laptop."
                 + autosaveNote

@@ -834,15 +834,34 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
                 GraphSyncPolicy.UploadParallelismFloor);
 
             IReadOnlyList<string> failedRels = Array.Empty<string>();
+            var oversizeLogs = new List<string>();
             if (onlyRelativePaths is not null)
             {
                 // Finish: upload only Active-vs-Library diffs (caller compared before finish:copy).
                 // Empty list = no race content changed — still push lock metadata.
                 var jobs = new List<UploadJob>();
                 var plannedNorm = NormalizeSessionRels(onlyRelativePaths);
+                var skippedStaleIgnored = new List<string>();
+                // Oversized daily logs are attempted after race files, on the same Finish
+                // budget. Race files over the cap still block and are not attempted.
                 foreach (var norm in plannedNorm)
                 {
                     var localFile = Path.Combine(librarySessionPath, norm);
+                    // A pending path for an ignored-chip file already removed at checkout
+                    // must not block Finish. A file RunScore wrote this session still uploads,
+                    // including one dated yesterday when Finish runs after midnight.
+                    if (GraphSyncPolicy.IsIgnoredChipReadFile(norm) && !File.Exists(localFile))
+                    {
+                        skippedStaleIgnored.Add(norm);
+                        continue;
+                    }
+                    if (GraphSyncPolicy.IsOversizeRunScoreLog(
+                            norm, localFile, GraphSyncPolicy.FinishMaxFileBytes))
+                    {
+                        oversizeLogs.Add(norm);
+                        continue;
+                    }
+
                     if (GraphSyncPolicy.ShouldSkipFile(localFile, GraphSyncPolicy.FinishMaxFileBytes))
                         continue;
                     var cloudRel = norm.Replace('\\', '/');
@@ -876,8 +895,12 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
                         uploadedOk.Add(job.SessionRelativePath);
                 }
 
+                var oversizeLogSet = new HashSet<string>(oversizeLogs, StringComparer.OrdinalIgnoreCase);
+                var staleIgnoredSet = new HashSet<string>(skippedStaleIgnored, StringComparer.OrdinalIgnoreCase);
                 failedRels = plannedNorm
-                    .Where(p => !uploadedOk.Contains(p))
+                    .Where(p => !uploadedOk.Contains(p)
+                        && !oversizeLogSet.Contains(p)
+                        && !staleIgnoredSet.Contains(p))
                     .ToList();
                 if (failedRels.Count > 0)
                 {
@@ -960,16 +983,14 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
                 };
             }
 
-            // Planned race paths existed but every file was missing/too large/temp — do not
-            // treat lock-only PUTs as Finish success (would drop Active with cloud still stale).
-            if (onlyRelativePaths is not null && raceJobsQueued == 0)
+            // Planned race paths existed but every required file was missing/too large/temp.
+            // Oversized RunScore logs are not in this set — they are attempted below.
+            if (onlyRelativePaths is not null && raceJobsQueued == 0 && failedRels.Count > 0)
             {
                 return new CloudSyncResult
                 {
                     Success = false,
-                    FailedRelativePaths = failedRels.Count > 0
-                        ? failedRels
-                        : NormalizeSessionRels(onlyRelativePaths),
+                    FailedRelativePaths = failedRels,
                     Message =
                         "Race files to upload were missing or too large for Finish. "
                         + "Tap Finish again when the pack is ready, or ask setup for help."
@@ -994,11 +1015,38 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
                 };
             }
 
+            var skippedNote = await TryUploadOversizeLogsAsync(
+                oversizeLogs,
+                librarySessionPath,
+                relative,
+                uploadGate,
+                status,
+                cancellationToken).ConfigureAwait(false);
+            if (skippedNote.Uploaded > 0)
+                count += skippedNote.Uploaded;
+            if (skippedNote.Failed.Count > 0)
+            {
+                var which = FormatFailedRelHint(skippedNote.Failed);
+                return new CloudSyncResult
+                {
+                    Success = false,
+                    FilesTransferred = count,
+                    FailedRelativePaths = skippedNote.Failed,
+                    Message =
+                        $"Uploaded {count} race file(s), but {skippedNote.Failed.Count} changed file(s) failed. "
+                        + which
+                        + "Tap Finish again when signal improves."
+                };
+            }
+
             return new CloudSyncResult
             {
                 Success = true,
                 FilesTransferred = count,
-                Message = $"Uploaded {count} file(s) to OneDrive."
+                SkippedNote = skippedNote.LeftLocalNote,
+                Message = count > 0
+                    ? $"Uploaded {count} file(s) to OneDrive."
+                    : "No race file changes to upload."
             };
         }
         catch (OperationCanceledException)
@@ -1041,6 +1089,83 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
             ? $" (+{failedRels.Count - shown.Count} more)"
             : "";
         return "Failed: " + string.Join(", ", shown) + suffix + ". ";
+    }
+
+    /// <summary>
+    /// Upload RunScore logs over <see cref="GraphSyncPolicy.FinishMaxFileBytes"/> after race
+    /// files. Uses the Finish cancellation budget already on <paramref name="cancellationToken"/>.
+    /// A budget timeout leaves the log local. Any other failure stays pending so Finish can retry.
+    /// </summary>
+    private async Task<OversizeLogUpload> TryUploadOversizeLogsAsync(
+        IReadOnlyList<string> oversizeLogs,
+        string librarySessionPath,
+        string sessionCloudPath,
+        AdaptiveTransferGate uploadGate,
+        IProgress<string>? status,
+        CancellationToken cancellationToken)
+    {
+        if (oversizeLogs.Count == 0)
+            return new OversizeLogUpload(0, Array.Empty<string>(), null);
+
+        var jobs = new List<UploadJob>();
+        foreach (var norm in oversizeLogs)
+        {
+            var localFile = Path.Combine(librarySessionPath, norm);
+            if (!File.Exists(localFile))
+                continue;
+            var name = Path.GetFileName(localFile);
+            if (name.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase)
+                || name.EndsWith(".partial", StringComparison.OrdinalIgnoreCase)
+                || name.StartsWith('~'))
+                continue;
+            var cloudRel = norm.Replace('\\', '/');
+            jobs.Add(new UploadJob(localFile, JoinDrivePath(sessionCloudPath, cloudRel), "changed", norm));
+        }
+
+        if (jobs.Count == 0)
+            return new OversizeLogUpload(0, Array.Empty<string>(), null);
+
+        try
+        {
+            var uploaded = await UploadJobsParallelAsync(jobs, uploadGate, status, cancellationToken)
+                .ConfigureAwait(false);
+            var failed = uploaded.FailedRelativePaths.Count > 0
+                ? (IReadOnlyList<string>)uploaded.FailedRelativePaths
+                : uploaded.Failed > 0
+                    ? oversizeLogs
+                    : Array.Empty<string>();
+            return new OversizeLogUpload(uploaded.Succeeded, failed, null);
+        }
+        catch (OperationCanceledException)
+        {
+            return new OversizeLogUpload(0, Array.Empty<string>(), FormatLogLeftLocalNote(oversizeLogs));
+        }
+        catch (AggregateException ex) when (ex.InnerExceptions.All(e => e is OperationCanceledException))
+        {
+            return new OversizeLogUpload(0, Array.Empty<string>(), FormatLogLeftLocalNote(oversizeLogs));
+        }
+    }
+
+    private readonly record struct OversizeLogUpload(
+        int Uploaded,
+        IReadOnlyList<string> Failed,
+        string? LeftLocalNote);
+
+    /// <summary>Done-dialog note when a daily log did not finish inside the Finish budget.</summary>
+    private static string FormatLogLeftLocalNote(IReadOnlyList<string> oversizeLogs)
+    {
+        var shown = oversizeLogs
+            .Take(3)
+            .Select(p => Path.GetFileName(p.Replace('/', Path.DirectorySeparatorChar)))
+            .ToList();
+        var suffix = oversizeLogs.Count > shown.Count
+            ? $" (+{oversizeLogs.Count - shown.Count} more)"
+            : "";
+        var names = string.Join(", ", shown) + suffix;
+        var one = shown.Count == 1 && suffix.Length == 0;
+        return names + (one
+            ? " did not finish uploading in time, so it stayed on this laptop."
+            : " did not finish uploading in time, so they stayed on this laptop.");
     }
 
     private async Task<int> UploadLockMetadataAsync(
@@ -2152,6 +2277,10 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
                 {
                     if (GraphSyncPolicy.ShouldSkipFolder(item.Name))
                         continue;
+                    // Any date. RunScore appends if today's log or events file is already on disk,
+                    // and a later Finish upload must not replace the OneDrive copy.
+                    if (underRunScore && GraphSyncPolicy.ShouldSkipRunScoreDownloadFolder(item.Name))
+                        continue;
                     // ._checkin: Manual Backup segments only (lock JSON is separate GETs; Finish trees stay local).
                     if (underAppMeta
                         && !string.Equals(item.Name, ManualBackupStore.FolderName, StringComparison.OrdinalIgnoreCase))
@@ -2171,6 +2300,8 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
                         continue;
                 }
                 else if (slim && !AnnouncerDownloadPolicy.ShouldIncludeFile(relative, options?.AnnouncerEventFile))
+                    continue;
+                if (underRunScore && GraphSyncPolicy.IsIgnoredChipReadFile(item.Name))
                     continue;
                 jobs.Add(new DownloadJob(childCloud, childLocal, item.Name, item.Size, item.LastModifiedUtc));
             }
@@ -2417,6 +2548,8 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
 
         foreach (var file in Directory.EnumerateFiles(localPath))
         {
+            if (GraphSyncPolicy.IsStaleIgnoredChipRead(file, DateTime.Today))
+                continue;
             if (GraphSyncPolicy.ShouldSkipFile(file, maxFileBytes))
                 continue;
             jobs.Add(new UploadJob(file, JoinDrivePath(cloudPath, Path.GetFileName(file)!), progressLabel));
@@ -2641,8 +2774,85 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
         }
     }
 
+    /// <summary>
+    /// OneDrive already has this log or events file from another laptop. Upload beside it.
+    /// A missing item keeps the RunScore file name. A failed lookup also uses a new
+    /// name so Finish cannot replace the existing cloud file.
+    /// </summary>
+    private async Task<string> ResolveLogUploadPathAsync(string cloudPath, CancellationToken cancellationToken)
+    {
+        if (!IsRunScoreLogCloudPath(cloudPath) && !IsIgnoredChipReadCloudPath(cloudPath))
+            return cloudPath;
+
+        var exists = await RemoteFileExistsAsync(cloudPath, cancellationToken).ConfigureAwait(false);
+        if (exists == false)
+            return cloudPath;
+
+        var slash = cloudPath.LastIndexOf('/');
+        var name = slash >= 0 ? cloudPath[(slash + 1)..] : cloudPath;
+        var parent = slash >= 0 ? cloudPath[..slash] : "";
+        var renamed = GraphSyncPolicy.DisambiguatedLogFileName(name, Environment.MachineName, DateTime.Now);
+        return string.IsNullOrEmpty(parent) ? renamed : parent + "/" + renamed;
+    }
+
+    private static bool IsRunScoreLogCloudPath(string cloudPath)
+    {
+        var norm = cloudPath.Replace('\\', '/');
+        foreach (var folder in new[] { "Logs", "Events" })
+        {
+            var marker = "/" + PathService.RunScoreFolderName + "/" + folder + "/";
+            if (norm.Contains(marker, StringComparison.OrdinalIgnoreCase)
+                || norm.StartsWith(PathService.RunScoreFolderName + "/" + folder + "/", StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool IsIgnoredChipReadCloudPath(string cloudPath)
+    {
+        var norm = cloudPath.Replace('\\', '/');
+        var slash = norm.LastIndexOf('/');
+        var file = slash >= 0 ? norm[(slash + 1)..] : norm;
+        if (!GraphSyncPolicy.IsIgnoredChipReadFile(file))
+            return false;
+        var parent = slash >= 0 ? norm[..slash] : "";
+        return parent.EndsWith("/" + PathService.RunScoreFolderName, StringComparison.OrdinalIgnoreCase)
+            || parent.Equals(PathService.RunScoreFolderName, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>True when the drive item exists, false on 404, null when the lookup failed.</summary>
+    private async Task<bool?> RemoteFileExistsAsync(string drivePath, CancellationToken cancellationToken)
+    {
+        var url = ItemPathUrl(drivePath);
+        if (!url.EndsWith(':'))
+            url += ":";
+        url += "?$select=id";
+        using var req = await CreateRequestAsync(HttpMethod.Get, url, cancellationToken).ConfigureAwait(false);
+        using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+            .ConfigureAwait(false);
+        if (resp.StatusCode == System.Net.HttpStatusCode.NotFound)
+            return false;
+        if ((int)resp.StatusCode is 429 or 503)
+        {
+            var retryAfter = ParseRetryAfter(resp);
+            throw new HttpRequestException(
+                $"Graph throttled ({(int)resp.StatusCode}).",
+                null,
+                resp.StatusCode)
+            {
+                Data = { ["RetryAfter"] = retryAfter }
+            };
+        }
+
+        if (!resp.IsSuccessStatusCode)
+            return null;
+        return true;
+    }
+
     private async Task UploadFileAsync(string localPath, string cloudPath, CancellationToken cancellationToken)
     {
+        cloudPath = await ResolveLogUploadPathAsync(cloudPath, cancellationToken).ConfigureAwait(false);
         var info = new FileInfo(localPath);
         if (info.Length > 3_800_000)
         {
