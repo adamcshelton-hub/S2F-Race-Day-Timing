@@ -122,7 +122,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
     /// <summary>
     /// True after staff open an office themselves. Startup's office-folder probe calls
     /// <see cref="ReloadFromDisk"/> when it finishes; that must not send them back to
-    /// Choose Your Office. Auto-advance when the disk has exactly one office does not set this.
+    /// Choose Your Office, and must not leave Admin. Auto-advance when the disk has
+    /// exactly one office does not set this.
     /// </summary>
     private bool _raceDayOfficeChosen;
     /// <summary>Under Past Races only — e.g. empty, <c>Memphis Past Races</c>, or <c>Memphis Past Races/2025</c>.</summary>
@@ -1612,6 +1613,13 @@ public sealed class MainViewModel : INotifyPropertyChanged
         LoadOffices(refreshSessions: false);
         SyncDisplayNameFromMachine();
 
+        // Same late-probe race as an open office: Admin (Settings included) stays put.
+        if (Step == WizardStep.Admin)
+        {
+            RaceDayTrace.Write("kept Admin — office refresh stayed off the timing page");
+            return;
+        }
+
         if (ShouldKeepRaceDayBrowse())
         {
             RaceDayTrace.Write($"kept event list for {SelectedOffice} — office refresh stayed on the open office");
@@ -1642,6 +1650,13 @@ public sealed class MainViewModel : INotifyPropertyChanged
         else
             Step = WizardStep.Office;
     }
+
+    /// <summary>
+    /// Staff are in Admin or on an office they opened. A late office-list probe must not
+    /// replace that screen or its status line.
+    /// </summary>
+    private bool LeaveCurrentScreenAlone() =>
+        Step == WizardStep.Admin || IsUserBrowsingChosenOffice();
 
     /// <summary>Staff are on the event list (or .event pick) for an office they opened.</summary>
     private bool IsUserBrowsingChosenOffice() =>
@@ -3639,7 +3654,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 Busy = true;
                 BusyTitle = "Loading offices from OneDrive…";
             }
-            else if (!IsUserBrowsingChosenOffice())
+            else if (!LeaveCurrentScreenAlone())
                 Status = "Checking office folders on OneDrive…";
 
             // Intentional Graph moment — also pick up rotated OneDrive vendor secrets.
@@ -3660,20 +3675,20 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 _settings.GraphDriveRoot,
                 new Progress<string>(s =>
                 {
-                    if (!IsUserBrowsingChosenOffice())
+                    if (!LeaveCurrentScreenAlone())
                         Status = s;
                 }),
                 protectSessionPath: Active?.LibrarySessionPath);
-            if (!IsUserBrowsingChosenOffice())
+            if (!LeaveCurrentScreenAlone())
                 Status = result.Message;
             if (!result.Success && blockUi)
                 Alert("OneDrive library", result.Message);
-            // Refreshes office names. Stays on the event list when staff already opened an office.
+            // Refreshes office names. Stays on Admin, or on the event list when staff already opened an office.
             ReloadFromDisk();
         }
         catch (Exception ex)
         {
-            if (IsUserBrowsingChosenOffice())
+            if (LeaveCurrentScreenAlone())
                 RaceDayTrace.Write($"office probe failed during browse: {ex.GetType().Name}: {ex.Message}");
             else
                 Status = "OneDrive office check failed.";
