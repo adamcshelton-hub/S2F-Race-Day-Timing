@@ -87,8 +87,10 @@ public sealed class RunScoreSopStore : IRunScoreSopStore
             }
 
             NormalizeDictionaries(profile);
-            var rewritten = ApplyNotepadPlusPlusDefault(profile)
-                            || RunScoreExternalTimers.MergeMissingCompanyDefaults(profile);
+            // Call every migration. || would skip later ones when an earlier one rewrites.
+            var rewritten = ApplyNotepadPlusPlusDefault(profile);
+            rewritten |= RunScoreExternalTimers.MergeMissingCompanyDefaults(profile);
+            rewritten |= ApplySopRevision(profile);
             if (rewritten)
             {
                 try
@@ -155,6 +157,22 @@ public sealed class RunScoreSopStore : IRunScoreSopStore
             return;
         foreach (var name in RunScorePreferencesService.VendorCredentialNames)
             profile.Strings.Remove(name);
+    }
+
+    /// <summary>
+    /// Apply shipped SOP revisions once. Existing files keep a later local edit of the same key.
+    /// </summary>
+    internal static bool ApplySopRevision(RunScoreSopProfile profile)
+    {
+        if (profile.SopRevision >= RunScoreSopProfile.CurrentSopRevision)
+            return false;
+
+        // Revision 1: company default for Auto increment bibs flipped from on to off.
+        if (profile.SopRevision < 1)
+            profile.Bools[RunScoreSopProfile.AutoIncrementBibsName] = false;
+
+        profile.SopRevision = RunScoreSopProfile.CurrentSopRevision;
+        return true;
     }
 
     /// <summary>

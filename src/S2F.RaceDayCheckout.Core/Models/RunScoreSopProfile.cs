@@ -18,8 +18,23 @@ public sealed class RunScoreSopProfile
     /// </summary>
     public const string NotepadPlusPlusExePath = @"C:\Program Files\Notepad++\notepad++.exe";
 
+    /// <summary>Registry checkbox RunScore uses for auto-advancing the bib on Enter.</summary>
+    public const string AutoIncrementBibsName = "Auto increment bibs";
+
+    /// <summary>
+    /// Bumped when a shipped SOP change must be written once into an existing runscore-sop.json.
+    /// 1 = Auto increment bibs off. After the bump, a local edit of that checkbox is kept.
+    /// </summary>
+    public const int CurrentSopRevision = 1;
+
     /// <summary>Friendly minutes; converted to registry "Auto save counts" (= minutes × 300).</summary>
     public double AutoSaveMinutes { get; set; } = 1;
+
+    /// <summary>
+    /// See <see cref="CurrentSopRevision"/>. Leave the default at 0 so an older file
+    /// that omits this property still runs the one-time migration.
+    /// </summary>
+    public int SopRevision { get; set; }
 
     public string SaveEntriesDir { get; set; } = BackupPathToken;
     public string SaveResultsDir { get; set; } = BackupPathToken;
@@ -35,9 +50,10 @@ public sealed class RunScoreSopProfile
             AutoSaveMinutes = 1,
             SaveEntriesDir = BackupPathToken,
             SaveResultsDir = BackupPathToken,
+            SopRevision = CurrentSopRevision,
             Bools = new Dictionary<string, bool>(StringComparer.Ordinal)
             {
-                ["Auto increment bibs"] = true,
+                [AutoIncrementBibsName] = false,
                 ["Save ASCII bibs"] = false,
                 ["Save all results"] = true,
                 ["Fractional times"] = true,

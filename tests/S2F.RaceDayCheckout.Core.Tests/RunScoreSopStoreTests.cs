@@ -23,6 +23,8 @@ public class RunScoreSopStoreTests
                 RunScoreSopProfile.NotepadPlusPlusExePath,
                 result.Profile.Strings[RunScoreSopProfile.ExternalEditorName]);
             Assert.True(result.Profile.Bools["Save all results"]);
+            Assert.False(result.Profile.Bools[RunScoreSopProfile.AutoIncrementBibsName]);
+            Assert.Equal(RunScoreSopProfile.CurrentSopRevision, result.Profile.SopRevision);
             Assert.Contains("autoSaveMinutes", File.ReadAllText(path), StringComparison.OrdinalIgnoreCase);
         }
         finally
@@ -119,6 +121,59 @@ public class RunScoreSopStoreTests
 
             var result = store.Load();
             Assert.Equal(@"D:\Tools\editor.exe", result.Profile.Strings[RunScoreSopProfile.ExternalEditorName]);
+        }
+        finally
+        {
+            try { File.Delete(path); } catch { }
+        }
+    }
+
+    [Fact]
+    public void Load_FileWithoutRevision_TurnsAutoIncrementBibsOff()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "s2f-sop-" + Guid.NewGuid().ToString("N") + ".json");
+        try
+        {
+            File.WriteAllText(path, """
+                {
+                  "autoSaveMinutes": 1,
+                  "bools": { "Auto increment bibs": true, "Save all results": true }
+                }
+                """);
+            var store = new RunScoreSopStore(path);
+            var result = store.Load();
+
+            Assert.False(result.Profile.Bools[RunScoreSopProfile.AutoIncrementBibsName]);
+            Assert.Equal(RunScoreSopProfile.CurrentSopRevision, result.Profile.SopRevision);
+            Assert.True(result.Profile.Bools["Save all results"]);
+            Assert.Contains("\"sopRevision\": 1", File.ReadAllText(path), StringComparison.Ordinal);
+        }
+        finally
+        {
+            try { File.Delete(path); } catch { }
+        }
+    }
+
+    [Fact]
+    public void Load_OldSop_TurnsAutoIncrementBibsOffOnce()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "s2f-sop-" + Guid.NewGuid().ToString("N") + ".json");
+        try
+        {
+            var old = RunScoreSopProfile.CreateDefaults();
+            old.SopRevision = 0;
+            old.Bools[RunScoreSopProfile.AutoIncrementBibsName] = true;
+            var store = new RunScoreSopStore(path);
+            store.Save(old);
+
+            var result = store.Load();
+            Assert.False(result.Profile.Bools[RunScoreSopProfile.AutoIncrementBibsName]);
+            Assert.Equal(1, result.Profile.SopRevision);
+
+            result.Profile.Bools[RunScoreSopProfile.AutoIncrementBibsName] = true;
+            store.Save(result.Profile);
+            var again = store.Load();
+            Assert.True(again.Profile.Bools[RunScoreSopProfile.AutoIncrementBibsName]);
         }
         finally
         {
