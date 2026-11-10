@@ -413,6 +413,13 @@ public sealed class MainViewModel : INotifyPropertyChanged
         get => _step;
         private set
         {
+            // Office search and event search share one box. A race name left from
+            // Choose Your Event matches no office, so Finish looks like every office vanished.
+            if (value == WizardStep.Office
+                && _step != WizardStep.Office
+                && _raceDayListFilter.Length > 0)
+                ClearRaceDayListFilter();
+
             if (Set(ref _step, value))
             {
                 OnPropertyChanged(nameof(IsOfficeStep));
