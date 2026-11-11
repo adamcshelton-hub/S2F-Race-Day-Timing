@@ -1093,7 +1093,7 @@ public sealed class CheckoutService
                         syncOk = false;
                         stillPending = Array.Empty<string>();
                         syncMessage =
-                            "Finish uploaded the race, but an old listing name is still on OneDrive. "
+                            "Finish uploaded the race, but an old listing name is still in the pack. "
                             + "Tap Finish again to remove it.";
                     }
                 }

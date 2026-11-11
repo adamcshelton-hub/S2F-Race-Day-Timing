@@ -9,6 +9,9 @@ namespace S2F.RaceDayCheckout.Core.Services;
 /// <c>results.R.lst</c> → <c>results.G.lst</c>).
 /// Finish uploads the new name and used to leave the old name on OneDrive,
 /// so the next checkout downloaded both and Listings failed the rename.
+/// The Active → Library copy also leaves the old file on disk (overlay, not a purge).
+/// Checkout copies that Library file into the next Active, so a deleted listing comes back
+/// even after OneDrive dropped it. The cloud delete and the local Library delete stay together.
 /// </summary>
 public static class RunScoreListingNames
 {
@@ -280,6 +283,14 @@ public static class RunScoreListingNames
                     cancellationToken).ConfigureAwait(false);
                 if (renamed.Success)
                 {
+                    // Same OneDrive item now has the new name. Drop the old Library file
+                    // or the next checkout copies both names into Active.
+                    if (!TryDeleteLocalFile(oldLocal))
+                    {
+                        pass.StillPending.Add(fix);
+                        continue;
+                    }
+
                     pass.SkipUploadRelativePaths.Add(Norm(fix.NewRelative));
                     continue;
                 }
@@ -300,8 +311,10 @@ public static class RunScoreListingNames
     }
 
     /// <summary>
-    /// Delete old cloud listing names. A replacement is deleted only after that new name
-    /// uploaded, or after a direct upload of the local file when this attempt's diff skipped it.
+    /// Delete old cloud listing names, then the same file under the local Library session.
+    /// A replacement is deleted only after that new name uploaded, or after a direct upload
+    /// of the local file when this attempt's diff skipped it. A cloud miss stays pending
+    /// and leaves the Library file in place for the retry.
     /// </summary>
     public static async Task<IReadOnlyList<PendingListingCloudFix>> DeleteSupersededListingsAsync(
         ICloudLibrarySync cloud,
@@ -371,7 +384,7 @@ public static class RunScoreListingNames
                     libraryRoot,
                     graphDriveRoot,
                     cancellationToken).ConfigureAwait(false);
-                if (!deleted.Success)
+                if (!deleted.Success || !TryDeleteLocalFile(oldLocal))
                     still.Add(fix);
             }
             catch (OperationCanceledException)
@@ -463,6 +476,29 @@ public static class RunScoreListingNames
     }
 
     private static string Norm(string relative) => FinishUploadPlanner.NormalizeRelative(relative);
+
+    /// <summary>
+    /// Library overlay keeps files Active deleted. Remove one listing after OneDrive has dropped it.
+    /// Missing is success. A locked or read-only failure stays pending so Finish retries.
+    /// </summary>
+    private static bool TryDeleteLocalFile(string path)
+    {
+        try
+        {
+            if (!File.Exists(path))
+                return true;
+
+            var attrs = File.GetAttributes(path);
+            if ((attrs & FileAttributes.ReadOnly) != 0)
+                File.SetAttributes(path, attrs & ~FileAttributes.ReadOnly);
+            File.Delete(path);
+            return !File.Exists(path);
+        }
+        catch
+        {
+            return false;
+        }
+    }
 
     private static bool PathsEqual(string a, string b) =>
         string.Equals(Path.GetFullPath(a), Path.GetFullPath(b), StringComparison.OrdinalIgnoreCase);

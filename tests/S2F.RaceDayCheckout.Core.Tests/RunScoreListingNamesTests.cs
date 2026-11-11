@@ -1,3 +1,4 @@
+using S2F.RaceDayCheckout.Core.Models;
 using S2F.RaceDayCheckout.Core.Services;
 
 namespace S2F.RaceDayCheckout.Core.Tests;
@@ -191,6 +192,161 @@ public class RunScoreListingNamesTests
         var plan = RunScoreListingNames.PlanFinish(active.Path, library.Path);
 
         Assert.Empty(plan.Fixes);
+    }
+
+    [Fact]
+    public async Task Delete_RemovesLocalLibraryCopiesAfterCloudDelete()
+    {
+        using var library = new TempSession();
+        using var active = new TempSession();
+        library.Write("results.lst", "results");
+        library.Write("awards.lst", "awards");
+        library.Write("splits.lst", "stay");
+        active.Write("splits.lst", "stay");
+        File.SetAttributes(library.File("awards.lst"), FileAttributes.ReadOnly);
+
+        var plan = RunScoreListingNames.PlanFinish(active.RunScore, library.RunScore);
+        Assert.Equal(2, plan.Fixes.Count);
+        Assert.All(plan.Fixes, fix => Assert.Null(fix.NewRelative));
+
+        var still = await RunScoreListingNames.DeleteSupersededListingsAsync(
+            new ListingCloud(),
+            active.Path,
+            library.Path,
+            library.Path,
+            "",
+            plan.Fixes,
+            Array.Empty<string>());
+
+        Assert.Empty(still);
+        Assert.False(File.Exists(library.File("results.lst")));
+        Assert.False(File.Exists(library.File("awards.lst")));
+        Assert.Equal("stay", File.ReadAllText(library.File("splits.lst")));
+    }
+
+    [Fact]
+    public async Task Delete_LeavesLocalFileWhenCloudDeleteFails()
+    {
+        using var library = new TempSession();
+        using var active = new TempSession();
+        library.Write("results.lst", "results");
+        library.Write("splits.lst", "stay");
+        active.Write("splits.lst", "stay");
+
+        var plan = RunScoreListingNames.PlanFinish(active.RunScore, library.RunScore);
+        var cloud = new ListingCloud { DeleteSucceeds = false };
+
+        var still = await RunScoreListingNames.DeleteSupersededListingsAsync(
+            cloud,
+            active.Path,
+            library.Path,
+            library.Path,
+            "",
+            plan.Fixes,
+            Array.Empty<string>());
+
+        var pending = Assert.Single(still);
+        Assert.EndsWith("results.lst", pending.OldRelative, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("results", File.ReadAllText(library.File("results.lst")));
+        Assert.Equal(1, cloud.DeleteCalls);
+    }
+
+    [Fact]
+    public async Task Rename_RemovesOldLocalNameAfterCloudRename()
+    {
+        using var library = new TempSession();
+        using var active = new TempSession();
+        library.Write("results.R.lst", "same");
+        active.Write("results.G.lst", "same");
+
+        var plan = RunScoreListingNames.PlanFinish(active.RunScore, library.RunScore);
+        var fix = Assert.Single(plan.Fixes);
+        Assert.True(fix.RenameInPlace);
+
+        // Finish copies Active onto Library before the rename, so both names are on disk.
+        library.Write("results.G.lst", "same");
+
+        var pass = await RunScoreListingNames.RenameMatchingListingsAsync(
+            new ListingCloud(),
+            library.Path,
+            library.Path,
+            "",
+            plan.Fixes);
+
+        Assert.Empty(pass.StillPending);
+        Assert.False(File.Exists(library.File("results.R.lst")));
+        Assert.Equal("same", File.ReadAllText(library.File("results.G.lst")));
+        Assert.Contains(pass.SkipUploadRelativePaths, p => p.EndsWith("results.G.lst", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private sealed class TempSession : IDisposable
+    {
+        public string Path { get; } = System.IO.Path.Combine(
+            System.IO.Path.GetTempPath(), "s2f-lst-session-" + Guid.NewGuid().ToString("N"));
+
+        public string RunScore => System.IO.Path.Combine(Path, "RUNSCORE");
+
+        public TempSession() => Directory.CreateDirectory(RunScore);
+
+        public string File(string name) => System.IO.Path.Combine(RunScore, name);
+
+        public void Write(string name, string contents) =>
+            System.IO.File.WriteAllText(File(name), contents);
+
+        public void Dispose()
+        {
+            try
+            {
+                foreach (var file in Directory.EnumerateFiles(RunScore))
+                {
+                    var attrs = System.IO.File.GetAttributes(file);
+                    if ((attrs & FileAttributes.ReadOnly) != 0)
+                        System.IO.File.SetAttributes(file, attrs & ~FileAttributes.ReadOnly);
+                }
+            }
+            catch { /* temp */ }
+
+            try { Directory.Delete(Path, recursive: true); } catch { /* temp */ }
+        }
+    }
+
+    private sealed class ListingCloud : ICloudLibrarySync
+    {
+        public bool DeleteSucceeds { get; init; } = true;
+        public int DeleteCalls { get; private set; }
+        public bool IsAvailable => true;
+
+        public Task<CloudSyncResult> DeleteLibraryFileAsync(
+            string localFilePath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default)
+        {
+            DeleteCalls++;
+            return Task.FromResult(new CloudSyncResult { Success = DeleteSucceeds });
+        }
+
+        public Task<CloudSyncResult> RenameLibraryFileAsync(
+            string localFilePath, string newFileName, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new CloudSyncResult { Success = true });
+
+        public Task<CloudSyncResult> RefreshOfficeListAsync(string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default, string? protectSessionPath = null) => Ok();
+        public Task<CloudSyncResult> RefreshOfficeSessionsAsync(string libraryRoot, string graphDriveRoot, string officeName, IProgress<string>? status = null, CancellationToken cancellationToken = default, string? protectSessionPath = null) => Ok();
+        public Task<CloudSyncResult> RefreshFolderChildrenAsync(string libraryRoot, string graphDriveRoot, string relativeUnderLibrary, bool probeSessionLeaves = false, IProgress<string>? status = null, CancellationToken cancellationToken = default, string? protectSessionPath = null) => Ok();
+        public Task<CloudSyncResult> DownloadSessionAsync(string librarySessionPath, string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default, SessionDownloadOptions? options = null) => Ok();
+        public Task<CloudSyncResult> DownloadSessionRolesAsync(IReadOnlyList<string> librarySessionPaths, string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default) => Ok();
+        public Task<IReadOnlyList<string>> ListRemoteEventFileNamesAsync(string librarySessionPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) => Task.FromResult<IReadOnlyList<string>>(Array.Empty<string>());
+        public Task<CloudSyncResult> UploadSessionRolesAsync(string librarySessionPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) => Ok();
+        public Task<CloudSyncResult> UploadRaceStartsAsync(string librarySessionPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) => Ok();
+        public Task<CloudSyncResult> UploadSessionAsync(string librarySessionPath, string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default, IReadOnlyList<string>? onlyRelativePaths = null) => Ok();
+        public Task<CloudSyncResult> UploadFolderAsync(string localFolderPath, string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default) => Ok();
+        public Task<CloudSyncResult> UploadLocalFilesAsync(IReadOnlyList<string> localFilePaths, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) => Ok();
+        public Task<CloudSyncResult> UploadCheckoutLockAsync(string librarySessionPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) => Ok();
+        public Task<CloudSyncResult> DownloadCheckoutLockAsync(string librarySessionPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) => Ok();
+        public Task<CloudSyncResult> AppendManualBackupTapsAsync(string librarySessionPath, string libraryRoot, string graphDriveRoot, string location, string deviceId, string displayName, IReadOnlyList<ManualBackupTap> taps, CancellationToken cancellationToken = default) => Ok();
+        public Task<CloudSyncResult> ClearRemoteFolderAsync(string localFolderPath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default) => Ok();
+        public Task<CloudSyncResult> MoveOfficeItemToPastRacesAsync(string libraryRoot, string graphDriveRoot, string officeName, string itemFolderName, IProgress<string>? status = null, CancellationToken cancellationToken = default) => Ok();
+        public Task<CloudSyncResult> SyncRunScoreVendorSecretsAsync(string graphDriveRoot, CancellationToken cancellationToken = default) => Ok();
+
+        private static Task<CloudSyncResult> Ok() =>
+            Task.FromResult(new CloudSyncResult { Success = true });
     }
 
     private sealed class TempRunScore : IDisposable
