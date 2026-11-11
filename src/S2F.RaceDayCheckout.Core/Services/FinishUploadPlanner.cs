@@ -115,7 +115,8 @@ public static class FinishUploadPlanner
             var name = Path.GetFileName(activeFile);
             if (name.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase)
                 || name.EndsWith(".partial", StringComparison.OrdinalIgnoreCase)
-                || name.StartsWith('~'))
+                || name.StartsWith('~')
+                || GraphSyncPolicy.IsEntriesDesignBackup(name))
                 continue;
 
             var relUnderRoot = Path.GetRelativePath(activeRoot, activeFile);

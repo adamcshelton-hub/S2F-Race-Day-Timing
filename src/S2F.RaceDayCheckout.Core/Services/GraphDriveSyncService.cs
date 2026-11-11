@@ -842,6 +842,7 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
                 var jobs = new List<UploadJob>();
                 var plannedNorm = NormalizeSessionRels(onlyRelativePaths);
                 var skippedStaleIgnored = new List<string>();
+                var skippedDesignBackups = new List<string>();
                 // Oversized daily logs are attempted after race files, on the same Finish
                 // budget. Race files over the cap still block and are not attempted.
                 foreach (var norm in plannedNorm)
@@ -853,6 +854,12 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
                     if (GraphSyncPolicy.IsIgnoredChipReadFile(norm) && !File.Exists(localFile))
                     {
                         skippedStaleIgnored.Add(norm);
+                        continue;
+                    }
+                    // Design-screen backup. Pending retries must not keep Finish open for it.
+                    if (GraphSyncPolicy.IsEntriesDesignBackup(norm))
+                    {
+                        skippedDesignBackups.Add(norm);
                         continue;
                     }
                     if (GraphSyncPolicy.IsOversizeRunScoreLog(
@@ -897,10 +904,12 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
 
                 var oversizeLogSet = new HashSet<string>(oversizeLogs, StringComparer.OrdinalIgnoreCase);
                 var staleIgnoredSet = new HashSet<string>(skippedStaleIgnored, StringComparer.OrdinalIgnoreCase);
+                var designBackupSet = new HashSet<string>(skippedDesignBackups, StringComparer.OrdinalIgnoreCase);
                 failedRels = plannedNorm
                     .Where(p => !uploadedOk.Contains(p)
                         && !oversizeLogSet.Contains(p)
-                        && !staleIgnoredSet.Contains(p))
+                        && !staleIgnoredSet.Contains(p)
+                        && !designBackupSet.Contains(p))
                     .ToList();
                 if (failedRels.Count > 0)
                 {
@@ -1332,6 +1341,8 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
             {
                 if (string.IsNullOrWhiteSpace(local) || !File.Exists(local))
                     continue;
+                if (GraphSyncPolicy.IsEntriesDesignBackup(local))
+                    continue;
                 if (GraphSyncPolicy.ShouldSkipFile(local, GraphSyncPolicy.MidRaceMaxFileBytes))
                     continue;
                 var cloudRel = ToDriveRelative(local, libraryRoot, graphDriveRoot);
@@ -1345,7 +1356,9 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
                 // Do not report success when callers passed real files that were all filtered
                 // (size / path) — AutosaveMirrorService would clear pending and never retry.
                 var anyStillOnDisk = localFilePaths.Any(p =>
-                    !string.IsNullOrWhiteSpace(p) && File.Exists(p));
+                    !string.IsNullOrWhiteSpace(p)
+                    && File.Exists(p)
+                    && !GraphSyncPolicy.IsEntriesDesignBackup(p));
                 return new CloudSyncResult
                 {
                     Success = !anyStillOnDisk,
@@ -2303,6 +2316,8 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
                     continue;
                 if (underRunScore && GraphSyncPolicy.IsIgnoredChipReadFile(item.Name))
                     continue;
+                if (GraphSyncPolicy.IsEntriesDesignBackup(item.Name))
+                    continue;
                 jobs.Add(new DownloadJob(childCloud, childLocal, item.Name, item.Size, item.LastModifiedUtc));
             }
         }
@@ -2549,6 +2564,8 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
         foreach (var file in Directory.EnumerateFiles(localPath))
         {
             if (GraphSyncPolicy.IsStaleIgnoredChipRead(file, DateTime.Today))
+                continue;
+            if (GraphSyncPolicy.IsEntriesDesignBackup(file))
                 continue;
             if (GraphSyncPolicy.ShouldSkipFile(file, maxFileBytes))
                 continue;

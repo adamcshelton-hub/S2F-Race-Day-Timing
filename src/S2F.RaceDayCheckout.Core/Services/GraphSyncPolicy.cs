@@ -154,6 +154,22 @@ public static class GraphSyncPolicy
     }
 
     /// <summary>
+    /// <c>Entries.DDD</c> is the backup RunScore writes when someone opens the Design screen.
+    /// The live database is <c>Entries.DTA</c>. Do not download or upload the backup.
+    /// A copy already on OneDrive stays there.
+    /// </summary>
+    public static bool IsEntriesDesignBackup(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return false;
+        var name = path.Replace('/', '\\');
+        var slash = name.LastIndexOf('\\');
+        if (slash >= 0)
+            name = name[(slash + 1)..];
+        return string.Equals(name, "Entries.DDD", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
     /// Dated ignored-chip files RunScore writes in the RUNSCORE folder itself
     /// (<c>yyyy-MM-dd_IgnoredRawChipReads.txt</c> and <c>yyyy-MM-dd_IgnoredCloudChipReads.txt</c>).
     /// </summary>

@@ -223,6 +223,29 @@ public class FinishUploadPlannerTests
     }
 
     [Fact]
+    public void CollectChanged_EntriesDesignBackup_IsNotUploaded()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "s2f-finish-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var library = Path.Combine(root, "Library", "Race");
+            var active = Path.Combine(root, "Active", "Race");
+            SeedIdenticalPack(library, active);
+            var activeRs = Path.Combine(active, PathService.RunScoreFolderName);
+            File.WriteAllText(Path.Combine(activeRs, "Entries.DDD"), "design-backup");
+            File.WriteAllText(Path.Combine(activeRs, "Entries.DTA"), "live-entries");
+
+            var changed = FinishUploadPlanner.CollectChangedRelativePaths(MakeCheckout(active, library));
+            Assert.Contains(changed, p => p.EndsWith("Entries.DTA", StringComparison.OrdinalIgnoreCase));
+            Assert.DoesNotContain(changed, p => p.EndsWith("Entries.DDD", StringComparison.OrdinalIgnoreCase));
+        }
+        finally
+        {
+            TryDelete(root);
+        }
+    }
+
+    [Fact]
     public void NeedsUpload_MissingLibrary_True()
     {
         var root = Path.Combine(Path.GetTempPath(), "s2f-finish-" + Guid.NewGuid().ToString("N"));

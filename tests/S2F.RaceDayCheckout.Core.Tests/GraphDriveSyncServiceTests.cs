@@ -284,6 +284,34 @@ public class GraphDriveSyncServiceTests
     }
 
     [Fact]
+    public async Task UploadSession_EntriesDesignBackup_DoesNotUploadOrFailFinish()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "s2f-up-" + Guid.NewGuid().ToString("N"));
+        var session = Path.Combine(root, "Charlotte", "2026 - Charlotte Marathon");
+        var rel = Path.Combine("RUNSCORE", "Entries.DDD");
+        var file = Path.Combine(session, rel);
+        Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+        try
+        {
+            await File.WriteAllTextAsync(file, "design-backup");
+            var handler = new RecordingHandler(logAlreadyOnDrive: false);
+            var cloud = new GraphDriveSyncService(new SignedInTokens(), new HttpClient(handler));
+            var result = await cloud.UploadSessionAsync(
+                session, root, graphDriveRoot: "", onlyRelativePaths: new[] { rel });
+
+            Assert.True(result.Success);
+            Assert.Empty(result.FailedRelativePaths);
+            Assert.DoesNotContain(handler.Requests, r =>
+                r.Method == HttpMethod.Put
+                && r.RequestUri!.AbsoluteUri.Contains("Entries.DDD", StringComparison.OrdinalIgnoreCase));
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); } catch { /* temp */ }
+        }
+    }
+
+    [Fact]
     public async Task DownloadSession_DoesNotPullRunScoreLogs()
     {
         var root = Path.Combine(Path.GetTempPath(), "s2f-dl-" + Guid.NewGuid().ToString("N"));
@@ -297,6 +325,7 @@ public class GraphDriveSyncServiceTests
 
             Assert.True(result.Success);
             Assert.Contains(handler.Urls, u => u.Contains("ENTRIES.DTA", StringComparison.Ordinal));
+            Assert.DoesNotContain(handler.Urls, u => u.Contains("Entries.DDD", StringComparison.OrdinalIgnoreCase));
             Assert.DoesNotContain(handler.Urls, u => u.Contains("/Logs", StringComparison.OrdinalIgnoreCase));
             Assert.DoesNotContain(handler.Urls, u => u.Contains("/Events", StringComparison.OrdinalIgnoreCase));
             Assert.DoesNotContain(handler.Urls, u => u.Contains("IgnoredRawChipReads", StringComparison.OrdinalIgnoreCase));
@@ -393,7 +422,7 @@ public class GraphDriveSyncServiceTests
             var json = url.Contains("RUNSCORE/Logs", StringComparison.OrdinalIgnoreCase)
                 ? """{"value":[{"name":"2026-11-04_runscore.log","file":{},"size":10}]}"""
                 : url.Contains("RUNSCORE", StringComparison.Ordinal)
-                    ? """{"value":[{"name":"Logs","folder":{}},{"name":"Events","folder":{}},{"name":"2026-11-04_IgnoredRawChipReads.txt","file":{},"size":4},{"name":"ENTRIES.DTA","file":{},"size":4}]}"""
+                    ? """{"value":[{"name":"Logs","folder":{}},{"name":"Events","folder":{}},{"name":"2026-11-04_IgnoredRawChipReads.txt","file":{},"size":4},{"name":"ENTRIES.DTA","file":{},"size":4},{"name":"Entries.DDD","file":{},"size":8700777}]}"""
                     : """{"value":[{"name":"RUNSCORE","folder":{}},{"name":"race.event","file":{},"size":8}]}""";
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
             {

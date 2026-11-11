@@ -174,6 +174,15 @@ public class GraphSyncPolicyTests
     public void IsIgnoredChipReadFile_MatchesDatedChipFilesOnly(string name, bool match) =>
         Assert.Equal(match, GraphSyncPolicy.IsIgnoredChipReadFile(name));
 
+    [Theory]
+    [InlineData("Entries.DDD", true)]
+    [InlineData("entries.ddd", true)]
+    [InlineData(@"RUNSCORE\Entries.DDD", true)]
+    [InlineData("ENTRIES.DTA", false)]
+    [InlineData("notes.DDD", false)]
+    public void IsEntriesDesignBackup_OnlyEntriesDdd(string path, bool match) =>
+        Assert.Equal(match, GraphSyncPolicy.IsEntriesDesignBackup(path));
+
     [Fact]
     public void IsStaleIgnoredChipRead_SkipsPreviousDatesKeepsToday()
     {
