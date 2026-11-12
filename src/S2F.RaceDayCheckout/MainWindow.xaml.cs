@@ -741,6 +741,9 @@ public partial class MainWindow : Window
 
     private void LaunchRunScore_Click(object sender, RoutedEventArgs e) => _vm.LaunchRunScore();
 
+    private void LaunchRaceRosterKiosk_Click(object sender, RoutedEventArgs e) =>
+        _vm.LaunchRaceRosterKiosk();
+
     private void LaunchTs_Click(object sender, RoutedEventArgs e) => _vm.LaunchTimingAndScoring();
 
     private void OpenWorkingFolder_Click(object sender, RoutedEventArgs e) => _vm.OpenWorkingFolder();

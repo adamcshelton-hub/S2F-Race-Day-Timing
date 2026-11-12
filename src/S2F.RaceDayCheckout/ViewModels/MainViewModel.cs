@@ -75,6 +75,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private readonly ProcessGuard _processGuard = new();
     private readonly ActiveCheckoutStore _activeStore = new();
     private readonly VendorLauncher _launcher = new();
+    private readonly RaceRosterKioskLauncher _raceRosterKiosk = new();
     private readonly CheckoutLockService _locks;
     private readonly LibraryScanner _scanner;
     private readonly CheckoutService _checkout;
@@ -2576,6 +2577,19 @@ public sealed class MainViewModel : INotifyPropertyChanged
         await FinishAsync(closingApp: true);
         // FinishAsync already shows the branded "Done" overlay.
         return _checkout.GetActive() is null;
+    }
+
+    /// <summary>
+    /// RaceRoster timer dashboard in a kiosk window (silent printing).
+    /// Does not require a checkout — replaces the desktop Chrome shortcut.
+    /// </summary>
+    public void LaunchRaceRosterKiosk()
+    {
+        var result = _raceRosterKiosk.Launch();
+        if (!result.Success)
+            Alert("RaceRoster Kiosk", result.Message);
+        else
+            Status = result.Message;
     }
 
     public void LaunchRunScore()
