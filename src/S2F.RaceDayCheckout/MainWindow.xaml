@@ -303,10 +303,6 @@
                         MinWidth="200"
                         FlowDirection="LeftToRight">
                   <StackPanel>
-                    <Button Content="RaceRoster Kiosk"
-                            Style="{StaticResource HeaderMenuLink}"
-                            Click="LaunchRaceRosterKiosk_Click"
-                            ToolTip="Opens the RaceRoster timer dashboard full screen, with silent printing. Margins are minimum and the header and footer are off."/>
                     <Button Content="Admin"
                             Style="{StaticResource HeaderMenuLink}"
                             Click="Admin_Click"
@@ -317,6 +313,10 @@
                             Click="ExitAdmin_Click"
                             Visibility="{Binding ShowExitAdmin, Converter={StaticResource BoolVis}}"
                             ToolTip="Leave Admin and return to race day"/>
+                    <Button Content="RaceRoster Kiosk"
+                            Style="{StaticResource HeaderMenuLink}"
+                            Click="LaunchRaceRosterKiosk_Click"
+                            ToolTip="Opens the RaceRoster timer dashboard full screen, with silent printing. Margins are minimum and the header and footer are off."/>
                   </StackPanel>
                 </Border>
               </Popup>
