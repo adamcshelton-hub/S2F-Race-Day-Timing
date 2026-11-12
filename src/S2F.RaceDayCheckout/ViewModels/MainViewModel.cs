@@ -2588,7 +2588,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         var result = _raceRosterKiosk.Launch();
         if (!result.Success)
             Alert("RaceRoster Kiosk", result.Message);
-        else
+        else if (!string.IsNullOrWhiteSpace(result.Message))
             Status = result.Message;
     }
 

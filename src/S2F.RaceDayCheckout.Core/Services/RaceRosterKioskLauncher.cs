@@ -104,7 +104,6 @@ public sealed class RaceRosterKioskLauncher
         }
 
         var profile = _profileDirectory();
-        var firstOpen = !File.Exists(Path.Combine(profile, "Local State"));
         try
         {
             Directory.CreateDirectory(profile);
@@ -149,11 +148,9 @@ public sealed class RaceRosterKioskLauncher
             };
         }
 
-        var message = firstOpen
-            ? "RaceRoster Kiosk opening… sign in once in that window."
-            : "RaceRoster Kiosk opening…";
-        if (!printReady)
-            message += " Print margins could not be updated — close the kiosk window and try again.";
+        var message = printReady
+            ? string.Empty
+            : "RaceRoster Kiosk opened. Print margins could not be updated — close that window and open it again.";
 
         return new LaunchResult
         {

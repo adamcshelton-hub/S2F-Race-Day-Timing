@@ -99,7 +99,7 @@ public class RaceRosterKioskLauncherTests
             var result = launcher.Launch();
 
             Assert.True(result.Success);
-            Assert.Contains("sign in once", result.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(string.Empty, result.Message);
             Assert.NotNull(started);
             Assert.Equal(exe, started!.FileName);
             Assert.False(started.UseShellExecute);
@@ -136,7 +136,7 @@ public class RaceRosterKioskLauncherTests
             var result = launcher.Launch();
 
             Assert.True(result.Success);
-            Assert.Equal("RaceRoster Kiosk opening…", result.Message);
+            Assert.Equal(string.Empty, result.Message);
         }
         finally
         {

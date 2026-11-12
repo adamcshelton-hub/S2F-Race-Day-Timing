@@ -741,8 +741,16 @@ public partial class MainWindow : Window
 
     private void LaunchRunScore_Click(object sender, RoutedEventArgs e) => _vm.LaunchRunScore();
 
-    private void LaunchRaceRosterKiosk_Click(object sender, RoutedEventArgs e) =>
+    private void HeaderMenu_Click(object sender, RoutedEventArgs e) =>
+        HeaderMenuPopup.IsOpen = !HeaderMenuPopup.IsOpen;
+
+    private void CloseHeaderMenu() => HeaderMenuPopup.IsOpen = false;
+
+    private void LaunchRaceRosterKiosk_Click(object sender, RoutedEventArgs e)
+    {
+        CloseHeaderMenu();
         _vm.LaunchRaceRosterKiosk();
+    }
 
     private void LaunchTs_Click(object sender, RoutedEventArgs e) => _vm.LaunchTimingAndScoring();
 
@@ -843,9 +851,17 @@ public partial class MainWindow : Window
     private async void DoneManualBackup_Click(object sender, RoutedEventArgs e) =>
         await _vm.DoneManualBackupAsync();
 
-    private void Admin_Click(object sender, RoutedEventArgs e) => _vm.TryOpenAdmin();
+    private void Admin_Click(object sender, RoutedEventArgs e)
+    {
+        CloseHeaderMenu();
+        _vm.TryOpenAdmin();
+    }
 
-    private void ExitAdmin_Click(object sender, RoutedEventArgs e) => _vm.ExitAdmin();
+    private void ExitAdmin_Click(object sender, RoutedEventArgs e)
+    {
+        CloseHeaderMenu();
+        _vm.ExitAdmin();
+    }
 
     private void AdminSetupNewEvent_Click(object sender, RoutedEventArgs e) =>
         _vm.ShowAdminSetupNewEvent();
