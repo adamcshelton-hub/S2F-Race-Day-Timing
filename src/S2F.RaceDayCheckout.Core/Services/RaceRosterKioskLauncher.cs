@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.Versioning;
+using System.Text.Json.Nodes;
 using Microsoft.Win32;
 
 namespace S2F.RaceDayCheckout.Core.Services;
@@ -15,6 +16,12 @@ public sealed class RaceRosterKioskLauncher
     /// <summary>Same URL as the RaceRoster Kiosk desktop shortcut.</summary>
     public const string SignInUrl =
         "https://raceroster.com/signin?redirect=https%3A%2F%2Ftimer.raceroster.com%2Fdashboard%2Ftimers";
+
+    /// <summary>
+    /// Chrome/Edge <c>marginsType</c> printable-area value. RaceRoster's kiosk setup
+    /// calls this Minimum. Default (0) is about one inch and spills results onto extra sheets.
+    /// </summary>
+    public const int MinimumMarginsType = 2;
 
     private readonly Func<string, bool> _exists;
     private readonly Func<IEnumerable<string>> _candidates;
@@ -111,6 +118,12 @@ public sealed class RaceRosterKioskLauncher
             };
         }
 
+        // Edge/Chrome remember the last print. A fresh kiosk profile had saved 1-inch
+        // margins and a header/footer, so each result used extra sheets. Close that
+        // window first or it writes the old settings back on exit.
+        CloseKioskBrowsers(profile);
+        var printReady = TryApplySilentPrintSettings(profile);
+
         try
         {
             if (!_start(new ProcessStartInfo
@@ -136,13 +149,129 @@ public sealed class RaceRosterKioskLauncher
             };
         }
 
+        var message = firstOpen
+            ? "RaceRoster Kiosk opening… sign in once in that window."
+            : "RaceRoster Kiosk opening…";
+        if (!printReady)
+            message += " Print margins could not be updated — close the kiosk window and try again.";
+
         return new LaunchResult
         {
             Success = true,
-            Message = firstOpen
-                ? "RaceRoster Kiosk opening… sign in once in that window."
-                : "RaceRoster Kiosk opening…"
+            Message = message
         };
+    }
+
+    /// <summary>
+    /// RaceRoster results kiosk setup: margins Minimum, header and footer off.
+    /// Keeps the printer already chosen in this profile. Writes
+    /// <c>Default/Preferences</c> without dropping the rest of the profile.
+    /// </summary>
+    public static bool TryApplySilentPrintSettings(string profileDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(profileDirectory))
+            return false;
+
+        try
+        {
+            var dir = Path.Combine(profileDirectory, "Default");
+            Directory.CreateDirectory(dir);
+            var path = Path.Combine(dir, "Preferences");
+
+            JsonObject root;
+            if (File.Exists(path))
+            {
+                var parsed = JsonNode.Parse(File.ReadAllText(path)) as JsonObject;
+                if (parsed is null)
+                    return false;
+                root = parsed;
+            }
+            else
+            {
+                root = new JsonObject();
+            }
+
+            var appState = ReadAppState(root) ?? new JsonObject();
+            appState["version"] = 2;
+            appState["marginsType"] = MinimumMarginsType;
+            appState["isHeaderFooterEnabled"] = false;
+            appState["customMargins"] = new JsonObject
+            {
+                ["marginTop"] = 0,
+                ["marginBottom"] = 0,
+                ["marginLeft"] = 0,
+                ["marginRight"] = 0
+            };
+            if (appState["scaling"] is null)
+                appState["scaling"] = "100";
+
+            var printing = root["printing"] as JsonObject;
+            if (printing is null)
+            {
+                printing = new JsonObject();
+                root["printing"] = printing;
+            }
+
+            var sticky = printing["print_preview_sticky_settings"] as JsonObject;
+            if (sticky is null)
+            {
+                sticky = new JsonObject();
+                printing["print_preview_sticky_settings"] = sticky;
+            }
+
+            sticky["appState"] = appState.ToJsonString();
+
+            File.WriteAllText(path, root.ToJsonString());
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static JsonObject? ReadAppState(JsonObject root)
+    {
+        var node = root["printing"]?["print_preview_sticky_settings"]?["appState"];
+        if (node is not JsonValue value || !value.TryGetValue<string>(out var raw) || string.IsNullOrWhiteSpace(raw))
+            return null;
+        try
+        {
+            return JsonNode.Parse(raw) as JsonObject;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static void CloseKioskBrowsers(string profileDirectory)
+    {
+        if (!OperatingSystem.IsWindows() || string.IsNullOrWhiteSpace(profileDirectory))
+            return;
+
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = "powershell.exe",
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            psi.Environment["S2F_KIOSK_PROFILE"] = profileDirectory;
+            psi.ArgumentList.Add("-NoProfile");
+            psi.ArgumentList.Add("-Command");
+            psi.ArgumentList.Add(
+                "Get-CimInstance Win32_Process -Filter \"Name = 'msedge.exe' OR Name = 'chrome.exe'\" | " +
+                "Where-Object { $_.CommandLine -and $_.CommandLine.Contains($env:S2F_KIOSK_PROFILE) } | " +
+                "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }");
+            using var process = Process.Start(psi);
+            process?.WaitForExit(8000);
+        }
+        catch
+        {
+            // Launch still applies the saved margins. A window left open may write them back.
+        }
     }
 
     public string? Resolve(out string? error)

@@ -106,6 +106,12 @@ public class RaceRosterKioskLauncherTests
             Assert.Contains("--kiosk --kiosk-printing", started.Arguments);
             Assert.Contains(ShortcutUrl, started.Arguments);
             Assert.True(Directory.Exists(profile));
+            var root = System.Text.Json.Nodes.JsonNode.Parse(
+                File.ReadAllText(Path.Combine(profile, "Default", "Preferences")))!.AsObject();
+            var app = System.Text.Json.Nodes.JsonNode.Parse(
+                root["printing"]!["print_preview_sticky_settings"]!["appState"]!.GetValue<string>())!.AsObject();
+            Assert.Equal(2, app["marginsType"]!.GetValue<int>());
+            Assert.False(app["isHeaderFooterEnabled"]!.GetValue<bool>());
         }
         finally
         {
@@ -156,6 +162,58 @@ public class RaceRosterKioskLauncherTests
         Assert.False(result.Success);
         Assert.False(started);
         Assert.Contains("Install Google Chrome", result.Message);
+    }
+
+    [Fact]
+    public void ApplySilentPrintSettings_SetsMinimumMarginsAndKeepsPrinter()
+    {
+        var profile = Path.Combine(Path.GetTempPath(), "s2f-kiosk-" + Guid.NewGuid().ToString("N"));
+        var prefsPath = Path.Combine(profile, "Default", "Preferences");
+        Directory.CreateDirectory(Path.GetDirectoryName(prefsPath)!);
+        File.WriteAllText(prefsPath, """
+            {
+              "profile": { "name": "keep-me" },
+              "printing": {
+                "print_preview_sticky_settings": {
+                  "appState": "{\"version\":2,\"recentDestinations\":[{\"id\":\"Brother HL-L6200DW series\",\"origin\":\"local\"}],\"marginsType\":0,\"customMargins\":{\"marginTop\":72,\"marginBottom\":72,\"marginLeft\":72,\"marginRight\":72},\"isHeaderFooterEnabled\":true,\"scaling\":\"100\"}"
+                }
+              }
+            }
+            """);
+        try
+        {
+            Assert.True(RaceRosterKioskLauncher.TryApplySilentPrintSettings(profile));
+            var root = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(prefsPath))!.AsObject();
+            Assert.Equal("keep-me", root["profile"]!["name"]!.GetValue<string>());
+            var app = System.Text.Json.Nodes.JsonNode.Parse(
+                root["printing"]!["print_preview_sticky_settings"]!["appState"]!.GetValue<string>())!.AsObject();
+            Assert.Equal(RaceRosterKioskLauncher.MinimumMarginsType, app["marginsType"]!.GetValue<int>());
+            Assert.False(app["isHeaderFooterEnabled"]!.GetValue<bool>());
+            Assert.Equal(0, app["customMargins"]!["marginTop"]!.GetValue<int>());
+            Assert.Equal("Brother HL-L6200DW series", app["recentDestinations"]![0]!["id"]!.GetValue<string>());
+        }
+        finally
+        {
+            try { Directory.Delete(profile, true); } catch { /* ignore */ }
+        }
+    }
+
+    [Fact]
+    public void ApplySilentPrintSettings_LeavesUnreadablePreferencesAlone()
+    {
+        var profile = Path.Combine(Path.GetTempPath(), "s2f-kiosk-" + Guid.NewGuid().ToString("N"));
+        var prefsPath = Path.Combine(profile, "Default", "Preferences");
+        Directory.CreateDirectory(Path.GetDirectoryName(prefsPath)!);
+        File.WriteAllText(prefsPath, "{ not json");
+        try
+        {
+            Assert.False(RaceRosterKioskLauncher.TryApplySilentPrintSettings(profile));
+            Assert.Equal("{ not json", File.ReadAllText(prefsPath));
+        }
+        finally
+        {
+            try { Directory.Delete(profile, true); } catch { /* ignore */ }
+        }
     }
 
     [Fact]
