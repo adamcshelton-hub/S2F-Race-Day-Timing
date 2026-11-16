@@ -287,8 +287,8 @@ public partial class MainWindow : Window
         _vm.ReloadFromDisk(); // pick up local office placeholders created above
         _vm.RefreshGraphLandingStatus();
 
-        // Updates before office Graph / setup prompts — if a version is available the timer must
-        // see Download, Restart & Install before they can click into an event.
+        // Updates before office Graph / setup prompts. The check blocks the window. With no race
+        // checked out, a newer version downloads and restarts — staff cannot stay on this build.
         await UpdateService.CheckForUpdatesQuietAsync(
             _vm.HasActive,
             this,

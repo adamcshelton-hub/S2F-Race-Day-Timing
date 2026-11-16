@@ -25,9 +25,10 @@ public static class UpdateService
         RuntimeInformation.ProcessArchitecture == Architecture.Arm64 ? "win-arm64" : "win-x64";
 
     /// <summary>
-    /// Startup check. When an update exists, prompt immediately (before any download) so the
-    /// timer cannot race ahead into checkout while a silent download is still running.
-    /// One click downloads, then restarts to install — unless a race is still checked out.
+    /// Startup check. The window is blocked until GitHub answers so staff cannot open a race
+    /// on an old build. When a newer version exists and no race is checked out, download and
+    /// restart — there is no "Not Now". A checked-out race is left running; they can download
+    /// for after Finish. A failed check (weak cell) does not trap the laptop.
     /// </summary>
     public static async Task CheckForUpdatesQuietAsync(
         bool hasActiveCheckout,
@@ -38,6 +39,7 @@ public static class UpdateService
         if (!await Gate.WaitAsync(0).ConfigureAwait(true))
             return;
 
+        TimerDialog.ProgressSession? progress = null;
         try
         {
             var mgr = CreateManager();
@@ -47,23 +49,53 @@ public static class UpdateService
                 return;
             }
 
-            setStatus?.Invoke($"Checking for updates… (v{FormatVersion(mgr.CurrentVersion)})");
-            var update = await mgr.CheckForUpdatesAsync().ConfigureAwait(true);
-            if (update is null)
+            var current = FormatVersion(mgr.CurrentVersion);
+            progress = TimerDialog.ShowProgress(
+                owner,
+                "Checking for Updates",
+                $"Looking for a newer version… (v{current})");
+            await Application.Current.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Loaded);
+
+            setStatus?.Invoke($"Checking for updates… (v{current})");
+            // Weak cell must not sit on this overlay. Velopack's check has no cancel token.
+            UpdateInfo? update;
+            try
             {
-                setStatus?.Invoke($"v{FormatVersion(mgr.CurrentVersion)} — up to date");
+                update = await mgr.CheckForUpdatesAsync()
+                    .WaitAsync(TimeSpan.FromSeconds(20))
+                    .ConfigureAwait(true);
+            }
+            catch (TimeoutException)
+            {
+                progress.Dispose();
+                progress = null;
+                setStatus?.Invoke("Update check timed out — continuing. Use Check for Updates when signal is better.");
                 return;
             }
 
-            await OfferDownloadAndInstallAsync(mgr, update, hasActiveCheckout, owner, setStatus)
+            progress.Dispose();
+            progress = null;
+
+            if (update is null)
+            {
+                setStatus?.Invoke($"v{current} — up to date");
+                return;
+            }
+
+            // No race open: install before they can use this build. Mid-race: do not restart.
+            await OfferDownloadAndInstallAsync(
+                    mgr, update, hasActiveCheckout, owner, setStatus, forceInstall: !hasActiveCheckout)
                 .ConfigureAwait(true);
         }
         catch (Exception ex)
         {
+            progress?.Dispose();
+            progress = null;
             setStatus?.Invoke("Couldn't check for updates: " + ShortError(ex));
         }
         finally
         {
+            progress?.Dispose();
             Gate.Release();
         }
     }
@@ -129,23 +161,23 @@ public static class UpdateService
     }
 
     /// <summary>
-    /// Prompt first (no silent download). On accept: progress overlay → download → restart
-    /// (or download-only when a race is still checked out).
+    /// Launch with no checkout (<paramref name="forceInstall"/>): download and restart, no skip.
+    /// Otherwise prompt first. A checked-out race can download only — restart waits until Finish.
     /// </summary>
     private static async Task OfferDownloadAndInstallAsync(
         UpdateManager mgr,
         UpdateInfo update,
         bool hasActiveCheckout,
         Window? owner,
-        Action<string>? setStatus)
+        Action<string>? setStatus,
+        bool forceInstall = false)
     {
         var current = FormatVersion(mgr.CurrentVersion);
         var target = FormatVersion(update.TargetFullRelease.Version);
 
-        bool accept;
         if (hasActiveCheckout)
         {
-            accept = await Application.Current.Dispatcher.InvokeAsync(() =>
+            var accept = await Application.Current.Dispatcher.InvokeAsync(() =>
                 TimerDialog.Confirm(
                     owner,
                     "Update Available",
@@ -154,10 +186,15 @@ public static class UpdateService
                     + "Download now, then Finish the race and restart to install?",
                     yesLabel: "Download for Later",
                     noLabel: "Not Now"));
+            if (!accept)
+            {
+                setStatus?.Invoke($"v{target} available — Finish this race, then restart to update");
+                return;
+            }
         }
-        else
+        else if (!forceInstall)
         {
-            accept = await Application.Current.Dispatcher.InvokeAsync(() =>
+            var accept = await Application.Current.Dispatcher.InvokeAsync(() =>
                 TimerDialog.Confirm(
                     owner,
                     "Update Available",
@@ -165,22 +202,28 @@ public static class UpdateService
                     + "Download, restart, and install now? Stay on this screen until it finishes.",
                     yesLabel: "Download, Restart & Install",
                     noLabel: "Not Now"));
+            if (!accept)
+            {
+                setStatus?.Invoke($"v{target} available — use Check for Updates when ready");
+                return;
+            }
         }
-
-        if (!accept)
+        else
         {
-            setStatus?.Invoke($"v{target} available — use Check for Updates when ready");
-            return;
+            setStatus?.Invoke($"v{target} is required — downloading update…");
         }
 
         TimerDialog.ProgressSession? progress = null;
         try
         {
+            var startingMessage = forceInstall
+                ? $"Version {target} is required (you're on v{current}). Downloading…"
+                : $"Downloading v{target}…";
             progress = await Application.Current.Dispatcher.InvokeAsync(() =>
                 TimerDialog.ShowProgress(
                     owner,
                     "Downloading Update",
-                    $"Downloading v{target}…"));
+                    startingMessage));
             await Application.Current.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Loaded);
 
             var downloadProgress = progress;
