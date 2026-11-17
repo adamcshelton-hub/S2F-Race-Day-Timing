@@ -447,12 +447,34 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
                 ? GraphSyncPolicy.MidRaceMaxFileBytes
                 : GraphSyncPolicy.FinishMaxFileBytes;
 
+            // Full timing pack only. Announcer / DB's / autosave / Manual Backup pulls must not
+            // treat files they never listed as deletions.
+            var fullPack = !dbsOnly && !slim && !overlayOnly && !mbOnly;
+            var cloudDeletes = new List<DownloadJob>();
+            IReadOnlyList<DownloadJob> transferJobs = jobs;
+            if (fullPack)
+            {
+                var index = SessionCloudFileIndex.Load(librarySessionPath);
+                var keep = new List<DownloadJob>(jobs.Count);
+                foreach (var job in jobs)
+                {
+                    var rel = Path.GetRelativePath(librarySessionPath, job.LocalPath);
+                    if (SessionCloudFileIndex.ShouldDeleteInsteadOfDownload(
+                            rel, File.Exists(job.LocalPath), job.Size, index))
+                        cloudDeletes.Add(job);
+                    else
+                        keep.Add(job);
+                }
+
+                transferJobs = keep;
+            }
+
             // Normal pack: skip when size matches AND local mtime is not older than OneDrive
             // (cellular). Same-size Entries.ini / RS edits still re-pull via lastModified.
             // Live _autosave reclaim always re-pulls — stale local overlay must not win after take-over.
             // Manual Backup jsonl (mbOnly SoftPull AND full Timing pack pull): only when remote
             // grew. Never replace a longer local — cellular Done timeout / mid-entry must not lose taps.
-            var downloadQueue = jobs
+            var downloadQueue = transferJobs
                 .Where(j => j.Size is null || j.Size.Value <= maxBytes)
                 .Where(j =>
                 {
@@ -496,8 +518,10 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
                 })
                 .ToList();
 
-            if (downloadQueue.Count == 0)
+            if (downloadQueue.Count == 0 && cloudDeletes.Count == 0)
             {
+                if (fullPack)
+                    SessionCloudFileIndex.RememberLocalFiles(librarySessionPath);
                 return new CloudSyncResult
                 {
                     Success = true,
@@ -518,12 +542,18 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
                 };
             }
 
-            status?.Report($"Downloading 0/{downloadQueue.Count}…");
+            if (downloadQueue.Count > 0)
+                status?.Report($"Downloading 0/{downloadQueue.Count}…");
+            else if (cloudDeletes.Count > 0)
+                status?.Report($"Removing {cloudDeletes.Count} deleted file(s)…");
             var done = 0;
+            var removed = 0;
+            var removedRels = new List<string>();
             await using var gate = new AdaptiveTransferGate(
                 GraphSyncPolicy.DownloadParallelism,
                 GraphSyncPolicy.DownloadParallelismFloor);
-            var tasks = downloadQueue.Select(async job =>
+            var tasks = new List<Task>(downloadQueue.Count + cloudDeletes.Count);
+            tasks.AddRange(downloadQueue.Select(async job =>
             {
                 await using (await gate.AcquireAsync(budget.Token).ConfigureAwait(false))
                 {
@@ -542,7 +572,25 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
                         // One bad file must not abort the pack after retries.
                     }
                 }
-            });
+            }));
+            tasks.AddRange(cloudDeletes.Select(async job =>
+            {
+                await using (await gate.AcquireAsync(budget.Token).ConfigureAwait(false))
+                {
+                    budget.Token.ThrowIfCancellationRequested();
+                    var deleted = await DeleteLibraryFileAsync(
+                        job.LocalPath, libraryRoot, graphDriveRoot, budget.Token).ConfigureAwait(false);
+                    budget.Token.ThrowIfCancellationRequested();
+                    if (!deleted.Success)
+                        return;
+                    var rel = Path.GetRelativePath(librarySessionPath, job.LocalPath);
+                    lock (removedRels)
+                    {
+                        removedRels.Add(rel);
+                        removed++;
+                    }
+                }
+            }));
 
             try
             {
@@ -550,14 +598,31 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
             }
             catch (OperationCanceledException)
             {
+                if (removedRels.Count > 0)
+                    SessionCloudFileIndex.Forget(librarySessionPath, removedRels);
                 throw;
             }
 
+            if (removedRels.Count > 0)
+                SessionCloudFileIndex.Forget(librarySessionPath, removedRels);
+            if (fullPack)
+                SessionCloudFileIndex.RememberLocalFiles(librarySessionPath);
+
+            var failedDeletes = cloudDeletes.Count - removed;
+            var message = downloadQueue.Count == 0
+                ? removed > 0
+                    ? $"Removed {removed} deleted file(s) from OneDrive."
+                    : "Deleted race files are still on OneDrive — checkout again to retry."
+                : $"Downloaded {done} of {downloadQueue.Count} file(s) from OneDrive.";
+            if (downloadQueue.Count > 0 && removed > 0)
+                message += $" Removed {removed} deleted file(s) from OneDrive.";
+            if (failedDeletes > 0 && (downloadQueue.Count > 0 || removed > 0))
+                message += $" {failedDeletes} deleted file(s) are still on OneDrive — checkout again to retry.";
             return new CloudSyncResult
             {
                 Success = true,
-                FilesTransferred = done,
-                Message = $"Downloaded {done} of {downloadQueue.Count} file(s) from OneDrive."
+                FilesTransferred = done + removed,
+                Message = message
             };
         }
         catch (OperationCanceledException)
@@ -1047,6 +1112,11 @@ public sealed class GraphDriveSyncService : ICloudLibrarySync
                         + "Tap Finish again when signal improves."
                 };
             }
+
+            // New-event publish (full tree). Record what this laptop sent so a later local
+            // delete is removed from OneDrive on the next checkout instead of downloaded back.
+            if (onlyRelativePaths is null)
+                SessionCloudFileIndex.RememberLocalFiles(librarySessionPath);
 
             return new CloudSyncResult
             {

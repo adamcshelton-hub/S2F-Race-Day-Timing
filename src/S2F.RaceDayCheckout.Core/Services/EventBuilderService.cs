@@ -198,6 +198,11 @@ public sealed class EventBuilderService
             return Fail("Copy failed: " + ex.Message);
         }
 
+        // Prior-race entries.dta would open as this event's database. RunScore creates a
+        // clean one from ENTRIES.FRM the next time the event is opened.
+        if (!TryRemoveEntriesDatabases(dest, out var entriesError))
+            return Fail(entriesError);
+
         if (!EntriesIniService.TryFindEntriesIni(dest, out var iniPath))
         {
             // Ensure RUNSCORE + blank Entries.ini so the three fields can still be written.
@@ -250,6 +255,51 @@ public sealed class EventBuilderService
             Message = message
         };
     }
+
+    /// <summary>
+    /// Delete <c>entries.dta</c> anywhere under the new pack's RUNSCORE folder.
+    /// Leaves the source event alone. Fails the build if a copy is still there so it is not published.
+    /// </summary>
+    private static bool TryRemoveEntriesDatabases(string sessionPath, out string error)
+    {
+        error = string.Empty;
+        var runScore = Path.Combine(sessionPath, PathService.RunScoreFolderName);
+        if (!Directory.Exists(runScore))
+            return true;
+
+        try
+        {
+            foreach (var file in Directory.EnumerateFiles(runScore, "*", SearchOption.AllDirectories))
+            {
+                if (!IsEntriesDatabase(file))
+                    continue;
+                var attrs = File.GetAttributes(file);
+                if ((attrs & FileAttributes.ReadOnly) != 0)
+                    File.SetAttributes(file, attrs & ~FileAttributes.ReadOnly);
+                File.Delete(file);
+            }
+
+            foreach (var file in Directory.EnumerateFiles(runScore, "*", SearchOption.AllDirectories))
+            {
+                if (!IsEntriesDatabase(file))
+                    continue;
+                error = "Copied pack, but entries.dta is still there. RunScore needs that file gone so it can create a clean one:\n"
+                        + sessionPath;
+                return false;
+            }
+        }
+        catch (Exception ex)
+        {
+            error = "Copied pack, but couldn't remove entries.dta so RunScore can start clean:\n"
+                    + ex.Message + "\n\n" + sessionPath;
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool IsEntriesDatabase(string path) =>
+        string.Equals(Path.GetFileName(path), "entries.dta", StringComparison.OrdinalIgnoreCase);
 
     private static string SanitizeFolderSegment(string name)
     {

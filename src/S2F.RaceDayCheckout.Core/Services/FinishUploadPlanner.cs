@@ -7,6 +7,16 @@ namespace S2F.RaceDayCheckout.Core.Services;
 /// Compares Active vs Library <b>before</b> finish:copy — download/checkout rewrites
 /// Library timestamps, so "mtime since CheckedOutAt" wrongly uploads the whole pack.
 /// </summary>
+public readonly record struct RemovedRunScorePlan(
+    IReadOnlyList<string> RelativePaths,
+    bool ScanFailed,
+    bool Suppressed)
+{
+    public static RemovedRunScorePlan None { get; } = new(Array.Empty<string>(), false, false);
+    public static RemovedRunScorePlan ScanFailedPlan { get; } = new(Array.Empty<string>(), true, false);
+    public static RemovedRunScorePlan SuppressedPlan { get; } = new(Array.Empty<string>(), false, true);
+}
+
 public static class FinishUploadPlanner
 {
     /// <summary>
@@ -100,6 +110,57 @@ public static class FinishUploadPlanner
 
     public static string NormalizeRelative(string relative) =>
         relative.Replace('/', Path.DirectorySeparatorChar).Replace('\\', Path.DirectorySeparatorChar);
+
+    /// <summary>
+    /// RunScore files present in Library and missing from Active. Finish deletes these on
+    /// OneDrive. An empty Active tree is a bad copy, not "delete the pack."
+    /// Logs, Events, autosave, ignored-chip reads, and Entries.DDD are not in this list.
+    /// </summary>
+    public static RemovedRunScorePlan CollectRemovedRunScorePaths(string activeSessionPath, string librarySessionPath)
+    {
+        var libraryRoot = Path.Combine(librarySessionPath, PathService.RunScoreFolderName);
+        if (!Directory.Exists(libraryRoot))
+            return RemovedRunScorePlan.None;
+
+        var activeRoot = Path.Combine(activeSessionPath, PathService.RunScoreFolderName);
+        List<string> libraryFiles;
+        List<string> activeFiles;
+        try
+        {
+            libraryFiles = ListDeletableRunScoreFiles(libraryRoot);
+            if (!Directory.Exists(activeRoot))
+                return libraryFiles.Count > 0 ? RemovedRunScorePlan.SuppressedPlan : RemovedRunScorePlan.None;
+            activeFiles = ListDeletableRunScoreFiles(activeRoot);
+        }
+        catch
+        {
+            return RemovedRunScorePlan.ScanFailedPlan;
+        }
+
+        if (activeFiles.Count == 0 && libraryFiles.Count > 0)
+            return RemovedRunScorePlan.SuppressedPlan;
+
+        var activeSet = new HashSet<string>(activeFiles, StringComparer.OrdinalIgnoreCase);
+        var removed = libraryFiles
+            .Where(path => !activeSet.Contains(path))
+            .ToList();
+        return new RemovedRunScorePlan(removed, ScanFailed: false, Suppressed: false);
+    }
+
+    private static List<string> ListDeletableRunScoreFiles(string runScoreDirectory)
+    {
+        var list = new List<string>();
+        foreach (var file in Directory.EnumerateFiles(runScoreDirectory, "*", SearchOption.AllDirectories))
+        {
+            var under = Path.GetRelativePath(runScoreDirectory, file);
+            var rel = NormalizeRelative(Path.Combine(PathService.RunScoreFolderName, under));
+            if (!SessionCloudFileIndex.IsDeletableRunScoreFile(rel))
+                continue;
+            list.Add(rel);
+        }
+
+        return list;
+    }
 
     private static void CollectTreeDiffs(
         string activeRoot,

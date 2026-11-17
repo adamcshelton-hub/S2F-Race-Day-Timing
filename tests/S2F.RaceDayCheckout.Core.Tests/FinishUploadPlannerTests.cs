@@ -377,6 +377,67 @@ public class FinishUploadPlannerTests
         }
     }
 
+    [Fact]
+    public void CollectRemoved_FileMissingFromActive_IsDeleted()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "s2f-rm-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var library = Path.Combine(root, "Library");
+            var active = Path.Combine(root, "Active");
+            SeedIdenticalPack(library, active);
+            var libRs = Path.Combine(library, PathService.RunScoreFolderName);
+            var actRs = Path.Combine(active, PathService.RunScoreFolderName);
+            File.WriteAllText(Path.Combine(libRs, "old-chip.txt"), "old");
+            File.WriteAllText(Path.Combine(actRs, "old-chip.txt"), "old");
+            Directory.CreateDirectory(Path.Combine(libRs, "Logs"));
+            File.WriteAllText(Path.Combine(libRs, "Logs", "day.log"), "log");
+            File.WriteAllText(Path.Combine(libRs, "Entries.DDD"), "design");
+            File.WriteAllText(Path.Combine(libRs, "2026-11-04_IgnoredRawChipReads.txt"), "chip");
+            File.Delete(Path.Combine(actRs, "old-chip.txt"));
+
+            var plan = FinishUploadPlanner.CollectRemovedRunScorePaths(active, library);
+            Assert.False(plan.Suppressed);
+            Assert.False(plan.ScanFailed);
+            Assert.Contains(
+                plan.RelativePaths,
+                p => p.EndsWith("old-chip.txt", StringComparison.OrdinalIgnoreCase));
+            Assert.DoesNotContain(
+                plan.RelativePaths,
+                p => p.Contains("Logs", StringComparison.OrdinalIgnoreCase)
+                     || p.EndsWith("Entries.DDD", StringComparison.OrdinalIgnoreCase)
+                     || p.Contains("IgnoredRawChipReads", StringComparison.OrdinalIgnoreCase));
+        }
+        finally
+        {
+            TryDelete(root);
+        }
+    }
+
+    [Fact]
+    public void CollectRemoved_EmptyActive_DoesNotWipeThePack()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "s2f-rm-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var library = Path.Combine(root, "Library");
+            var active = Path.Combine(root, "Active");
+            Directory.CreateDirectory(Path.Combine(library, PathService.RunScoreFolderName));
+            Directory.CreateDirectory(Path.Combine(active, PathService.RunScoreFolderName));
+            File.WriteAllText(
+                Path.Combine(library, PathService.RunScoreFolderName, "race.dat"),
+                "keep");
+
+            var plan = FinishUploadPlanner.CollectRemovedRunScorePaths(active, library);
+            Assert.True(plan.Suppressed);
+            Assert.Empty(plan.RelativePaths);
+        }
+        finally
+        {
+            TryDelete(root);
+        }
+    }
+
     private static ActiveCheckout MakeCheckout(string active, string library) =>
         new()
         {

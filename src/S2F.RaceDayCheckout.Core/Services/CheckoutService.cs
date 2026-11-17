@@ -970,10 +970,31 @@ public sealed class CheckoutService
         var listingPlan = RunScoreListingNames.PlanFinish(activeRunScorePlan, libraryRunScorePlan);
         var listingFixes = RunScoreListingNames.MergePending(listingPlan, active.PendingListingCloudFixes);
 
+        // Files the timer deleted from Active. Listing renames own their old names.
+        // Empty Active is not "delete the pack" — CollectRemoved suppresses that.
+        var removedPlan = FinishUploadPlanner.CollectRemovedRunScorePaths(
+            active.ActivePath, active.LibrarySessionPath);
+        var listingOld = new HashSet<string>(
+            listingFixes.Select(f => FinishUploadPlanner.NormalizeRelative(f.OldRelative)),
+            StringComparer.OrdinalIgnoreCase);
+        var removedRunScore = removedPlan.RelativePaths
+            .Select(FinishUploadPlanner.NormalizeRelative)
+            .Where(path => !listingOld.Contains(path))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        // No listings on Active while Library still has them is a bad copy, not "delete every listing."
+        if (listingPlan.SuppressCloudDeletes || listingPlan.ScanFailed)
+        {
+            removedRunScore = removedRunScore
+                .Where(path => !path.EndsWith(".lst", StringComparison.OrdinalIgnoreCase))
+                .ToList();
+        }
+
         // Once we mutate Library toward Active, any failure before Graph success must keep
         // pending paths — otherwise the next Finish sees Active≈Library and skips upload.
         var mustRetainCloudPending = uploadRelativePaths.Count > 0
             || listingFixes.Count > 0
+            || removedRunScore.Count > 0
             || active.PendingFinishUploadRelativePaths is { Count: > 0 };
 
         var autosavePath = active.AutosavePath;
@@ -1097,6 +1118,32 @@ public sealed class CheckoutService
                             + "Tap Finish again to remove it.";
                     }
                 }
+
+                // Upload landed (or there was nothing to upload). Delete RunScore files Active
+                // no longer has so the next checkout does not download them back.
+                if (upload.Success && removedRunScore.Count > 0)
+                {
+                    statusProgress?.Report("finish:delete");
+                    var failedDeletes = await DeleteRemovedRunScoreFilesAsync(
+                        active,
+                        settings,
+                        removedRunScore,
+                        uploadCts.Token).ConfigureAwait(false);
+                    if (failedDeletes.Count > 0)
+                    {
+                        syncOk = false;
+                        stillPending ??= Array.Empty<string>();
+                        if (listingFixes.Count == 0)
+                        {
+                            syncMessage =
+                                "Finish uploaded the race, but a deleted RunScore file is still on OneDrive. "
+                                + "Tap Finish again to remove it.";
+                        }
+                    }
+                }
+
+                if (syncOk)
+                    SessionCloudFileIndex.RememberLocalFiles(active.LibrarySessionPath);
             }
             catch (OperationCanceledException)
             {
@@ -1289,8 +1336,79 @@ public sealed class CheckoutService
     }
 
     /// <summary>
+    /// Graph-delete RunScore files removed from Active, then the Library copy.
+    /// A cloud or local miss stays for the next Finish. Paths that land are dropped
+    /// from the per-laptop index so checkout does not treat them as still present.
+    /// </summary>
+    private async Task<IReadOnlyList<string>> DeleteRemovedRunScoreFilesAsync(
+        ActiveCheckout active,
+        AppSettings settings,
+        IReadOnlyList<string> relativePaths,
+        CancellationToken cancellationToken)
+    {
+        var failed = new List<string>();
+        var forgotten = new List<string>();
+        using var gate = new SemaphoreSlim(GraphSyncPolicy.UploadParallelism);
+        var tasks = relativePaths.Select(async rel =>
+        {
+            await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var local = Path.Combine(
+                    active.LibrarySessionPath, FinishUploadPlanner.NormalizeRelative(rel));
+                CloudSyncResult deleted;
+                try
+                {
+                    deleted = await _cloud.DeleteLibraryFileAsync(
+                        local,
+                        settings.LibraryRoot,
+                        settings.GraphDriveRoot,
+                        cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch
+                {
+                    lock (failed)
+                        failed.Add(rel);
+                    return;
+                }
+
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!deleted.Success || !SessionCloudFileIndex.TryDeleteLocalFile(local))
+                {
+                    lock (failed)
+                        failed.Add(rel);
+                    return;
+                }
+
+                lock (forgotten)
+                    forgotten.Add(rel);
+            }
+            finally
+            {
+                gate.Release();
+            }
+        });
+
+        try
+        {
+            await Task.WhenAll(tasks).ConfigureAwait(false);
+        }
+        finally
+        {
+            SessionCloudFileIndex.Forget(active.LibrarySessionPath, forgotten);
+        }
+
+        return failed;
+    }
+
+    /// <summary>
     /// OneDrive already has the plain listing. Remove the identical invalid-letter copy.
-    /// A miss does not fail checkout — the next checkout tries again. Local files are already dropped.
+    /// A miss does not fail checkout — the next checkout tries again.
     /// </summary>
     private async Task TryDeleteIdenticalInvalidListingsAsync(
         string librarySessionPath,

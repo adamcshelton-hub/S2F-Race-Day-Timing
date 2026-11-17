@@ -745,6 +745,27 @@ public class CheckoutServiceTests
             Task.FromResult(new CloudSyncResult { Success = true, Message = "vendor secrets (stub)" });
     }
 
+    private sealed class TrackingDeleteCloudSync : StubCloudSync
+    {
+        public List<string> Deleted { get; } = new();
+
+        public override Task<CloudSyncResult> UploadSessionAsync(
+            string librarySessionPath, string libraryRoot, string graphDriveRoot, IProgress<string>? status = null, CancellationToken cancellationToken = default, IReadOnlyList<string>? onlyRelativePaths = null) =>
+            Task.FromResult(new CloudSyncResult
+            {
+                Success = true,
+                FilesTransferred = onlyRelativePaths?.Count ?? 0,
+                Message = "ok"
+            });
+
+        public override Task<CloudSyncResult> DeleteLibraryFileAsync(
+            string localFilePath, string libraryRoot, string graphDriveRoot, CancellationToken cancellationToken = default)
+        {
+            Deleted.Add(localFilePath);
+            return Task.FromResult(new CloudSyncResult { Success = true, Message = "deleted" });
+        }
+    }
+
     private sealed class OkCloudSync : StubCloudSync
     {
         public override Task<CloudSyncResult> UploadSessionAsync(
@@ -960,6 +981,56 @@ public class CheckoutServiceTests
         var lockAfter = locks.TryRead(packPath);
         Assert.NotNull(lockAfter);
         Assert.Equal(LockLifecycleStatus.Released, lockAfter!.Status);
+    }
+
+    [Fact]
+    public async Task Checkin_DeletesRunScoreFileRemovedFromActive_LeavesLogsOnOneDrive()
+    {
+        var (packPath, libraryRoot) = CreateFlatPack();
+        var runScore = Path.Combine(packPath, "RUNSCORE");
+        Directory.CreateDirectory(Path.Combine(runScore, "Logs"));
+        File.WriteAllText(Path.Combine(runScore, "old-chip.txt"), "old");
+        File.WriteAllText(Path.Combine(runScore, "Logs", "day.log"), "log");
+        var raceDay = Path.Combine(Path.GetTempPath(), "s2f-rd-" + Guid.NewGuid().ToString("N"));
+        var activeStorePath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json");
+        var settings = new AppSettings { LibraryRoot = libraryRoot, RaceDayRoot = raceDay, DisplayName = "Adam" };
+        var paths = new PathService();
+        var locks = new CheckoutLockService(paths, new FakeMachine());
+        var activeStore = new ActiveCheckoutStore(activeStorePath);
+        var cloud = new TrackingDeleteCloudSync();
+        var service = new CheckoutService(
+            paths, locks, new FileCopyService(), new NoProcesses(), activeStore, cloud: cloud);
+
+        try
+        {
+            var checkout = await service.CheckoutAsync(new CheckoutRequest
+            {
+                Pack = PackInfo(packPath, "Memphis", "2026 - Sample Event"),
+                Settings = settings,
+                HolderName = "Adam"
+            });
+            Assert.True(checkout.Success, checkout.Message);
+
+            var activeChip = Path.Combine(checkout.Active!.ActivePath, "RUNSCORE", "old-chip.txt");
+            Assert.True(File.Exists(activeChip));
+            File.Delete(activeChip);
+
+            var checkin = await service.CheckinAsync(settings, "Adam");
+            Assert.True(checkin.Success, checkin.Message);
+            Assert.False(checkin.RetainActiveForCloudRetry, checkin.Message);
+            Assert.Contains(cloud.Deleted, p => p.EndsWith("old-chip.txt", StringComparison.OrdinalIgnoreCase));
+            Assert.DoesNotContain(cloud.Deleted, p => p.Contains($"{Path.DirectorySeparatorChar}Logs{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase));
+            Assert.False(File.Exists(Path.Combine(runScore, "old-chip.txt")));
+            Assert.Equal("log", File.ReadAllText(Path.Combine(runScore, "Logs", "day.log")));
+            Assert.True(File.Exists(Path.Combine(packPath, "Sample Event-S2F-MEM-1.event")));
+            Assert.Null(activeStore.Load());
+        }
+        finally
+        {
+            try { Directory.Delete(libraryRoot, true); } catch { /* temp */ }
+            try { Directory.Delete(raceDay, true); } catch { /* temp */ }
+            try { File.Delete(activeStorePath); } catch { /* temp */ }
+        }
     }
 
     [Fact]

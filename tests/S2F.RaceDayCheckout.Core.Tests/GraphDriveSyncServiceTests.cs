@@ -339,6 +339,71 @@ public class GraphDriveSyncServiceTests
         }
     }
 
+    [Fact]
+    public async Task DownloadSession_DeletesIndexedFileInsteadOfDownloadingItAgain()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "s2f-dl-" + Guid.NewGuid().ToString("N"));
+        var session = Path.Combine(root, "Office", "Race");
+        Directory.CreateDirectory(session);
+        try
+        {
+            var handler = new DeleteOrDownloadHandler();
+            var cloud = new GraphDriveSyncService(new SignedInTokens(), new HttpClient(handler));
+            var first = await cloud.DownloadSessionAsync(session, root, graphDriveRoot: "");
+            Assert.True(first.Success, first.Message);
+            var entries = Path.Combine(session, "RUNSCORE", "ENTRIES.DTA");
+            Assert.True(File.Exists(entries));
+            Assert.Equal(4, new FileInfo(entries).Length);
+
+            File.Delete(entries);
+            var contentGetsBefore = handler.Calls.Count(c =>
+                c.Method == HttpMethod.Get && c.Url.Contains("/content", StringComparison.Ordinal)
+                && c.Url.Contains("ENTRIES.DTA", StringComparison.Ordinal));
+
+            var second = await cloud.DownloadSessionAsync(session, root, graphDriveRoot: "");
+            Assert.True(second.Success, second.Message);
+            Assert.Contains("Removed", second.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.False(File.Exists(entries));
+            Assert.True(File.Exists(Path.Combine(session, "RUNSCORE", "OLD.TXT")));
+            Assert.Contains(handler.Calls, c =>
+                c.Method == HttpMethod.Delete && c.Url.Contains("ENTRIES.DTA", StringComparison.Ordinal));
+            var contentGetsAfter = handler.Calls.Count(c =>
+                c.Method == HttpMethod.Get && c.Url.Contains("/content", StringComparison.Ordinal)
+                && c.Url.Contains("ENTRIES.DTA", StringComparison.Ordinal));
+            Assert.Equal(contentGetsBefore, contentGetsAfter);
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); } catch { /* temp */ }
+        }
+    }
+
+    [Fact]
+    public async Task DownloadSession_DifferentRemoteSize_DownloadsInsteadOfDeleting()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "s2f-dl-" + Guid.NewGuid().ToString("N"));
+        var session = Path.Combine(root, "Office", "Race");
+        Directory.CreateDirectory(session);
+        try
+        {
+            var handler = new DeleteOrDownloadHandler();
+            var cloud = new GraphDriveSyncService(new SignedInTokens(), new HttpClient(handler));
+            var first = await cloud.DownloadSessionAsync(session, root, graphDriveRoot: "");
+            Assert.True(first.Success, first.Message);
+
+            File.Delete(Path.Combine(session, "RUNSCORE", "ENTRIES.DTA"));
+            handler.EntriesSize = 9;
+            var second = await cloud.DownloadSessionAsync(session, root, graphDriveRoot: "");
+            Assert.True(second.Success, second.Message);
+            Assert.DoesNotContain(handler.Calls, c => c.Method == HttpMethod.Delete);
+            Assert.Equal(9, new FileInfo(Path.Combine(session, "RUNSCORE", "ENTRIES.DTA")).Length);
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); } catch { /* temp */ }
+        }
+    }
+
     private sealed class SignedInTokens : IGraphTokenProvider
     {
         public bool IsSignedIn => true;
@@ -394,6 +459,43 @@ public class GraphDriveSyncServiceTests
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent("{}")
+            });
+        }
+    }
+
+    private sealed class DeleteOrDownloadHandler : HttpMessageHandler
+    {
+        public long EntriesSize { get; set; } = 4;
+        public List<(HttpMethod Method, string Url)> Calls { get; } = new();
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            var url = request.RequestUri?.AbsoluteUri ?? "";
+            Calls.Add((request.Method, url));
+            if (request.Method == HttpMethod.Delete)
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NoContent));
+
+            if (url.Contains("/content", StringComparison.Ordinal))
+            {
+                var length = url.Contains("ENTRIES.DTA", StringComparison.Ordinal) ? (int)EntriesSize : 3;
+                var bytes = new byte[length];
+                if (length > 0)
+                    bytes[0] = 1;
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new ByteArrayContent(bytes)
+                });
+            }
+
+            var json = url.Contains("RUNSCORE", StringComparison.OrdinalIgnoreCase)
+                ? "{\"value\":[{\"name\":\"ENTRIES.DTA\",\"file\":{},\"size\":" + EntriesSize
+                  + "},{\"name\":\"OLD.TXT\",\"file\":{},\"size\":3}]}"
+                : """{"value":[{"name":"RUNSCORE","folder":{}}]}""";
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(json)
             });
         }
     }

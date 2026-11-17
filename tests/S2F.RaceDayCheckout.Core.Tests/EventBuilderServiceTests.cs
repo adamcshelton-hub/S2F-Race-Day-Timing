@@ -178,6 +178,44 @@ public class EventBuilderServiceTests
     }
 
     [Fact]
+    public async Task BuildAsync_DropsEntriesDta_SoRunScoreCreatesACleanCopy()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "s2f-dta-" + Guid.NewGuid().ToString("N"));
+        var template = Path.Combine(root, "Templates", "Chip Start");
+        var runScore = Path.Combine(template, "RUNSCORE");
+        Directory.CreateDirectory(runScore);
+        Directory.CreateDirectory(Path.Combine(runScore, "Lists"));
+        File.WriteAllText(Path.Combine(runScore, "Entries.ini"), "race name................\n");
+        File.WriteAllText(Path.Combine(runScore, "ENTRIES.FRM"), "frm");
+        File.WriteAllText(Path.Combine(runScore, "ENTRIES.DTA"), "old-entries");
+        File.WriteAllText(Path.Combine(runScore, "Lists", "entries.dta"), "nested-old");
+
+        try
+        {
+            var result = await new EventBuilderService().BuildAsync(new EventBuildRequest
+            {
+                LibraryRoot = root,
+                Office = "Test Office",
+                SourceSessionPath = template,
+                RaceName = "Fresh Entries",
+                RaceDate = "11/16/2026",
+                ResultsId = "abc"
+            });
+
+            Assert.True(result.Success, result.Message);
+            Assert.False(File.Exists(Path.Combine(result.SessionPath!, "RUNSCORE", "ENTRIES.DTA")));
+            Assert.False(File.Exists(Path.Combine(result.SessionPath!, "RUNSCORE", "Lists", "entries.dta")));
+            Assert.True(File.Exists(Path.Combine(result.SessionPath!, "RUNSCORE", "ENTRIES.FRM")));
+            Assert.Equal("old-entries", File.ReadAllText(Path.Combine(runScore, "ENTRIES.DTA")));
+            Assert.Equal("nested-old", File.ReadAllText(Path.Combine(runScore, "Lists", "entries.dta")));
+        }
+        finally
+        {
+            try { Directory.Delete(root, true); } catch { /* ignore */ }
+        }
+    }
+
+    [Fact]
     public async Task BuildAsync_FailsWhenDestinationExists()
     {
         var root = Path.Combine(Path.GetTempPath(), "s2f-build-" + Guid.NewGuid().ToString("N"));
