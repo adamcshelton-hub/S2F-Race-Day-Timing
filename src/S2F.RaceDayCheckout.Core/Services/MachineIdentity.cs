@@ -25,7 +25,9 @@ public sealed class MachineIdentity : IMachineIdentity
 
     public static string CreateStableId(string machineName, string windowsUser)
     {
-        var raw = $"{machineName}|{windowsUser}|{Environment.OSVersion}";
+        // PC name + Windows user only. OS version used to be in this hash, so a Windows
+        // update overnight changed the id and this laptop no longer recognized its own lock.
+        var raw = $"{machineName}|{windowsUser}";
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(raw));
         return Convert.ToHexString(hash)[..16];
     }

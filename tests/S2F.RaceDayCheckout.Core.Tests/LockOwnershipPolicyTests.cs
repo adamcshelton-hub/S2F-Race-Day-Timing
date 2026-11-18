@@ -5,12 +5,20 @@ namespace S2F.RaceDayCheckout.Core.Tests;
 
 public class LockOwnershipPolicyTests
 {
-    private static CheckoutLock Lock(string machineId, LockLifecycleStatus status) => new()
+    private static CheckoutLock Lock(
+        string machineId,
+        LockLifecycleStatus status,
+        DateTimeOffset? lastSeen = null,
+        string? machineName = null,
+        string? windowsUser = null) => new()
     {
         MachineId = machineId,
-        MachineName = "PC",
+        MachineName = machineName ?? "PC",
+        WindowsUser = windowsUser ?? string.Empty,
         HolderName = "Timer",
-        Status = status
+        Status = status,
+        LastSeenAt = lastSeen ?? default,
+        CheckedOutAt = lastSeen ?? default
     };
 
     [Fact]
@@ -106,5 +114,65 @@ public class LockOwnershipPolicyTests
 
         Assert.Equal(LockCloudVerdict.Unconfirmed, decision.Verdict);
         Assert.False(decision.ReclaimFromActiveCheckout);
+    }
+
+    [Fact]
+    public void ReleasedByOtherLaptop_DoesNotRestoreOrReclaim()
+    {
+        var finished = new DateTimeOffset(2026, 11, 18, 14, 0, 0, TimeSpan.Zero);
+        var cloud = Lock("BBB", LockLifecycleStatus.Released, finished, "ADAM-VM", "Adam");
+        var decision = LockOwnershipPolicy.Decide(
+            downloadConfirmed: true,
+            localAfter: cloud,
+            ourMachineId: "AAA",
+            heldBefore: true,
+            hasLocalTimingActive: true,
+            ourCheckedOutAt: finished.AddHours(-10),
+            ourMachineName: "DENISE-PC",
+            ourWindowsUser: "Denise");
+
+        Assert.Equal(LockCloudVerdict.ClosedElsewhere, decision.Verdict);
+        Assert.False(decision.RestoreLocalActive);
+        Assert.False(decision.ReclaimFromActiveCheckout);
+    }
+
+    [Fact]
+    public void StaleReleasedByOtherLaptop_AfterOurNewCheckout_RestoresLocalActive()
+    {
+        var theirFinish = new DateTimeOffset(2026, 11, 18, 8, 0, 0, TimeSpan.Zero);
+        var cloud = Lock("BBB", LockLifecycleStatus.Released, theirFinish, "ADAM-VM", "Adam");
+        var decision = LockOwnershipPolicy.Decide(
+            downloadConfirmed: true,
+            localAfter: cloud,
+            ourMachineId: "AAA",
+            heldBefore: true,
+            hasLocalTimingActive: true,
+            ourCheckedOutAt: theirFinish.AddHours(2),
+            ourMachineName: "DENISE-PC",
+            ourWindowsUser: "Denise");
+
+        Assert.Equal(LockCloudVerdict.Held, decision.Verdict);
+        Assert.True(decision.RestoreLocalActive);
+        Assert.False(decision.ReclaimFromActiveCheckout);
+    }
+
+    [Fact]
+    public void ActiveLock_SamePcNameAndUser_DifferentId_IsHeld()
+    {
+        var cloud = Lock(
+            "OLDID",
+            LockLifecycleStatus.Active,
+            machineName: "DENISE-PC",
+            windowsUser: "Denise");
+        var decision = LockOwnershipPolicy.Decide(
+            downloadConfirmed: true,
+            localAfter: cloud,
+            ourMachineId: "NEWID",
+            heldBefore: false,
+            ourMachineName: "DENISE-PC",
+            ourWindowsUser: "Denise");
+
+        Assert.Equal(LockCloudVerdict.Held, decision.Verdict);
+        Assert.False(decision.RestoreLocalActive);
     }
 }

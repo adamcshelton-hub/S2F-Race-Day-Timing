@@ -78,7 +78,7 @@ public class CheckoutLockServiceTests
         // Just past the soft-takeover window (default 6 minutes).
         var otherLocks = new CheckoutLockService(
             new PathService(),
-            new FakeMachine("BBB"),
+            new FakeMachine("BBB", "LaptopB", "other"),
             () => now.AddMinutes(AppSettings.DefaultStaleLockMinutes + 1));
         Assert.Equal(
             LockAcquireOutcome.NeedsEmergencyConfirm,
@@ -137,7 +137,31 @@ public class CheckoutLockServiceTests
         var lastSeen = holderLocks.TryRead(root)!.LastSeenAt;
 
         var t1 = t0.AddMinutes(3);
-        var zombie = new CheckoutLockService(new PathService(), new FakeMachine("BBB"), () => t1);
+        var zombie = new CheckoutLockService(new PathService(), new FakeMachine("BBB", "LaptopB", "other"), () => t1);
         Assert.Equal(lastSeen, zombie.Heartbeat(root)!.LastSeenAt);
+    }
+
+    [Fact]
+    public void SamePcNameAndUser_DifferentMachineId_IsStillThisLaptop()
+    {
+        var (root, holderLocks) = CreateEnv(new FakeMachine("OLD", "DENISE-PC", "Denise"));
+        Acquire(holderLocks, root, "Denise");
+
+        var restarted = new CheckoutLockService(
+            new PathService(),
+            new FakeMachine("NEW", "DENISE-PC", "Denise"));
+        Assert.Equal(LockAcquireOutcome.SameMachineReclaim, restarted.EvaluateAcquire(root, new AppSettings()).Outcome);
+        Assert.True(restarted.ThisMachineHoldsActiveLock(root));
+        Assert.Null(restarted.TryGetOtherMachineActiveLock(root));
+
+        var t = DateTimeOffset.Parse("2026-11-18T14:00:00Z");
+        var beating = new CheckoutLockService(
+            new PathService(),
+            new FakeMachine("NEW", "DENISE-PC", "Denise"),
+            () => t);
+        beating.Heartbeat(root);
+        var updated = beating.TryRead(root);
+        Assert.Equal("NEW", updated!.MachineId);
+        Assert.Equal(t, updated.LastSeenAt);
     }
 }

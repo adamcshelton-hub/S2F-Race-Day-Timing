@@ -70,7 +70,7 @@ public sealed class CheckoutLockService
             };
         }
 
-        if (string.Equals(existing.MachineId, _machine.MachineId, StringComparison.OrdinalIgnoreCase))
+        if (IsThisLaptop(existing))
         {
             return new LockAcquireResult
             {
@@ -161,7 +161,7 @@ public sealed class CheckoutLockService
             return existing;
         }
 
-        if (!string.Equals(existing.MachineId, _machine.MachineId, StringComparison.OrdinalIgnoreCase))
+        if (!IsThisLaptop(existing))
         {
             RaceDayTrace.Write(
                 $"lock heartbeat skipped path={libraryEventPath} reason=machine-mismatch " +
@@ -171,9 +171,20 @@ public sealed class CheckoutLockService
         }
 
         existing.LastSeenAt = _clock();
+        // Id can change after a Windows update. Keep the lock file on the current id
+        // so other laptops still see this PC, not a stale hash.
+        if (!string.Equals(existing.MachineId, _machine.MachineId, StringComparison.OrdinalIgnoreCase))
+            existing.MachineId = _machine.MachineId;
         WriteLockWithRetry(libraryEventPath, existing);
         return existing;
     }
+
+    private bool IsThisLaptop(CheckoutLock? lockInfo) =>
+        LockOwnershipPolicy.SameLaptop(
+            lockInfo,
+            _machine.MachineId,
+            _machine.MachineName,
+            _machine.WindowsUser);
 
     /// <summary>
     /// True only when the on-disk lock is Active and held by this machine.
@@ -182,8 +193,7 @@ public sealed class CheckoutLockService
     public bool ThisMachineHoldsActiveLock(string libraryEventPath)
     {
         var existing = TryRead(libraryEventPath);
-        return existing is { Status: LockLifecycleStatus.Active }
-               && string.Equals(existing.MachineId, _machine.MachineId, StringComparison.OrdinalIgnoreCase);
+        return existing is { Status: LockLifecycleStatus.Active } && IsThisLaptop(existing);
     }
 
     /// <summary>Active lock held by another machine (after refresh), or null if free / ours / missing.</summary>
@@ -192,7 +202,7 @@ public sealed class CheckoutLockService
         var existing = TryRead(libraryEventPath);
         if (existing is null || existing.Status != LockLifecycleStatus.Active)
             return null;
-        if (string.Equals(existing.MachineId, _machine.MachineId, StringComparison.OrdinalIgnoreCase))
+        if (IsThisLaptop(existing))
             return null;
         return existing;
     }

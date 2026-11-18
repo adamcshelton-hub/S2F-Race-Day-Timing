@@ -162,6 +162,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private bool _lockTakenOverPromptOpen;
     /// <summary>After we detect a lost lock, skip cloud writes until user Close Local / Force.</summary>
     private bool _cloudWritesBlockedUntilResolved;
+    /// <summary>One detach when another laptop already finished — startup and heartbeat can both see it.</summary>
+    private readonly object _remoteCloseGate = new();
     /// <summary>
     /// After "I'll Close RunScore First", do not re-open the modal until this time —
     /// timer needs the UI free to close vendors, then uses the Active banner.
@@ -217,7 +219,15 @@ public sealed class MainViewModel : INotifyPropertyChanged
             _cloud,
             () => _settings,
             stillOwnsLockAsync: async ct =>
-                await CheckLockOwnershipAsync(ct, "mirror").ConfigureAwait(false) == LockCloudVerdict.Held);
+            {
+                // No local checkout means do not publish. CheckLockOwnership reports Held
+                // when active.json is already gone, which would let a tick upload after
+                // another laptop finished.
+                if (_activeStore.Load() is not { Role: CheckoutRole.Timing })
+                    return false;
+                return await CheckLockOwnershipAsync(ct, "mirror").ConfigureAwait(false)
+                       == LockCloudVerdict.Held;
+            });
 
         Offices = new ObservableCollection<string>();
         VisibleOffices = new ObservableCollection<string>();
@@ -2350,6 +2360,13 @@ public sealed class MainViewModel : INotifyPropertyChanged
                     "Couldn't Confirm Checkout",
                     "OneDrive didn't confirm this laptop still holds the race. Nothing was uploaded. Try Finish again.");
                 return;
+            case LockCloudVerdict.ClosedElsewhere:
+                DetachLocalCheckoutAfterRemoteFinish();
+                await ShowBusyResultAsync(
+                    "Race Already Finished",
+                    "Another laptop already finished this race and checked it in. Nothing was uploaded from this laptop.\n\n"
+                    + "This laptop is no longer checked out. Leftover files were left under RaceDay\\Active.");
+                return;
         }
 
         // Pause live mirror so it cannot recreate RUNSCORE\_autosave while Finish deletes it.
@@ -2427,6 +2444,15 @@ public sealed class MainViewModel : INotifyPropertyChanged
                     await ShowBusyResultAsync(
                         "Couldn't Confirm Checkout",
                         "OneDrive didn't confirm this laptop still holds the race. Nothing was uploaded. Try Finish again.");
+                    return;
+                case LockCloudVerdict.ClosedElsewhere:
+                    ResumeHeartbeatAfterFinish();
+                    pausedHeartbeat = false;
+                    DetachLocalCheckoutAfterRemoteFinish();
+                    await ShowBusyResultAsync(
+                        "Race Already Finished",
+                        "Another laptop already finished this race and checked it in. Nothing was uploaded from this laptop.\n\n"
+                        + "This laptop is no longer checked out. Leftover files were left under RaceDay\\Active.");
                     return;
             }
 
@@ -3555,6 +3581,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
             Status = "Signed in to OneDrive.";
             NotifyGraphStatus();
+            await ReconcileOpenCheckoutAsync().ConfigureAwait(true);
             await SyncVendorSecretsFromGraphAsync().ConfigureAwait(true);
             await RefreshLibraryFromGraphAsync();
             // After sign-in, allow single-office auto-advance into the session list.
@@ -6377,7 +6404,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
         var sessionPath = active.LibrarySessionPath;
         var lockPath = _paths.GetLockPath(sessionPath);
         var heldBefore = _locks.ThisMachineHoldsActiveLock(sessionPath);
-        var before = RaceDayTrace.FormatLock(_locks.TryRead(sessionPath));
+        var priorLock = _locks.TryRead(sessionPath);
+        var before = RaceDayTrace.FormatLock(priorLock);
         byte[]? snapshot = null;
         if (heldBefore && File.Exists(lockPath))
         {
@@ -6427,7 +6455,10 @@ public sealed class MainViewModel : INotifyPropertyChanged
             afterLock,
             _machine.MachineId,
             heldBefore && snapshot is not null,
-            hasLocalTimingActive: hasLocalTimingActive);
+            hasLocalTimingActive: hasLocalTimingActive,
+            ourCheckedOutAt: active.CheckedOutAt,
+            ourMachineName: _machine.MachineName,
+            ourWindowsUser: _machine.WindowsUser);
 
         if (decision.RestoreLocalActive)
         {
@@ -6495,6 +6526,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         {
             LockCloudVerdict.Held => "held",
             LockCloudVerdict.TakenOver => "taken-over",
+            LockCloudVerdict.ClosedElsewhere => "closed-elsewhere",
             _ => "not-active"
         };
         LogOwnCheck(
@@ -6536,6 +6568,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
             return;
 
         var promptTakenOver = false;
+        var closedElsewhere = false;
         try
         {
             if (Volatile.Read(ref _suppressLockPublish) > 0)
@@ -6564,9 +6597,15 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 case LockCloudVerdict.Unconfirmed:
                     RaceDayTrace.Write("lock heartbeat upload skipped reason=unconfirmed");
                     return;
+                case LockCloudVerdict.ClosedElsewhere:
+                    // Another laptop finished. Do not heartbeat our Active lock back onto OneDrive.
+                    // Dialog runs after the gate is released so Finish can wait this tick out.
+                    closedElsewhere = true;
+                    break;
             }
 
             if (!promptTakenOver
+                && !closedElsewhere
                 && Volatile.Read(ref _suppressLockPublish) == 0
                 && !ct.IsCancellationRequested)
             {
@@ -6616,6 +6655,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
         finally
         {
             _heartbeatUploadGate.Release();
+        }
+
+        if (closedElsewhere)
+        {
+            NotifyRemoteFinishIfDetached();
+            return;
         }
 
         if (promptTakenOver && Volatile.Read(ref _suppressLockPublish) == 0)
@@ -6668,6 +6713,68 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
         if (!_heartbeatTimer.IsEnabled)
             _heartbeatTimer.Start();
+    }
+
+    /// <summary>
+    /// If OneDrive says another laptop already finished this checkout, drop local Active
+    /// without uploading and without deleting race files.
+    /// </summary>
+    public async Task ReconcileOpenCheckoutAsync()
+    {
+        if (_activeStore.Load() is not { Role: CheckoutRole.Timing })
+            return;
+
+        switch (await CheckLockOwnershipAsync(caller: "startup").ConfigureAwait(true))
+        {
+            case LockCloudVerdict.ClosedElsewhere:
+                NotifyRemoteFinishIfDetached();
+                break;
+            case LockCloudVerdict.TakenOver:
+                await HandleLockTakenOverAsync().ConfigureAwait(true);
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Clear active.json so reopen does not resume a race another laptop already finished.
+    /// Leaves RaceDay\Active files on disk. Does not upload a lock.
+    /// </summary>
+    private bool DetachLocalCheckoutAfterRemoteFinish()
+    {
+        lock (_remoteCloseGate)
+        {
+            if (_activeStore.Load() is null && Active is null)
+                return false;
+
+            _activeStore.Save(null);
+            Active = null;
+            SelectedSession = null;
+            SelectedEventFile = null;
+            _finishAdminReturn = FinishAdminReturn.None;
+            ClearActiveSaveAsGuidePin();
+            SetCloudWritesBlocked(false);
+            ClearLockTakenOverSnooze();
+            _mirror.Pause();
+            try { new RunScorePreferencesService().RestoreNativePrefs(); }
+            catch { /* non-fatal */ }
+
+            LoadOffices(refreshSessions: false);
+            Step = WizardStep.Office;
+            Status = "This race was finished on another laptop. This laptop is no longer checked out.";
+            return true;
+        }
+    }
+
+    private void NotifyRemoteFinishIfDetached()
+    {
+        if (!DetachLocalCheckoutAfterRemoteFinish())
+            return;
+
+        Alert(
+            "Race Finished Elsewhere",
+            "Another laptop already finished this race and checked it in.\n\n"
+            + "This laptop will not keep the race open or upload over that finish.\n\n"
+            + "Leftover files were left in place under RaceDay\\Active.");
     }
 
     private async Task HandleLockTakenOverAsync()

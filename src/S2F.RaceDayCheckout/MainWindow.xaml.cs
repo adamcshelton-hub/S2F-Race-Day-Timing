@@ -310,6 +310,17 @@ public partial class MainWindow : Window
             // Non-fatal
         }
 
+        // Another laptop may have finished while this one still has active.json.
+        // One lock GET — do not resume or re-publish that checkout.
+        try
+        {
+            await _vm.ReconcileOpenCheckoutAsync();
+        }
+        catch
+        {
+            // Next heartbeat retries. A failed check must not trap the laptop on the event.
+        }
+
         // Optional: confirm which offices exist on OneDrive (does not block showing the list).
         // If staff open an office before this returns, the finished probe must not
         // send them back to Choose Your Office.
